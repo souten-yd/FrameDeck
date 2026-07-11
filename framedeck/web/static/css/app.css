@@ -15,7 +15,7 @@
   --ok:         #9ece6a;
   --radius: 8px;
   --topbar-h: 52px;
-  --controls-h: 52px;
+  --controls-h: 100px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -30,6 +30,9 @@ body {
 }
 .hidden { display: none !important; }
 .mobile-only { display: none; }
+/* UIプロファイル(JSがbodyへ付与): 画面幅でなく操作デバイスで判定 */
+.ui-mobile-only { display: none; }
+body.ui-mobile .ui-mobile-only { display: inline-flex; align-items: center; justify-content: center; }
 button { font-family: inherit; }
 
 #app { display: flex; flex-direction: column; height: 100dvh; }
@@ -195,25 +198,42 @@ button { font-family: inherit; }
 }
 .viewer.show-ui .viewer-title { opacity: 1; }
 
+/* シークバー行 + ボタン行の2行構成(PC/モバイル共通) */
 .controls-bar {
   position: absolute;
   left: 0; right: 0; bottom: 0;
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px 12px 10px;
   background: rgba(26, 27, 38, .92);
   border-top: 1px solid var(--border);
   min-height: var(--controls-h);
   transform: translateY(100%);
   transition: transform .18s;
   z-index: 5;
+  overflow: visible;
+}
+.viewer.show-ui .controls-bar { transform: translateY(0); }
+.controls-bar .seek-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+}
+.controls-bar .button-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
   flex-wrap: nowrap;
   overflow-x: auto;
   scrollbar-width: none;
 }
-.controls-bar::-webkit-scrollbar { display: none; }
-.viewer.show-ui .controls-bar { transform: translateY(0); }
+.controls-bar .button-row::-webkit-scrollbar { display: none; }
 
 .seek-wrap { flex: 1; display: flex; align-items: center; min-width: 60px; }
 input[type="range"] {
@@ -342,7 +362,7 @@ input[type="range"].rtl { direction: rtl; }
 
 .tap-zone {
   position: absolute;
-  top: 0; bottom: var(--controls-h);
+  top: 58px; bottom: 0;
   width: 30%;
   z-index: 3;
   cursor: pointer;
@@ -368,23 +388,13 @@ input[type="range"].rtl { direction: rtl; }
 .video-gesture-zone {
   position: absolute;
   top: 58px;
-  bottom: var(--controls-h);
+  bottom: 0;
   width: 28%;
   z-index: 3;
   touch-action: none;
 }
 .video-gesture-zone.left { left: 0; }
 .video-gesture-zone.right { right: 0; }
-
-.video-button-row {
-  display: contents;
-}
-
-.video-seek-row {
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
 
 #video { width: 100%; height: 100%; background: #000; }
 
@@ -539,84 +549,40 @@ input[type="range"].rtl { direction: rtl; }
 
   #main { position: relative; }
   #viewer-pane { width: 100%; }
-  .controls-bar { padding: 6px 8px; }
-  #video-volume { display: none; }
+  .controls-bar { padding: 6px 8px 8px; }
   .tap-zone { width: 35%; }
 }
 
-@media (min-width: 761px) {
-  .comic-ui-hotspot { display: none; }
+/* ビューワのUI表示(タイトル/ホットスポット)は幅でなくUIプロファイルで分岐 */
+#comic-viewer .viewer-title,
+#video-player .viewer-title { z-index: 6; }
+
+body.ui-mobile #video-volume { display: none; }
+body.ui-mobile .comic-ui-hotspot,
+body.ui-mobile .video-ui-hotspot { height: 64px; }
+body.ui-mobile #comic-viewer .tap-zone,
+body.ui-mobile #video-player .video-gesture-zone { top: 64px; }
+
+/* 動画のホットスポット/長押しゾーンはモバイルのみ(PCはmousemoveで表示) */
+body.ui-desktop .video-ui-hotspot,
+body.ui-desktop .video-gesture-zone { display: none; }
+
+/* モバイルはシークバーのつまみを大きく */
+body.ui-mobile #video-seek,
+body.ui-mobile #comic-seek {
+  height: 12px;
 }
-
-@media (max-width: 760px) {
-  #comic-viewer .viewer-title { z-index: 6; }
-  #comic-viewer .comic-ui-hotspot { height: 64px; }
-  #comic-viewer .tap-zone { top: 64px; }
+body.ui-mobile #video-seek::-webkit-slider-thumb,
+body.ui-mobile #comic-seek::-webkit-slider-thumb {
+  width: 24px;
+  height: 24px;
 }
-
-@media (min-width: 761px) {
-  .video-ui-hotspot, .video-gesture-zone { display: none; }
+body.ui-mobile #video-seek::-moz-range-thumb,
+body.ui-mobile #comic-seek::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
 }
-
-@media (max-width: 760px) {
-  #video-player .viewer-title { z-index: 6; }
-  #video-player .video-ui-hotspot { height: 64px; }
-  #video-player .video-gesture-zone { top: 64px; bottom: 0; }
-
-  #video-controls.video-controls {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-    padding: 8px 10px 10px;
-    min-height: 104px;
-    overflow: visible;
-  }
-
-  #video-controls .video-seek-row {
-    display: flex;
-    width: 100%;
-  }
-
-  #video-controls .video-button-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  #video-controls .video-button-row::-webkit-scrollbar { display: none; }
-
-  #video-controls .desktop-video-only {
-    display: none !important;
-  }
-
-  #video-seek {
-    pointer-events: none;
-  }
-
-  .video-seek-wrap-mobile {
-    flex: 1;
-    min-width: 0;
-    height: 28px;
-  }
-
-  #video-seek-mobile {
-    height: 12px;
-  }
-
-  #video-seek-mobile::-webkit-slider-thumb {
-    width: 24px;
-    height: 24px;
-  }
-
-  #video-seek-mobile::-moz-range-thumb {
-    width: 24px;
-    height: 24px;
-  }
-}
+.seek-row .seek-wrap { height: 28px; }
 
 .viewer:fullscreen .viewer-title,
 .viewer.fullscreen-active .viewer-title {
@@ -636,9 +602,7 @@ body.viewer-fullscreen-active {
   overflow: hidden;
 }
 
-@media (max-width: 760px) {
-  #btn-pip { display: none; }
-}
+body.ui-mobile #btn-pip { display: none; }
 
 .video-gesture-zone,
 .comic-ui-hotspot,

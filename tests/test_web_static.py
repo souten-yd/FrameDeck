@@ -69,14 +69,63 @@ def test_mobile_comic_controls_use_title_hotspot():
     assert 'closest("#comic-ui-hotspot, .controls-bar")' in js
 
 
-def test_mobile_video_controls_are_two_rows_with_seek():
+def test_comic_ui_revealed_only_by_hotspot_on_all_profiles():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    css = (ROOT / "framedeck/web/static/css/app.css").read_text()
+    # 漫画はmousemoveでUIを出さない(左右タップでシークバーが出ない)
+    assert 'if (!isComic) viewer.addEventListener("mousemove", show);' in js
+    # ホットスポットはトグル動作
+    assert "if (viewer.classList.contains(\"show-ui\")) hideNow();" in js
+    # PCでも漫画ホットスポットを無効化しない(display:noneの一律指定が無い)
+    assert "body.ui-desktop .comic-ui-hotspot" not in css
+
+
+def test_controls_are_two_rows_on_all_profiles():
     html = (ROOT / "framedeck/web/templates/index.html").read_text()
     css = (ROOT / "framedeck/web/static/css/app.css").read_text()
-    assert 'id="video-seek-mobile"' in html
-    assert 'class="video-seek-row mobile-only"' in html
-    assert '#video-controls.video-controls' in css
+    # 動画・漫画ともシーク行+ボタン行の2行構成(PC/モバイル共通)
+    assert html.count('<div class="seek-row">') == 2
+    assert html.count('<div class="button-row">') == 2
     assert 'flex-direction: column' in css
-    assert '#video-seek-mobile' in css
+    assert '.controls-bar .seek-row' in css
+    assert '.controls-bar .button-row' in css
+
+
+def test_comic_view_mode_button_is_in_button_row():
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    comic = html[html.index('id="comic-controls"'):html.index('id="comic-title"')]
+    assert 'id="btn-view-mode"' in comic
+    assert 'id="comic-seek"' in comic
+    assert comic.index('class="seek-row"') < comic.index('class="button-row"')
+
+
+def test_ui_profile_is_applied_as_body_class():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    css = (ROOT / "framedeck/web/static/css/app.css").read_text()
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    assert "function applyUiProfile" in js
+    assert 'classList.toggle("ui-mobile"' in js
+    assert 'classList.toggle("ui-desktop"' in js
+    assert "body.ui-mobile .ui-mobile-only" in css
+    assert "body.ui-desktop .video-ui-hotspot" in css
+    assert 'class="icon-btn ui-mobile-only"' in html  # 回転ロックボタン
+
+
+def test_video_error_is_retried_while_transcode_pending():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "VIDEO_ERROR_MAX_RETRIES" in js
+    assert "変換の準備中です" in js
+    assert "S.video.errorRetryCount" in js
+    assert "clearVideoErrorRetry()" in js
+
+
+def test_hls_seek_restarts_generation_and_stops_on_close():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function hlsMasterUrl" in js
+    assert "function requestHlsStop" in js
+    assert '/hls/stop' in js
+    assert "generatedEnd" in js
+    assert 'window.addEventListener("pagehide"' in js
 
 
 def test_mobile_fullscreen_hotspots_and_fallback_exist():
@@ -109,7 +158,7 @@ def test_pip_is_guarded_separately_from_fullscreen_on_mobile():
     assert 'detectUiProfile() === "mobile" || !document.pictureInPictureEnabled' in js
     assert '#btn-pip { display: none; }' in css
 
-def test_mobile_video_seek_uses_pointer_position_and_pending_seek():
+def test_video_seek_uses_pointer_position_and_pending_seek():
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
     assert "function seekableDuration" in js
     assert "S.video.info?.duration_seconds" in js
@@ -117,19 +166,16 @@ def test_mobile_video_seek_uses_pointer_position_and_pending_seek():
     assert "S.video.pendingSeekSeconds = seconds" in js
     assert "function videoDisplayPosition" in js
     assert 'video.addEventListener("seeked"' in js
-    assert 'bindVideoSeekSlider($("video-seek-mobile"), { mobileOnly: true })' in js
-    assert 'bindVideoSeekSlider($("video-seek"), { desktopOnly: true })' in js
+    assert 'bindVideoSeekSlider($("video-seek"))' in js
 
 
-def test_mobile_video_lower_seek_is_desktop_only():
+def test_video_seek_slider_is_shared_between_profiles():
     html = (ROOT / "framedeck/web/templates/index.html").read_text()
-    css = (ROOT / "framedeck/web/static/css/app.css").read_text()
-    assert 'id="video-time" class="mono-label desktop-video-only"' in html
-    assert 'class="seek-wrap desktop-video-only"' in html
-    assert '#video-controls .desktop-video-only' in css
-    assert 'display: none !important' in css
-    assert '#video-seek {' in css
-    assert 'pointer-events: none;' in css
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    # モバイル専用の複製シークバーは廃止(判定ズレの温床だった)
+    assert "video-seek-mobile" not in html
+    assert "video-seek-mobile" not in js
+    assert html.count('id="video-seek"') == 1
 
 
 def test_mobile_comic_tap_zones_do_not_reveal_controls():

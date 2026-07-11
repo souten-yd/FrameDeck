@@ -64,6 +64,7 @@ class Services:
             paths.video_variants_cache,
             segment_duration=int(settings.get("video_segment_duration", 4)),
             auto_download_ffmpeg=auto_download_ffmpeg,
+            max_cache_bytes=int(settings.get("video_variant_cache_gb", 30)) * 1024**3,
         )
         self.transcode_jobs = TranscodeJobManager()
         self.encoder_capabilities = EncoderCapabilityService()
@@ -78,7 +79,10 @@ class Services:
         self.pipeline.resize_filter = values.get("resize_filter", "lanczos")
         auto_download_ffmpeg = bool(values.get("video_ffmpeg_auto_download", True))
         self.transcode.configure(auto_download_ffmpeg=auto_download_ffmpeg)
-        self.hls.configure(auto_download_ffmpeg=auto_download_ffmpeg)
+        self.hls.configure(
+            auto_download_ffmpeg=auto_download_ffmpeg,
+            max_cache_bytes=int(values.get("video_variant_cache_gb", 30)) * 1024**3,
+        )
         self.hls.update_segment_duration(int(values.get("video_segment_duration", 4)))
 
     def startup_maintenance(self) -> None:
@@ -86,6 +90,10 @@ class Services:
             self.nested_cache.prune()
         except Exception:
             logger.exception("キャッシュ整理に失敗しました")
+        try:
+            self.hls.prune()
+        except Exception:
+            logger.exception("HLSキャッシュ整理に失敗しました")
         try:
             status = self.transcode.ffmpeg_status()
             if status.get("available"):
@@ -102,6 +110,10 @@ class Services:
             pass
         try:
             self.transcode.shutdown()
+        except Exception:
+            pass
+        try:
+            self.hls.shutdown()
         except Exception:
             pass
         try:

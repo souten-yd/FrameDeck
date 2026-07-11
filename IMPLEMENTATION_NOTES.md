@@ -467,3 +467,118 @@ Planned verification:
 - Static tests for no lower mobile seek, direct pointer seek logic, comic tap propagation suppression, gesture selection prevention, and orientation lock wiring.
 - `node --check framedeck/web/static/js/app.js`.
 - Full pytest suite.
+
+## 改修計画: ビューワUI統一(2行コントロール) + HLSシーク/生成管理 (2026-07-11)
+
+ユーザー報告5件への対応計画。
+
+### 課題と原因分析
+
+1. **モバイル横向きで動画コントロールが1行になる**
+   原因: CSSのモバイル判定が `@media (max-width: 760px)` のみ。JS側の
+   `detectUiProfile()` は `pointer: coarse` も見るため、横向きスマホ
+   (幅>760px)でJSは mobile / CSSは desktop と判定が割れる。
+2. **初回再生時に圧縮動画未生成でエラー**
+   原因: ネイティブHLS再生時、playlist.m3u8 未生成だと即503を返し、
+   `<video>` が error イベントで即エラー表示。リトライなし。
+3. **HLS変換中のシーク不可・キャッシュ肥大**
+   原因: HLSは常に先頭から逐次生成。生成済み範囲外へのシーク手段がなく、
+   途中開始(-ss)もない。生成ジョブの中断APIがなく、視聴をやめても
+   最後まで変換が走る。`video_variant_cache_gb` 設定は存在するが
+   prune未実装で溜まる一方。
+4. **漫画コントロールのボタンがあふれて表示切替ボタンが見えない**
+   原因: 1行バーに全ボタン+シークバーを詰めており overflow-x: auto で隠れる。
+5. **左右タップでシークバー/ファイル名が出る**
+   原因: setupAutoHide が viewer 全体の mousemove/touchstart でUI表示。
+
+### 方針
+
+**UI (①④⑤)**
+- JSが `body.ui-mobile` / `body.ui-desktop` クラスを付与(初期化+resize時)。
+  ビューワのコントロール表示はメディアクエリでなく本クラスで分岐し、
+  JSとCSSの判定を一致させる(→①横向きでも2行+回転ロックボタン)。
+- 動画/漫画コントロールバーをPC・モバイル共通の2行構成に統一:
+  1行目=時刻/ページラベル+シークバー、2行目=ボタン列。
+  動画のモバイル専用シークバー複製(video-seek-mobile)は廃止し一本化。
+- 漫画UI表示は上部ホットスポット(ファイル名エリア周辺)のタップ/クリックで
+  トグル。漫画ビューワの mousemove 表示は廃止(PC/モバイル同一動作)。
+  左右タップゾーン・下端は 페ージ送り専用。動画はPCのmousemove表示を維持。
+- 全画面中のホットスポットタップは「全画面解除」から「UIトグル」へ変更
+  (解除は⛶ボタン/ダブルクリック/Fキー)。
+
+**HLS (②③)**
+- `HlsService` に開始オフセット対応: cache_key に start を含め、
+  ffmpeg に `-ss start` を付与。マスターURLは
+  `/hls/master.m3u8?profile=&start=` → 302 で `/hls/{key}/master.m3u8` へ
+  リダイレクトし、以降の playlist/segment は `/hls/{key}/...` で解決
+  (相対URL解決のため。stat再計算も不要になる)。
+- 生成ジョブ管理: key→(source, Popen, cancelled) を保持。
+  同一ソースへ別 start/profile の要求が来たら旧ジョブを停止し
+  未完成キャッシュを削除(=「途中からの再圧縮」)。
+  `POST /api/videos/{id}/hls/stop` を追加し、クライアントは
+  stopVideo/pagehide 時に sendBeacon で停止要求(→溜め込み防止)。
+- 完了マーカー(`complete`ファイル)導入: master.m3u8 は生成開始時に
+  書くため ready 判定に使えない。マーカー無しディレクトリは
+  再利用せず削除して再生成(クラッシュ残骸対策)。
+- playlist/segment 配信はファイル出現まで最大~10秒ポーリングしてから
+  503(Retry-After)を返す(→②初回の生成待ち)。
+- prune実装: `video_variant_cache_gb` を上限に、完了済みを古い順に削除。
+  マーカー無し+非アクティブは無条件削除。起動時+生成完了時に実行。
+- クライアント: HLS再生は S.video.offset を持ち、シークは
+  生成済み範囲(video.seekable)内なら currentTime、範囲外なら
+  start付きでmaster再読込。videoエラーは HLS/変換中なら最大4回、
+  2.5秒間隔で自動リトライ(スピナー表示)し、その後にエラー表示。
+
+### 影響ファイル
+- framedeck/video/hls_service.py (ジョブ管理/start/marker/prune/wait)
+- framedeck/web/routers/video.py (master redirect, keyed配信, stop API)
+- framedeck/core/services.py (キャッシュ上限設定の反映+起動時prune)
+- framedeck/web/templates/index.html, static/css/app.css, static/js/app.js
+- tests/test_api.py, tests/test_adaptive_media.py, tests/test_web_static.py
+  (旧エンドポイント/モバイル専用シークバー前提のテストを更新、新規追加)
+
+### 検証計画
+- pytest全件 + node --check app.js
+- ffmpeg実機で実動画を生成し、master→playlist→segment の生成待ち、
+  start付きシーク、stopでのジョブ停止・削除、pruneをAPI経由で確認
+
+### 実装結果と検証 (2026-07-11)
+
+実装は計画どおり。計画からの主な決定事項:
+
+- HLSの playlist/segment 配信はキー付きURL(`/hls/{key}/...`)へ移行し、
+  旧 `/hls/{profile}/...` エンドポイントは削除した(クライアントは必ず
+  master のリダイレクト経由でキーを得るため後方互換は不要)。
+- 全画面中のホットスポットタップは「全画面解除」から「UIトグル」へ変更。
+  解除は⛶ボタン/ダブルクリック/Fキーで行う(タップで突然全画面が
+  解除される事故を防ぐ)。
+- 動画シークバーのモバイル複製(video-seek-mobile)は廃止し一本化。
+  つまみの拡大は body.ui-mobile スコープのCSSで行う。
+- HLSの生成待ちポーリングは master 5秒 / playlist・segment 10秒。
+  加えてクライアント側で videoエラー時に 2.5秒×最大4回の自動再試行。
+
+検証(pytest 113件全通過 + ffmpeg実機):
+
+- 初回master要求: 302→キー付きmaster 200、playlist はファイル出現待ちの
+  後 0.4秒で 200(②の生成待ち動作)。
+- 20分動画の生成途中に start=600 でシーク: 旧ジョブ停止・旧未完成
+  キャッシュ削除・新キーで生成開始を確認(③)。
+- `POST /hls/stop`: 実行中ジョブ停止(stopped:1)、ffmpegプロセス消滅、
+  未完成キャッシュ削除、完了済みキャッシュは保持を確認。
+- Playwright(chromium)で PC(1400x900)/モバイル縦(390x844)/
+  モバイル横(844x390, タッチ)を実測:
+  - 3プロファイルすべてでコントロールが2行(flex-direction: column)。
+  - モバイル横でも ui-mobile 判定になり回転ロックボタン表示(①)。
+  - 漫画: 左右タップでページ移動してもUIが出ない、mousemoveでも出ない、
+    上部ホットスポットでトグル表示(⑤)。表示切替ボタンが390px幅でも
+    画面内に収まる(④)。
+  - videoエラー自動再試行のトースト表示を確認(②)。
+
+Manual verification still needed:
+
+- iOS Safari 実機でのネイティブHLS再生(初回生成待ち・途中シーク・
+  回転ロック)。chromiumはHLSを最後まで再生できないため実機必須。
+- 実運用での video_variant_cache_gb 上限による prune 挙動。
+
+補足: テスト実行のため FrameDeck_venv へ pytest / httpx / playwright を
+インストールした(実行時依存には影響なし)。
