@@ -1,0 +1,28 @@
+{
+  "name": "FrameDeck",
+  "short_name": "FrameDeck",
+  "description": "ローカルメディアサーバ兼ビューア(漫画・動画)",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#16161e",
+  "theme_color": "#16161e",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "/static/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

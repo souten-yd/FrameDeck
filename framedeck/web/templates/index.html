@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16161e">
+<title>FrameDeck</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icons/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ================= Top bar ================= -->
+  <header id="topbar">
+    <div class="tb-group">
+      <button id="btn-mode-comic" class="icon-btn mode-btn" title="漫画モード">📖</button>
+      <button id="btn-mode-video" class="icon-btn mode-btn" title="動画モード">🎬</button>
+    </div>
+    <div class="tb-group">
+      <button id="btn-folder-back" class="icon-btn" title="戻る">‹</button>
+      <button id="btn-folder-forward" class="icon-btn" title="進む">›</button>
+      <button id="btn-folder-up" class="icon-btn" title="上のフォルダへ">⤴</button>
+      <button id="btn-refresh" class="icon-btn" title="再読み込み">⟳</button>
+    </div>
+    <div id="breadcrumb" class="tb-breadcrumb"></div>
+    <div class="tb-group tb-right">
+      <div id="star-bar" class="star-bar" title="選択項目の評価"></div>
+      <select id="sel-filter" class="tb-select">
+        <option value="all">すべて</option>
+        <option value="rated">評価あり</option>
+        <option value="unrated">評価なし</option>
+      </select>
+      <select id="sel-sort" class="tb-select">
+        <option value="date">日付順</option>
+        <option value="name">名前順</option>
+        <option value="rating_desc">評価が高い順</option>
+        <option value="rating_asc">評価が低い順</option>
+      </select>
+      <button id="btn-delete" class="icon-btn danger" title="削除">🗑</button>
+      <button id="btn-settings" class="icon-btn" title="設定">⚙</button>
+    </div>
+    <button id="btn-list-toggle" class="icon-btn mobile-only" title="一覧">☰</button>
+  </header>
+
+  <!-- ================= Main ================= -->
+  <main id="main">
+    <aside id="library-pane">
+      <ul id="item-list"></ul>
+      <div id="library-empty" class="pane-placeholder hidden">項目がありません</div>
+    </aside>
+
+    <section id="viewer-pane">
+      <!-- 漫画ビューア -->
+      <div id="comic-viewer" class="viewer hidden">
+        <div id="comic-stage">
+          <div id="comic-pages"></div>
+          <div id="comic-tap-left" class="tap-zone left"></div>
+          <div id="comic-tap-right" class="tap-zone right"></div>
+          <div id="comic-msg" class="stage-msg hidden"></div>
+        </div>
+        <div id="comic-controls" class="controls-bar">
+          <button id="btn-prev-entry" class="icon-btn" title="前の漫画 (P)">⏮</button>
+          <button id="btn-comic-back" class="icon-btn" title="ページを戻す">‹</button>
+          <div class="seek-wrap">
+            <input type="range" id="comic-seek" min="0" max="1" value="0">
+          </div>
+          <button id="btn-comic-fwd" class="icon-btn" title="ページを送る">›</button>
+          <button id="btn-next-entry" class="icon-btn" title="次の漫画 (N)">⏭</button>
+          <span id="comic-page-label" class="mono-label"></span>
+          <button id="btn-view-mode" class="icon-btn" title="単ページ/見開き">🔳</button>
+          <button id="btn-direction" class="icon-btn" title="綴じ方向">↔</button>
+          <button id="btn-comic-full" class="icon-btn" title="全画面 (F)">⛶</button>
+        </div>
+        <div id="comic-title" class="viewer-title"></div>
+      </div>
+
+      <!-- 動画プレーヤー -->
+      <div id="video-player" class="viewer hidden">
+        <div id="video-stage">
+          <video id="video" playsinline></video>
+          <div id="video-msg" class="stage-msg hidden"></div>
+          <div id="video-badge" class="badge hidden"></div>
+          <div id="video-spinner" class="spinner hidden"></div>
+        </div>
+        <div id="video-controls" class="controls-bar">
+          <button id="btn-prev-video" class="icon-btn" title="前の動画 (P)">⏮</button>
+          <button id="btn-play" class="icon-btn" title="再生/一時停止 (Space)">▶</button>
+          <button id="btn-next-video" class="icon-btn" title="次の動画 (N)">⏭</button>
+          <span id="video-time" class="mono-label">0:00 / 0:00</span>
+          <div class="seek-wrap">
+            <input type="range" id="video-seek" min="0" max="1000" value="0">
+          </div>
+          <select id="sel-speed" class="tb-select" title="再生速度">
+            <option>0.5</option><option>0.75</option>
+            <option selected>1</option>
+            <option>1.25</option><option>1.5</option><option>2</option>
+          </select>
+          <button id="btn-mute" class="icon-btn" title="ミュート (M)">🔊</button>
+          <input type="range" id="video-volume" min="0" max="100" value="0" title="音量">
+          <button id="btn-pip" class="icon-btn" title="Picture-in-Picture">⧉</button>
+          <button id="btn-video-full" class="icon-btn" title="全画面 (F)">⛶</button>
+        </div>
+        <div id="video-title" class="viewer-title"></div>
+      </div>
+
+      <div id="viewer-placeholder" class="pane-placeholder">
+        <div id="placeholder-icon">📖</div>
+        <div id="placeholder-text">項目を選択してください</div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= Modals ================= -->
+  <div id="modal-backdrop" class="hidden">
+    <div id="modal" role="dialog" aria-modal="true">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div id="modal-actions"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="hidden"></div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
