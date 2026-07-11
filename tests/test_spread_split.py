@@ -157,3 +157,34 @@ def test_stable_analysis_rescues_page_with_unknown_border(app_env, tmp_path):
     assert right == pytest.approx(2000 - 150, abs=25)
     assert stable.split_x is not None
     assert abs(stable.split_x - 1000) < 60
+
+
+def test_disk_cache_prune_removes_oldest_first(app_env, tmp_path):
+    """漫画ディスクキャッシュは上限超過時に古い順で削除される。"""
+    import os
+    services, _, _ = app_env
+    pipeline = services.pipeline
+    variant_dir = pipeline._variant_cache_dir
+    page_dir = pipeline._page_cache_dir
+    variant_dir.mkdir(parents=True, exist_ok=True)
+    page_dir.mkdir(parents=True, exist_ok=True)
+
+    old_file = variant_dir / "old.webp"
+    old_file.write_bytes(b"x" * 600)
+    os.utime(old_file, (1000, 1000))
+    mid_file = page_dir / "mid.jpg"
+    mid_file.write_bytes(b"x" * 600)
+    os.utime(mid_file, (2000, 2000))
+    new_file = variant_dir / "new.webp"
+    new_file.write_bytes(b"x" * 600)
+
+    pipeline.prune_disk_caches(max_bytes=1500)
+    assert not old_file.exists()      # 合計1800Bが上限1500B超過 → 8割まで古い順に削除
+    assert mid_file.exists()
+    assert new_file.exists()
+
+    # 上限0(無制限)では何も消さない
+    mid_file2 = page_dir / "mid2.jpg"
+    mid_file2.write_bytes(b"x" * 600)
+    pipeline.prune_disk_caches(max_bytes=0)
+    assert mid_file2.exists()

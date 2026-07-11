@@ -62,6 +62,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "comic_crop_tolerance": 18,
     "comic_crop_safety_margin": 4,
     "comic_variant_sharpen": True,           # 縮小配信時に輪郭を復元してから圧縮
+    "comic_cache_max_mb": 100,               # 変換画像/ページ/サムネイルの合計上限
 
     "comic_spread_detection": True,
     "comic_split_spread_in_single_mode": True,
@@ -94,7 +95,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "video_segment_duration": 4,
     "video_hardware_encoder": "auto",
     "video_ffmpeg_auto_download": True,
-    "video_variant_cache_gb": 30,
+    "video_variant_cache_mb": 300,
     "video_variant_expire_days": 30,
     # 削除
     "delete_to_trash": True,
@@ -155,11 +156,12 @@ _VALID_ENUMS = {
 _NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
     "comic_crop_tolerance": (0, 255),
     "comic_crop_safety_margin": (0, 128),
+    "comic_cache_max_mb": (0, 1000000),
     "video_bitrate_kbps": (0, 100000),
     "video_audio_bitrate_kbps": (0, 2000),
     "video_fps_limit": (0, 240),
     "video_segment_duration": (1, 30),
-    "video_variant_cache_gb": (0, 10000),
+    "video_variant_cache_mb": (0, 10000000),
     "video_variant_expire_days": (0, 3650),
 }
 

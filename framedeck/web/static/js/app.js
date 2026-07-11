@@ -1807,6 +1807,8 @@ async function openSettings() {
   settingRow(grid, "縮小後シャープ化", makeSelect("comic_variant_sharpen", [
     ["true", "有効"], ["false", "無効"],
   ]), "軽量配信時に縮小でなまった線を復元してから圧縮します。");
+  settingRow(grid, "漫画キャッシュMB", makeNumberInput("comic_cache_max_mb", { min: 0, max: 1000000, step: 50 }),
+    "変換画像・ページ・サムネイルの合計上限。超過分は古い順に自動削除(0で無制限)。");
   settingRow(grid, "白枠トリミング", makeSelect("comic_crop_white", [
     ["true", "有効"], ["false", "無効"],
   ]));
@@ -1861,7 +1863,8 @@ async function openSettings() {
   settingRow(grid, "映像ビットレートkbps", makeNumberInput("video_bitrate_kbps", { min: 0, max: 100000, step: 50 }));
   settingRow(grid, "音声ビットレートkbps", makeNumberInput("video_audio_bitrate_kbps", { min: 0, max: 2000, step: 8 }));
   settingRow(grid, "HLSセグメント秒", makeNumberInput("video_segment_duration", { min: 1, max: 30, step: 1 }));
-  settingRow(grid, "動画キャッシュGB", makeNumberInput("video_variant_cache_gb", { min: 0, max: 10000, step: 1 }));
+  settingRow(grid, "動画キャッシュMB", makeNumberInput("video_variant_cache_mb", { min: 0, max: 10000000, step: 50 }),
+    "HLS変換キャッシュの合計上限。超過分は古い順に自動削除(0で無制限)。");
 
   settingRow(grid, "削除方法", makeSelect("delete_to_trash", [
     ["true", "ゴミ箱へ移動"], ["false", "完全削除"],

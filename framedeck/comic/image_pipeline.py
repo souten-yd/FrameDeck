@@ -14,6 +14,7 @@ import hashlib
 import io
 import os
 import threading
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -107,6 +108,11 @@ class ImagePipeline:
         self._analysis_inflight: set[str] = set()
         self._analysis_inflight_lock = threading.Lock()
         self.variant_sharpen = True
+        # ディスクキャッシュ(変換画像/ページ/サムネイル)の合計上限。
+        # 超過時は古いものから削除する(解析JSONは小さいため対象外)。
+        self.disk_cache_max_bytes = 100 * 1024**2
+        self._prune_lock = threading.Lock()
+        self._last_prune_monotonic = 0.0
         self._read_locks: dict[int, threading.Lock] = {}
         self._read_locks_lock = threading.Lock()
         self.resize_filter = resize_filter
@@ -204,6 +210,71 @@ class ImagePipeline:
         except Exception:
             pass
 
+    # ---------------- ディスクキャッシュの掃除 ----------------
+
+    @staticmethod
+    def _touch(path: Path) -> None:
+        """キャッシュヒット時にmtimeを更新してLRU順を保つ(失敗は無視)。"""
+        try:
+            os.utime(path)
+        except OSError:
+            pass
+
+    def prune_disk_caches(self, max_bytes: int | None = None) -> None:
+        """変換画像/ページ/サムネイルの合計が上限を超えたら古い順に削除する。
+
+        走査は os.scandir のみで軽量。削除は上限の8割まで(ヒステリシス)。
+        """
+        if max_bytes is None:
+            max_bytes = self.disk_cache_max_bytes
+        if not max_bytes or max_bytes <= 0:
+            return
+        if not self._prune_lock.acquire(blocking=False):
+            return  # 既に実行中
+        try:
+            entries: list[tuple[float, int, str]] = []
+            total = 0
+            for directory in {self._variant_cache_dir, self._page_cache_dir,
+                              self._thumb_cache_dir}:
+                if not directory.exists():
+                    continue
+                try:
+                    with os.scandir(directory) as it:
+                        for entry in it:
+                            try:
+                                if not entry.is_file():
+                                    continue
+                                stat = entry.stat()
+                            except OSError:
+                                continue
+                            total += stat.st_size
+                            entries.append(
+                                (stat.st_mtime, stat.st_size, entry.path))
+                except OSError:
+                    continue
+            if total <= max_bytes:
+                return
+            entries.sort()
+            target = int(max_bytes * 0.8)
+            for _, size, path in entries:
+                try:
+                    os.remove(path)
+                except OSError:
+                    continue
+                total -= size
+                if total <= target:
+                    break
+        finally:
+            self._prune_lock.release()
+
+    def _maybe_prune_async(self, min_interval: float = 600.0) -> None:
+        """キャッシュ書き込み後に呼ぶ。時間ゲート付きでバックグラウンド実行。"""
+        now = time.monotonic()
+        if now - self._last_prune_monotonic < min_interval:
+            return
+        self._last_prune_monotonic = now
+        self.executor.submit(self.prune_disk_caches)
+
     # ---------------- エンコード済み画像(Web配信用) ----------------
 
     @staticmethod
@@ -237,6 +308,7 @@ class ImagePipeline:
 
         cache_file = self._page_cache_dir / f"{etag}.jpg"
         if cache_file.exists():
+            self._touch(cache_file)
             return cache_file.read_bytes(), "image/jpeg", etag
 
         data = self.get_raw(source, entry, page)
@@ -263,6 +335,7 @@ class ImagePipeline:
             tmp = cache_file.with_suffix(".tmp")
             tmp.write_bytes(encoded)
             tmp.replace(cache_file)
+            self._maybe_prune_async()
         except OSError:
             pass
         return encoded, "image/jpeg", etag
@@ -501,6 +574,7 @@ class ImagePipeline:
         pil_format, mime, ext = _FORMATS[format_name]
         cache_file = self._variant_cache_dir / f"{etag}{ext}"
         if cache_file.exists():
+            self._touch(cache_file)
             return cache_file.read_bytes(), mime, etag
 
         data = self.get_raw(source, entry, page)
@@ -565,6 +639,7 @@ class ImagePipeline:
             tmp = cache_file.with_suffix(".tmp")
             tmp.write_bytes(encoded)
             tmp.replace(cache_file)
+            self._maybe_prune_async()
         except OSError:
             pass
         return encoded, mime, etag
