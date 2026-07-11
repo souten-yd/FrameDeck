@@ -404,18 +404,35 @@ def test_hls_cached_playlist_and_segment_delivery(client_env, tmp_path):
     )
     (variant_dir / "init.mp4").write_bytes(b"init")
     (variant_dir / "segment_00000.m4s").write_bytes(b"segment")
+    (manifest.cache_dir / "complete").write_text("{}", "utf-8")
 
-    response = client.get(f"/api/videos/{media_id}/hls/master.m3u8?profile=480p")
+    # master はキー付きURLへリダイレクトされる(相対URL解決のため)
+    response = client.get(
+        f"/api/videos/{media_id}/hls/master.m3u8?profile=480p",
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    location = response.headers["location"]
+    assert f"/hls/{manifest.key}/master.m3u8" in location
+
+    response = client.get(location)
     assert response.status_code == 200
     assert "#EXTM3U" in response.text
 
-    response = client.get(f"/api/videos/{media_id}/hls/480p/playlist.m3u8")
+    response = client.get(
+        f"/api/videos/{media_id}/hls/{manifest.key}/480p/playlist.m3u8")
     assert response.status_code == 200
     assert "segment_00000.m4s" in response.text
 
-    response = client.get(f"/api/videos/{media_id}/hls/480p/segment_00000.m4s")
+    response = client.get(
+        f"/api/videos/{media_id}/hls/{manifest.key}/480p/segment_00000.m4s")
     assert response.status_code == 200
     assert response.content == b"segment"
+
+    # 生成ジョブが無いソースへの停止要求は0件
+    response = client.post(f"/api/videos/{media_id}/hls/stop")
+    assert response.status_code == 200
+    assert response.json() == {"stopped": 0}
 
 
 def test_video_playback_profile_requested_resolution_wins(client_env, tmp_path):

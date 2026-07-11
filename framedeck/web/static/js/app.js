@@ -23,9 +23,11 @@ const S = {
     entryNavigationBusy: false,
   },
   video: {
-    item: null, info: null, transcode: false, hls: false, offset: 0,
+    item: null, info: null, transcode: false, hls: false, hlsProfile: null,
+    offset: 0,
     saveTimer: null, duration: 0, quality: "auto",
     pendingSeekSeconds: null,
+    errorRetryCount: 0, errorRetryTimer: null,
     orientationLocked: false, orientationLockMode: null,
   },
 };
@@ -36,6 +38,14 @@ function detectUiProfile() {
   const coarse = matchMedia?.("(pointer: coarse)").matches;
   const narrow = window.innerWidth <= 760;
   return coarse || narrow ? "mobile" : "desktop";
+}
+
+/* CSS側もJSと同じUIプロファイルで分岐できるようbodyへクラスを付与する
+   (横向きスマホは幅>760pxになるためメディアクエリだけでは判定が割れる) */
+function applyUiProfile() {
+  S.uiProfile = detectUiProfile();
+  document.body.classList.toggle("ui-mobile", S.uiProfile === "mobile");
+  document.body.classList.toggle("ui-desktop", S.uiProfile !== "mobile");
 }
 
 function videoSupportsNativeHls() {
@@ -62,6 +72,11 @@ function hlsProfileName(profile) {
   const allowed = new Set(["2160p", "1440p", "1080p", "720p", "480p", "360p"]);
   if (allowed.has(profile)) return profile;
   return S.uiProfile === "mobile" ? "720p" : "1080p";
+}
+
+function hlsMasterUrl(itemId, profile, startSeconds) {
+  const start = Math.max(0, Number(startSeconds) || 0);
+  return `/api/videos/${itemId}/hls/master.m3u8?profile=${encodeURIComponent(profile)}&start=${start.toFixed(2)}`;
 }
 
 function shouldUseNativeHls(playbackProfile) {
@@ -976,14 +991,11 @@ async function openVideo(item) {
       const profile = hlsProfileName(playbackProfile?.name || fallbackQuality);
       S.video.transcode = false;
       S.video.hls = true;
-      S.video.offset = 0;
-      video.src = `/api/videos/${item.id}/hls/master.m3u8?profile=${encodeURIComponent(profile)}`;
-      if (resume > 0) {
-        video.addEventListener("loadedmetadata", () => {
-          try { video.currentTime = resume; } catch (e) {}
-        }, { once: true });
-        toast(`続きから再生: ${fmtTime(resume)}`);
-      }
+      S.video.hlsProfile = profile;
+      // HLSは start 秒からの再生成で途中再生する(fMP4変換と同じoffset方式)
+      S.video.offset = resume;
+      video.src = hlsMasterUrl(item.id, profile, resume);
+      if (resume > 0) toast(`続きから再生: ${fmtTime(resume)}`);
       $("video-badge").textContent = `HLS軽量配信 ${profile}`;
     } else {
       S.video.transcode = true;
@@ -1029,12 +1041,16 @@ function videoDisplayPosition() {
   return S.video.pendingSeekSeconds ?? currentPosition();
 }
 function totalDuration() {
-  if (S.video.transcode) return S.video.duration;
+  if (S.video.transcode || S.video.hls) return S.video.duration;
   return video.duration || S.video.duration || 0;
 }
 
 function seekableDuration() {
-  const candidates = [video.duration, S.video.duration, S.video.info?.duration_seconds];
+  // 変換/HLS再生中は video.duration が生成済み範囲しか返さないため
+  // ffprobe由来の全長を優先する
+  const candidates = (S.video.transcode || S.video.hls)
+    ? [S.video.duration, S.video.info?.duration_seconds, video.duration]
+    : [video.duration, S.video.duration, S.video.info?.duration_seconds];
   for (const value of candidates) {
     if (Number.isFinite(value) && value > 0) return value;
   }
@@ -1069,9 +1085,25 @@ function stopProgressTimer() {
   if (S.video.saveTimer) { clearInterval(S.video.saveTimer); S.video.saveTimer = null; }
 }
 
+function requestHlsStop(itemId) {
+  // 生成中の変換ジョブを止めてキャッシュが溜まらないようにする
+  const url = `/api/videos/${itemId}/hls/stop`;
+  if (!navigator.sendBeacon?.(url, "")) {
+    api(url, { method: "POST" }).catch(() => {});
+  }
+}
+
+function clearVideoErrorRetry() {
+  if (S.video.errorRetryTimer) clearTimeout(S.video.errorRetryTimer);
+  S.video.errorRetryTimer = null;
+  S.video.errorRetryCount = 0;
+}
+
 function stopVideo() {
   if (S.video.item) saveVideoProgress();
+  if (S.video.hls && S.video.item) requestHlsStop(S.video.item.id);
   stopProgressTimer();
+  clearVideoErrorRetry();
   S.video.pendingSeekSeconds = null;
   video.pause();
   video.removeAttribute("src");
@@ -1079,6 +1111,7 @@ function stopVideo() {
   S.video.item = null;
   S.video.transcode = false;
   S.video.hls = false;
+  S.video.hlsProfile = null;
   if (S.video.orientationLocked) {
     S.video.orientationLocked = false;
     clearVideoOrientationLock();
@@ -1099,6 +1132,25 @@ function videoSeekTo(seconds) {
     video.src = `/api/videos/${item.id}/stream-transcode?start=${seconds.toFixed(2)}&max_height=${videoResolutionHeight(quality)}&max_width=${videoResolutionWidth(quality)}`;
     video.playbackRate = Number($("sel-speed").value);
     if (!wasPaused) video.play().catch(() => {});
+  } else if (S.video.hls) {
+    const item = S.video.item;
+    if (!item) return;
+    const relative = seconds - S.video.offset;
+    const ranges = video.seekable;
+    const generatedEnd = ranges && ranges.length ? ranges.end(ranges.length - 1) : 0;
+    if (relative >= 0 && relative <= Math.max(0, generatedEnd - 0.5)) {
+      // 生成済み範囲内はネイティブシーク
+      video.currentTime = relative;
+    } else {
+      // 未生成範囲へのシークは start 秒からの再生成として読み直す
+      // (旧ジョブと未完成キャッシュはサーバ側で破棄される)
+      S.video.offset = seconds;
+      S.video.pendingSeekSeconds = null;
+      const wasPaused = video.paused;
+      video.src = hlsMasterUrl(item.id, S.video.hlsProfile || "720p", seconds);
+      video.playbackRate = Number($("sel-speed").value);
+      if (!wasPaused) video.play().catch(() => {});
+    }
   } else {
     video.currentTime = seconds;
   }
@@ -1155,7 +1207,7 @@ async function changeVideoQuality(profile) {
   stopProgressTimer();
   video.pause();
   await openVideo(item);
-  if (S.video.transcode) {
+  if (S.video.transcode || S.video.hls) {
     videoSeekTo(position);
   } else {
     video.addEventListener("loadedmetadata", () => { video.currentTime = position; }, { once: true });
@@ -1171,11 +1223,8 @@ function updateVideoUi() {
   const position = videoDisplayPosition();
   const label = `${fmtTime(position)} / ${fmtTime(duration)}`;
   $("video-time").textContent = label;
-  if ($("video-time-mobile")) $("video-time-mobile").textContent = label;
   if (duration > 0 && !videoSeekDragging) {
-    const value = Math.round(position / duration * 1000);
-    $("video-seek").value = value;
-    if ($("video-seek-mobile")) $("video-seek-mobile").value = value;
+    $("video-seek").value = Math.round(position / duration * 1000);
   }
   $("btn-play").textContent = video.paused ? "▶" : "⏸";
   $("btn-mute").textContent =
@@ -1197,18 +1246,11 @@ function seekVideoFromSlider(input) {
   const duration = seekableDuration();
   if (duration > 0) videoSeekTo(Number(input.value) / 1000 * duration);
 }
-function syncVideoSeekInputs(value, source) {
-  if ($("video-seek") && source !== $("video-seek")) $("video-seek").value = value;
-  if ($("video-seek-mobile") && source !== $("video-seek-mobile")) $("video-seek-mobile").value = value;
-}
-function bindVideoSeekSlider(input, options = {}) {
+function bindVideoSeekSlider(input) {
   if (!input) return;
   input.addEventListener("pointerdown", (e) => {
-    if (options.mobileOnly && detectUiProfile() !== "mobile") return;
-    if (options.desktopOnly && detectUiProfile() === "mobile") return;
     videoSeekDragging = true;
     input.value = sliderValueFromPointer(input, e);
-    syncVideoSeekInputs(input.value, input);
     seekVideoFromSlider(input);
     input.setPointerCapture?.(e.pointerId);
     e.preventDefault();
@@ -1217,11 +1259,7 @@ function bindVideoSeekSlider(input, options = {}) {
   input.addEventListener("pointermove", (e) => {
     if (!videoSeekDragging) return;
     input.value = sliderValueFromPointer(input, e);
-    syncVideoSeekInputs(input.value, input);
     e.preventDefault();
-  });
-  input.addEventListener("input", () => {
-    syncVideoSeekInputs(input.value, input);
   });
   input.addEventListener("change", () => {
     seekVideoFromSlider(input);
@@ -1229,14 +1267,12 @@ function bindVideoSeekSlider(input, options = {}) {
   });
   input.addEventListener("pointerup", (e) => {
     input.value = sliderValueFromPointer(input, e);
-    syncVideoSeekInputs(input.value, input);
     seekVideoFromSlider(input);
     videoSeekDragging = false;
     e.preventDefault();
   });
 }
-bindVideoSeekSlider($("video-seek"), { desktopOnly: true });
-bindVideoSeekSlider($("video-seek-mobile"), { mobileOnly: true });
+bindVideoSeekSlider($("video-seek"));
 
 video.addEventListener("timeupdate", updateVideoUi);
 video.addEventListener("seeked", () => {
@@ -1246,15 +1282,43 @@ video.addEventListener("seeked", () => {
 video.addEventListener("play", updateVideoUi);
 video.addEventListener("pause", () => { updateVideoUi(); saveVideoProgress(); });
 video.addEventListener("waiting", () => $("video-spinner").classList.remove("hidden"));
-video.addEventListener("canplay", () => $("video-spinner").classList.add("hidden"));
-video.addEventListener("error", () => {
+video.addEventListener("canplay", () => {
   $("video-spinner").classList.add("hidden");
-  if (S.video.item) {
-    $("video-msg").textContent = S.video.transcode
-      ? "変換ストリーミングの再生に失敗しました。ffmpegの有無、入力動画形式、またはモバイル互換出力を確認してください。"
-      : "再生エラーが発生しました";
-    $("video-msg").classList.remove("hidden");
+  clearVideoErrorRetry();
+});
+
+const VIDEO_ERROR_MAX_RETRIES = 4;
+const VIDEO_ERROR_RETRY_MS = 2500;
+video.addEventListener("error", () => {
+  if (!S.video.item) return;
+  // 変換/HLSは初回アクセス時に圧縮動画が未生成でエラーになり得るため、
+  // すぐエラー表示せず少し待ってから読み直す
+  if ((S.video.hls || S.video.transcode) &&
+      S.video.errorRetryCount < VIDEO_ERROR_MAX_RETRIES) {
+    S.video.errorRetryCount += 1;
+    $("video-spinner").classList.remove("hidden");
+    toast(`変換の準備中です… 再試行します (${S.video.errorRetryCount}/${VIDEO_ERROR_MAX_RETRIES})`);
+    // HLSはmaster URLを組み直す(生成失敗でキー付きキャッシュが消えても
+    // 再要求で生成をやり直せるように)
+    const src = S.video.hls
+      ? hlsMasterUrl(S.video.item.id, S.video.hlsProfile || "720p", S.video.offset)
+      : (video.currentSrc || video.src);
+    const wasPaused = video.paused;
+    clearTimeout(S.video.errorRetryTimer);
+    S.video.errorRetryTimer = setTimeout(() => {
+      if (!S.video.item) return;
+      video.src = src;
+      video.load();
+      video.playbackRate = Number($("sel-speed").value);
+      if (!wasPaused) video.play().catch(() => {});
+    }, VIDEO_ERROR_RETRY_MS);
+    return;
   }
+  $("video-spinner").classList.add("hidden");
+  $("video-msg").textContent = (S.video.transcode || S.video.hls)
+    ? "変換ストリーミングの再生に失敗しました。ffmpegの有無、入力動画形式、またはモバイル互換出力を確認してください。"
+    : "再生エラーが発生しました";
+  $("video-msg").classList.remove("hidden");
 });
 video.addEventListener("ended", () => {
   saveVideoProgress();
@@ -1442,17 +1506,22 @@ function toggleFullscreen(el) {
 
 function setupAutoHide(viewerId) {
   const viewer = $(viewerId);
+  const isComic = viewerId === "comic-viewer";
   let hideTimer = null;
   const show = () => {
     viewer.classList.add("show-ui");
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => viewer.classList.remove("show-ui"), 2200);
   };
-  const isMobileComicViewer = () => viewerId === "comic-viewer" && detectUiProfile() === "mobile";
-  viewer.addEventListener("mousemove", show);
+  const hideNow = () => {
+    clearTimeout(hideTimer);
+    viewer.classList.remove("show-ui");
+  };
+  // 漫画はページ送りタップでUIが出ないよう、上部ホットスポットと
+  // コントロールバー以外ではUIを表示しない(PC/モバイル共通)
+  if (!isComic) viewer.addEventListener("mousemove", show);
   viewer.addEventListener("touchstart", (e) => {
-    if (isMobileComicViewer() &&
-        !e.target.closest("#comic-ui-hotspot, .controls-bar")) {
+    if (isComic && !e.target.closest("#comic-ui-hotspot, .controls-bar")) {
       return;
     }
     show();
@@ -1471,11 +1540,8 @@ function setupAutoHide(viewerId) {
   const handleHotspot = (e) => {
     e.preventDefault?.();
     e.stopPropagation();
-    if (isViewerFullscreen(viewer)) {
-      exitViewerFullscreen(viewer);
-      return;
-    }
-    show();
+    if (viewer.classList.contains("show-ui")) hideNow();
+    else show();
   };
   hotspot?.addEventListener("click", handleHotspot);
   hotspot?.addEventListener("touchstart", handleHotspot, { passive: false });
@@ -1486,6 +1552,7 @@ setupAutoHide("video-player");
 const comicStageResizeObserver = new ResizeObserver(() => layoutComicSpread());
 comicStageResizeObserver.observe($("comic-stage"));
 window.addEventListener("resize", () => {
+  applyUiProfile();
   layoutComicSpread();
   if (S.video.orientationLocked) applyVideoOrientationLock();
 });
@@ -1996,11 +2063,12 @@ function connectWs() {
 /* ================= save on unload ================= */
 window.addEventListener("pagehide", () => {
   if (S.video.item) saveVideoProgress();
+  if (S.video.hls && S.video.item) requestHlsStop(S.video.item.id);
 });
 
 /* ================= init ================= */
 async function init() {
-  S.uiProfile = detectUiProfile();
+  applyUiProfile();
   buildStarBar();
   updateModeButtons();
   try {

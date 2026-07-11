@@ -86,19 +86,23 @@
           <div id="comic-msg" class="stage-msg hidden"></div>
         </div>
         <div id="comic-controls" class="controls-bar">
-          <button id="btn-prev-entry" class="icon-btn" title="前の漫画 (P)">⏮</button>
-          <button id="btn-comic-spread-back" class="icon-btn" title="見開きを戻す">«</button>
-          <button id="btn-comic-page-back" class="icon-btn compact" title="1ページ戻す">-1</button>
-          <div class="seek-wrap">
-            <input type="range" id="comic-seek" min="0" max="1" value="0">
+          <div class="seek-row">
+            <span id="comic-page-label" class="mono-label"></span>
+            <div class="seek-wrap">
+              <input type="range" id="comic-seek" min="0" max="1" value="0" aria-label="ページ位置">
+            </div>
           </div>
-          <button id="btn-comic-page-fwd" class="icon-btn compact" title="1ページ進む">+1</button>
-          <button id="btn-comic-spread-fwd" class="icon-btn" title="見開きを送る">»</button>
-          <button id="btn-next-entry" class="icon-btn" title="次の漫画 (N)">⏭</button>
-          <span id="comic-page-label" class="mono-label"></span>
-          <button id="btn-view-mode" class="icon-btn" title="単ページ/見開き">🔳</button>
-          <button id="btn-direction" class="icon-btn" title="綴じ方向">↔</button>
-          <button id="btn-comic-full" class="icon-btn" title="全画面 (F)">⛶</button>
+          <div class="button-row">
+            <button id="btn-prev-entry" class="icon-btn" title="前の漫画 (P)">⏮</button>
+            <button id="btn-comic-spread-back" class="icon-btn" title="見開きを戻す">«</button>
+            <button id="btn-comic-page-back" class="icon-btn compact" title="1ページ戻す">-1</button>
+            <button id="btn-comic-page-fwd" class="icon-btn compact" title="1ページ進む">+1</button>
+            <button id="btn-comic-spread-fwd" class="icon-btn" title="見開きを送る">»</button>
+            <button id="btn-next-entry" class="icon-btn" title="次の漫画 (N)">⏭</button>
+            <button id="btn-view-mode" class="icon-btn" title="単ページ/見開き">🔳</button>
+            <button id="btn-direction" class="icon-btn" title="綴じ方向">↔</button>
+            <button id="btn-comic-full" class="icon-btn" title="全画面 (F)">⛶</button>
+          </div>
         </div>
         <div id="comic-title" class="viewer-title"></div>
       </div>
@@ -115,40 +119,36 @@
           <div id="video-spinner" class="spinner hidden"></div>
         </div>
         <div id="video-controls" class="controls-bar video-controls">
-          <div class="video-seek-row mobile-only">
-            <span id="video-time-mobile" class="mono-label">0:00 / 0:00</span>
-            <div class="seek-wrap video-seek-wrap-mobile">
-              <input type="range" id="video-seek-mobile" min="0" max="1000" value="0" aria-label="動画の再生位置">
+          <div class="seek-row">
+            <span id="video-time" class="mono-label">0:00 / 0:00</span>
+            <div class="seek-wrap">
+              <input type="range" id="video-seek" min="0" max="1000" value="0" aria-label="動画の再生位置">
             </div>
           </div>
-          <div class="video-button-row">
-          <button id="btn-prev-video" class="icon-btn" title="前の動画 (P)">⏮</button>
-          <button id="btn-play" class="icon-btn" title="再生/一時停止 (Space)">▶</button>
-          <button id="btn-next-video" class="icon-btn" title="次の動画 (N)">⏭</button>
-          <span id="video-time" class="mono-label desktop-video-only">0:00 / 0:00</span>
-          <div class="seek-wrap desktop-video-only">
-            <input type="range" id="video-seek" min="0" max="1000" value="0">
-          </div>
-          <select id="sel-speed" class="tb-select" title="再生速度">
-            <option>0.5</option><option>0.75</option>
-            <option selected>1</option>
-            <option>1.25</option><option>1.5</option><option>2</option>
-          </select>
-          <select id="sel-video-quality" class="tb-select" title="動画品質" aria-label="動画品質">
-            <option value="auto">自動</option>
-            <option value="original">原寸</option>
-            <option value="2160p">4K</option>
-            <option value="1440p">1440p</option>
-            <option value="1080p">1080p</option>
-            <option value="720p">720p</option>
-            <option value="480p">480p</option>
-            <option value="360p">360p</option>
-          </select>
-          <button id="btn-mute" class="icon-btn" title="ミュート (M)">🔊</button>
-          <input type="range" id="video-volume" min="0" max="100" value="0" title="音量">
-          <button id="btn-orientation-lock" class="icon-btn mobile-only" title="画面回転ロック" aria-label="画面回転ロック">🔓</button>
-          <button id="btn-pip" class="icon-btn" title="Picture-in-Picture">⧉</button>
-          <button id="btn-video-full" class="icon-btn" title="全画面 (F)">⛶</button>
+          <div class="button-row">
+            <button id="btn-prev-video" class="icon-btn" title="前の動画 (P)">⏮</button>
+            <button id="btn-play" class="icon-btn" title="再生/一時停止 (Space)">▶</button>
+            <button id="btn-next-video" class="icon-btn" title="次の動画 (N)">⏭</button>
+            <select id="sel-speed" class="tb-select" title="再生速度">
+              <option>0.5</option><option>0.75</option>
+              <option selected>1</option>
+              <option>1.25</option><option>1.5</option><option>2</option>
+            </select>
+            <select id="sel-video-quality" class="tb-select" title="動画品質" aria-label="動画品質">
+              <option value="auto">自動</option>
+              <option value="original">原寸</option>
+              <option value="2160p">4K</option>
+              <option value="1440p">1440p</option>
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+              <option value="360p">360p</option>
+            </select>
+            <button id="btn-mute" class="icon-btn" title="ミュート (M)">🔊</button>
+            <input type="range" id="video-volume" min="0" max="100" value="0" title="音量">
+            <button id="btn-orientation-lock" class="icon-btn ui-mobile-only" title="画面回転ロック" aria-label="画面回転ロック">🔓</button>
+            <button id="btn-pip" class="icon-btn" title="Picture-in-Picture">⧉</button>
+            <button id="btn-video-full" class="icon-btn" title="全画面 (F)">⛶</button>
           </div>
         </div>
         <div id="video-title" class="viewer-title"></div>

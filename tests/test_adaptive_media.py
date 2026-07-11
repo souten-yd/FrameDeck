@@ -210,6 +210,77 @@ def test_resolution_is_part_of_hls_cache_key(tmp_path):
     assert key_720 != key_1080
 
 
+def test_hls_cache_key_includes_start_offset(tmp_path):
+    from framedeck.video.hls_service import HlsService
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    service = HlsService(tmp_path / "hls", segment_duration=4)
+    key_head = service.cache_key(str(source), ["720p"], start_seconds=0.0)
+    key_seek = service.cache_key(str(source), ["720p"], start_seconds=90.0)
+    assert key_head != key_seek
+
+
+def test_hls_manifest_requires_complete_marker(tmp_path):
+    from framedeck.video.hls_service import HlsService
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"video")
+    service = HlsService(tmp_path / "hls", segment_duration=4)
+    manifest = service.manifest_for(str(source), profiles=["480p"])
+    manifest.cache_dir.mkdir(parents=True)
+    manifest.master.write_text("#EXTM3U\n", "utf-8")
+    # master があってもマーカーが無ければ未完成扱い
+    assert service.manifest_for(str(source), profiles=["480p"]).ready is False
+    (manifest.cache_dir / "complete").write_text("{}", "utf-8")
+    assert service.manifest_for(str(source), profiles=["480p"]).ready is True
+
+
+def test_hls_prune_removes_incomplete_and_enforces_limit(tmp_path):
+    import os
+    from framedeck.video.hls_service import HlsService
+
+    cache_root = tmp_path / "hls"
+    cache_root.mkdir()
+    service = HlsService(cache_root, segment_duration=4)
+
+    stale = cache_root / ("a" * 64)
+    stale.mkdir()
+    (stale / "master.m3u8").write_text("#EXTM3U\n", "utf-8")
+
+    old = cache_root / ("b" * 64)
+    old.mkdir()
+    (old / "master.m3u8").write_text("#EXTM3U\n", "utf-8")
+    (old / "data.m4s").write_bytes(b"x" * 1024)
+    (old / "complete").write_text("{}", "utf-8")
+    os.utime(old / "complete", (1000, 1000))
+
+    new = cache_root / ("c" * 64)
+    new.mkdir()
+    (new / "master.m3u8").write_text("#EXTM3U\n", "utf-8")
+    (new / "data.m4s").write_bytes(b"x" * 1024)
+    (new / "complete").write_text("{}", "utf-8")
+
+    service.prune(max_bytes=1500)
+    assert not stale.exists()      # 未完成(マーカー無し)は削除
+    assert not old.exists()        # 上限超過分は古い順に削除
+    assert new.exists()
+
+
+def test_hls_wait_for_file_rejects_bad_key_and_missing(tmp_path):
+    import pytest
+    from framedeck.video.hls_service import HlsService
+    from framedeck.video.transcode import TranscodeError
+
+    service = HlsService(tmp_path / "hls", segment_duration=4)
+    with pytest.raises(TranscodeError):
+        service.wait_for_file("../etc", "master.m3u8", timeout=0)
+    key = "d" * 64
+    with pytest.raises(FileNotFoundError):
+        # ジョブも完成マーカーも無ければ待たずに失敗する
+        service.wait_for_file(key, "master.m3u8", timeout=5)
+
+
 def test_spread_crop_uses_shared_vertical_ratio():
     from framedeck.comic.image_analysis import ComicImageAnalysis
     from framedeck.comic.spread_crop_normalizer import SpreadCropNormalizer

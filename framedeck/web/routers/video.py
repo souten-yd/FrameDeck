@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from ...core.security import PathValidationError
 from ...core.services import Services
@@ -121,73 +121,81 @@ def encoder_capabilities(services: Services = Depends(get_services)) -> list[dic
 @router.get("/{media_id}/hls/master.m3u8")
 def hls_master(media_id: str,
                profile: str | None = Query(default=None),
+               start: float = Query(default=0.0, ge=0.0),
                services: Services = Depends(get_services)):
+    """HLS生成を開始し、キャッシュキー付きマスターURLへリダイレクトする。
+
+    playlist/segment の相対URLをキー付きパスで解決させるため、
+    直接配信ではなくリダイレクトを返す。`start` 指定で途中からの
+    再生成(シーク)に対応する。
+    """
     item = _resolve_video(services, media_id)
     info = services.video_playback.get_info(item.path, media_id)
     profiles = _hls_profiles(profile)
     try:
-        manifest = services.hls.ensure_async(item.path, profiles=profiles, source_height=info.height)
+        manifest = services.hls.ensure_async(
+            item.path, profiles=profiles,
+            source_height=info.height, start_seconds=start,
+        )
     except TranscodeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    return RedirectResponse(
+        f"/api/videos/{media_id}/hls/{manifest.key}/master.m3u8",
+        status_code=302,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _hls_wait_file(services: Services, key: str, relative: str,
+                   timeout: float) -> "os.PathLike[str]":
+    try:
+        return services.hls.wait_for_file(key, relative, timeout=timeout)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="HLSキャッシュが見つかりません")
+    except TimeoutError:
+        raise HTTPException(
+            status_code=503, detail="HLS生成中です",
+            headers={"Retry-After": "1"},
+        )
+    except TranscodeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/{media_id}/hls/{key}/master.m3u8")
+def hls_master_file(media_id: str, key: str,
+                    services: Services = Depends(get_services)):
+    _resolve_video(services, media_id)
+    path = _hls_wait_file(services, key, "master.m3u8", timeout=5.0)
     return FileResponse(
-        manifest.master,
+        path,
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": "no-store"},
     )
 
 
-@router.get("/{media_id}/hls/{profile}/playlist.m3u8")
-def hls_playlist(media_id: str, profile: str,
-                 services: Services = Depends(get_services)):
-    item = _resolve_video(services, media_id)
-    info = services.video_playback.get_info(item.path, media_id)
-    try:
-        path = services.hls.resolve_file(
-            item.path,
-            f"{profile}/playlist.m3u8",
-            profiles=[profile],
-            source_height=info.height,
-        )
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=503, detail="HLS playlist 生成中です",
-            headers={"Retry-After": "1"},
-        )
-    except TranscodeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    return FileResponse(
-        path,
-        media_type="application/vnd.apple.mpegurl",
-        headers={"Cache-Control": "no-store", "Retry-After": "1"},
-    )
-
-
-@router.get("/{media_id}/hls/{profile}/{segment}")
-def hls_segment(media_id: str, profile: str, segment: str,
-                services: Services = Depends(get_services)):
-    if "/" in segment or ".." in segment:
+@router.get("/{media_id}/hls/{key}/{profile}/{segment}")
+def hls_media_file(media_id: str, key: str, profile: str, segment: str,
+                   services: Services = Depends(get_services)):
+    if profile not in HLS_PROFILES:
+        raise HTTPException(status_code=404, detail="HLS profile が見つかりません")
+    if "/" in segment or ".." in segment or segment.startswith("."):
         raise HTTPException(status_code=404, detail="HLS segment が見つかりません")
+    _resolve_video(services, media_id)
+    path = _hls_wait_file(services, key, f"{profile}/{segment}", timeout=10.0)
+    if segment.endswith(".m3u8"):
+        headers = {"Cache-Control": "no-store"}
+    else:
+        headers = {"Cache-Control": "private, max-age=86400"}
+    return FileResponse(path, media_type=_hls_media_type(segment), headers=headers)
+
+
+@router.post("/{media_id}/hls/stop")
+def hls_stop(media_id: str,
+             services: Services = Depends(get_services)) -> dict:
+    """視聴終了時に生成ジョブを停止する(未完成キャッシュは削除される)。"""
     item = _resolve_video(services, media_id)
-    info = services.video_playback.get_info(item.path, media_id)
-    try:
-        path = services.hls.resolve_file(
-            item.path,
-            f"{profile}/{segment}",
-            profiles=[profile],
-            source_height=info.height,
-        )
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=503, detail="HLS segment 生成中です",
-            headers={"Retry-After": "1"},
-        )
-    except TranscodeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    return FileResponse(
-        path,
-        media_type=_hls_media_type(segment),
-        headers={"Cache-Control": "private, max-age=86400"},
-    )
+    stopped = services.hls.cancel_source(item.path)
+    return {"stopped": stopped}
 
 
 @router.api_route("/{media_id}/stream", methods=["GET", "HEAD"])
