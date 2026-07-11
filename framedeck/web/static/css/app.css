@@ -617,6 +617,9 @@ body.orientation-lock-active {
   overflow: hidden;
 }
 
+/* ロック中の基本表示(物理向きが一致している間)。
+   物理向きがロックと異なる場合の回転は、全画面CSSの!importantに
+   負けないようJSがインラインstyle(!important)で適用する。 */
 body.orientation-lock-active #video-player:not(.hidden) {
   position: fixed;
   inset: 0;
@@ -624,36 +627,4 @@ body.orientation-lock-active #video-player:not(.hidden) {
   width: 100vw;
   height: 100dvh;
   background: #000;
-}
-
-body.orientation-lock-active.orientation-lock-landscape #video-player:not(.hidden) {
-  width: 100vw;
-  height: 100dvh;
-}
-
-body.orientation-lock-active.orientation-lock-portrait #video-player:not(.hidden) {
-  width: 100vw;
-  height: 100dvh;
-}
-
-@media (orientation: portrait) {
-  body.orientation-lock-active.orientation-lock-landscape #video-player:not(.hidden) {
-    top: 50%;
-    left: 50%;
-    width: 100dvh;
-    height: 100dvw;
-    transform: translate(-50%, -50%) rotate(90deg);
-    transform-origin: center;
-  }
-}
-
-@media (orientation: landscape) {
-  body.orientation-lock-active.orientation-lock-portrait #video-player:not(.hidden) {
-    top: 50%;
-    left: 50%;
-    width: 100dvh;
-    height: 100dvw;
-    transform: translate(-50%, -50%) rotate(-90deg);
-    transform-origin: center;
-  }
 }
