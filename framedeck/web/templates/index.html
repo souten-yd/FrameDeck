@@ -93,12 +93,13 @@
             </div>
           </div>
           <div class="button-row">
-            <button id="btn-prev-entry" class="icon-btn" title="前の漫画 (P)">⏮</button>
-            <button id="btn-comic-spread-back" class="icon-btn" title="見開きを戻す">«</button>
-            <button id="btn-comic-page-back" class="icon-btn compact" title="1ページ戻す">-1</button>
-            <button id="btn-comic-page-fwd" class="icon-btn compact" title="1ページ進む">+1</button>
-            <button id="btn-comic-spread-fwd" class="icon-btn" title="見開きを送る">»</button>
-            <button id="btn-next-entry" class="icon-btn" title="次の漫画 (N)">⏭</button>
+            <!-- ボタンは見た目の方向基準。綴じ方向に応じてJSが動作/ラベルを割り当てる -->
+            <button id="btn-comic-entry-left" class="icon-btn" title="前の漫画">⏮</button>
+            <button id="btn-comic-spread-left" class="icon-btn" title="見開き(左へ)">«</button>
+            <button id="btn-comic-page-left" class="icon-btn compact" title="1ページ(左へ)">-1</button>
+            <button id="btn-comic-page-right" class="icon-btn compact" title="1ページ(右へ)">+1</button>
+            <button id="btn-comic-spread-right" class="icon-btn" title="見開き(右へ)">»</button>
+            <button id="btn-comic-entry-right" class="icon-btn" title="次の漫画">⏭</button>
             <button id="btn-view-mode" class="icon-btn" title="単ページ/見開き">🔳</button>
             <button id="btn-direction" class="icon-btn" title="綴じ方向">↔</button>
             <button id="btn-comic-full" class="icon-btn" title="全画面 (F)">⛶</button>

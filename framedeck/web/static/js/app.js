@@ -684,12 +684,22 @@ function updateComicControls() {
   $("comic-title").textContent = state.title;
   $("btn-view-mode").classList.toggle("active", state.view_mode === "single");
   $("btn-direction").textContent = state.reading_direction === "rtl" ? "⇤" : "⇥";
-  $("btn-prev-entry").disabled =
-    !state.has_previous_entry &&
-    S.settings.comic_sequence_end_behavior === "stop";
-  $("btn-next-entry").disabled =
-    !state.has_next_entry &&
-    S.settings.comic_sequence_end_behavior === "stop";
+  // ボタンは見た目の方向基準: シークバーの進行方向(RTLでは左=進む)と
+  // 一致するよう、綴じ方向に応じてラベル/ツールチップ/無効状態を割り当てる
+  const rtl = state.reading_direction === "rtl";
+  const stop = S.settings.comic_sequence_end_behavior === "stop";
+  const prevEntryDisabled = !state.has_previous_entry && stop;
+  const nextEntryDisabled = !state.has_next_entry && stop;
+  $("btn-comic-entry-left").disabled = rtl ? nextEntryDisabled : prevEntryDisabled;
+  $("btn-comic-entry-right").disabled = rtl ? prevEntryDisabled : nextEntryDisabled;
+  $("btn-comic-entry-left").title = rtl ? "次の漫画 (N)" : "前の漫画 (P)";
+  $("btn-comic-entry-right").title = rtl ? "前の漫画 (P)" : "次の漫画 (N)";
+  $("btn-comic-spread-left").title = rtl ? "見開きを送る" : "見開きを戻す";
+  $("btn-comic-spread-right").title = rtl ? "見開きを戻す" : "見開きを送る";
+  $("btn-comic-page-left").textContent = rtl ? "+1" : "-1";
+  $("btn-comic-page-right").textContent = rtl ? "-1" : "+1";
+  $("btn-comic-page-left").title = rtl ? "1ページ進む" : "1ページ戻す";
+  $("btn-comic-page-right").title = rtl ? "1ページ戻す" : "1ページ進む";
 }
 
 async function comicCall(path, body) {
@@ -858,12 +868,23 @@ $("btn-direction").onclick = async () => {
   if (result) { setComicState(result); toast(next === "rtl" ? "右綴じ (RTL)" : "左綴じ (LTR)"); }
 };
 
-$("btn-comic-spread-fwd").onclick = comicSpreadForward;
-$("btn-comic-spread-back").onclick = comicSpreadBackward;
-$("btn-comic-page-fwd").onclick = comicShiftForward;
-$("btn-comic-page-back").onclick = comicShiftBackward;
-$("btn-next-entry").onclick = comicNextEntry;
-$("btn-prev-entry").onclick = comicPrevEntry;
+/* ボタンは見た目の方向で動作を決める(シークバーの進行方向と一致)。
+   右綴じ(RTL)では左向き=進む、左綴じ(LTR)では右向き=進む。 */
+function comicIsRtl() {
+  return S.comic.state?.reading_direction === "rtl";
+}
+$("btn-comic-spread-left").onclick = () =>
+  comicIsRtl() ? comicSpreadForward() : comicSpreadBackward();
+$("btn-comic-spread-right").onclick = () =>
+  comicIsRtl() ? comicSpreadBackward() : comicSpreadForward();
+$("btn-comic-page-left").onclick = () =>
+  comicIsRtl() ? comicShiftForward() : comicShiftBackward();
+$("btn-comic-page-right").onclick = () =>
+  comicIsRtl() ? comicShiftBackward() : comicShiftForward();
+$("btn-comic-entry-left").onclick = () =>
+  comicIsRtl() ? comicNextEntry() : comicPrevEntry();
+$("btn-comic-entry-right").onclick = () =>
+  comicIsRtl() ? comicPrevEntry() : comicNextEntry();
 $("btn-comic-full").onclick = () => toggleFullscreen($("comic-viewer"));
 function handleComicTapZone(e, action) {
   e.preventDefault();

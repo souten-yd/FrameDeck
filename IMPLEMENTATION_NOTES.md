@@ -582,3 +582,17 @@ Manual verification still needed:
 
 補足: テスト実行のため FrameDeck_venv へ pytest / httpx / playwright を
 インストールした(実行時依存には影響なし)。
+
+### 追補: 漫画ナビボタンを見た目の方向基準へ (2026-07-11)
+
+ユーザー指摘: シークバーは綴じ方向(RTLで右→左)に追従するが、ボタンは
+論理配置(進むが常に右側)のため方向が逆に見える。
+
+対応: ボタンIDを視覚方向基準(btn-comic-entry-left / spread-left /
+page-left / page-right / spread-right / entry-right)へ変更し、
+タップゾーンと同じく綴じ方向で動作を割り当てる。RTLでは左側ボタンが
+「進む」(左ページボタンのラベルは +1)になり、ラベル・ツールチップ・
+エントリボタンの無効状態も綴じ方向に応じて切替える。
+
+検証: Playwrightで RTL/LTR 両方向についてページ/見開きボタンの
+増減方向がシークバーと一致することを確認。pytest 114件全通過。
