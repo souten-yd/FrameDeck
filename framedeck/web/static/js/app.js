@@ -1204,16 +1204,54 @@ function currentOrientationMode() {
   return window.innerWidth >= window.innerHeight ? "landscape" : "portrait";
 }
 
+/* 回転フォールバックはインラインstyle(!important)で適用する。
+   メディアクエリ+dvh/dvw方式は、全画面(.fullscreen-active)の
+   width/height !important に負けて表示が崩れるため使わない。
+   寸法も innerWidth/innerHeight から直接計算し、単位差の影響を受けない。 */
+const ORIENTATION_ROTATION_PROPS = [
+  "position", "top", "left", "right", "bottom",
+  "width", "height", "transform", "transform-origin", "z-index",
+];
+
+function clearVideoOrientationRotation() {
+  const style = $("video-player").style;
+  for (const prop of ORIENTATION_ROTATION_PROPS) style.removeProperty(prop);
+}
+
+function applyVideoOrientationRotation() {
+  const mode = S.video.orientationLockMode;
+  if (!S.video.orientationLocked || !mode ||
+      currentOrientationMode() === mode) {
+    // 物理向きがロック方向と一致している間は回転不要
+    clearVideoOrientationRotation();
+    return;
+  }
+  const angle = mode === "landscape" ? 90 : -90;
+  const style = $("video-player").style;
+  const set = (prop, value) => style.setProperty(prop, value, "important");
+  set("position", "fixed");
+  set("top", "50%");
+  set("left", "50%");
+  set("right", "auto");
+  set("bottom", "auto");
+  set("width", `${window.innerHeight}px`);
+  set("height", `${window.innerWidth}px`);
+  set("transform", `translate(-50%, -50%) rotate(${angle}deg)`);
+  set("transform-origin", "center");
+  set("z-index", "1000");
+}
+
 async function applyVideoOrientationLock() {
   const mode = S.video.orientationLockMode || currentOrientationMode();
   S.video.orientationLockMode = mode;
-  document.body.classList.add("orientation-lock-active", `orientation-lock-${mode}`);
+  document.body.classList.add("orientation-lock-active");
   document.body.classList.toggle("orientation-lock-landscape", mode === "landscape");
   document.body.classList.toggle("orientation-lock-portrait", mode === "portrait");
+  applyVideoOrientationRotation();
   try {
     await screen.orientation?.lock?.(mode);
   } catch (e) {
-    // Mobile browsers may reject orientation lock unless already fullscreen. CSS fallback remains active.
+    // Mobile browsers may reject orientation lock unless already fullscreen. Inline rotation fallback remains active.
   }
 }
 
@@ -1222,6 +1260,7 @@ function clearVideoOrientationLock() {
   document.body.classList.remove(
     "orientation-lock-active", "orientation-lock-landscape", "orientation-lock-portrait"
   );
+  clearVideoOrientationRotation();
   try { screen.orientation?.unlock?.(); } catch (e) {}
 }
 

@@ -214,7 +214,7 @@ def test_mobile_video_gesture_zones_prevent_selection():
     assert '-webkit-tap-highlight-color: transparent;' in css
 
 
-def test_mobile_video_orientation_lock_is_stateful_with_css_fallback():
+def test_mobile_video_orientation_lock_is_stateful_with_inline_rotation():
     html = (ROOT / "framedeck/web/templates/index.html").read_text()
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
     css = (ROOT / "framedeck/web/static/css/app.css").read_text()
@@ -222,8 +222,12 @@ def test_mobile_video_orientation_lock_is_stateful_with_css_fallback():
     assert 'S.video.orientationLockMode = currentOrientationMode();' in js
     assert 'const mode = S.video.orientationLockMode || currentOrientationMode();' in js
     assert 'screen.orientation?.lock?.(mode)' in js
-    assert 'orientation-lock-active.orientation-lock-landscape' in css
-    assert 'orientation-lock-active.orientation-lock-portrait' in css
-    assert '@media (orientation: portrait)' in css
-    assert '@media (orientation: landscape)' in css
+    # 回転は全画面CSSの!importantに負けないようインラインstyleで適用する
+    assert "function applyVideoOrientationRotation" in js
+    assert 'style.setProperty(prop, value, "important")' in js
+    assert 'rotate(${angle}deg)' in js
+    assert "function clearVideoOrientationRotation" in js
+    # メディアクエリによる回転フォールバックは廃止(競合の原因だった)
+    assert "@media (orientation: portrait)" not in css
+    assert "orientation-lock-active" in css
 
