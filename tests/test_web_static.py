@@ -91,6 +91,23 @@ def test_controls_are_two_rows_on_all_profiles():
     assert '.controls-bar .button-row' in css
 
 
+def test_comic_nav_buttons_follow_visual_direction():
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    # ボタンは見た目の方向基準(シークバーの進行方向と一致させる)
+    for bid in ["btn-comic-entry-left", "btn-comic-spread-left", "btn-comic-page-left",
+                "btn-comic-page-right", "btn-comic-spread-right", "btn-comic-entry-right"]:
+        assert f'id="{bid}"' in html
+    assert "function comicIsRtl" in js
+    assert "comicIsRtl() ? comicSpreadForward() : comicSpreadBackward()" in js
+    assert "comicIsRtl() ? comicNextEntry() : comicPrevEntry()" in js
+    # RTLでは左ボタンが「+1(進む)」になる
+    assert 'textContent = rtl ? "+1" : "-1"' in js
+    # 旧・論理方向IDは残っていない
+    assert "btn-prev-entry" not in html
+    assert "btn-comic-spread-fwd" not in html
+
+
 def test_comic_view_mode_button_is_in_button_row():
     html = (ROOT / "framedeck/web/templates/index.html").read_text()
     comic = html[html.index('id="comic-controls"'):html.index('id="comic-title"')]
