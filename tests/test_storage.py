@@ -28,8 +28,11 @@ def test_video_progress_roundtrip(tmp_path):
 def test_roots_and_state(tmp_path):
     storage = Storage(tmp_path / "test.db")
     storage.add_root("r1", "/some/path", "comic")
+    storage.add_root("r2", "/some/path", "video")
+    assert [root["kind"] for root in storage.list_roots()] == ["comic", "video"]
     assert storage.list_roots()[0]["path"] == "/some/path"
     storage.remove_root("r1")
+    storage.remove_root("r2")
     assert storage.list_roots() == []
 
     storage.set_state("last_folder", {"path": "/a", "mode": "comic"})

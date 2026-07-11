@@ -15,9 +15,11 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 CREATE TABLE IF NOT EXISTS library_roots (
     id TEXT PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'any',
-    added_at REAL NOT NULL
+    display_name TEXT,
+    added_at REAL NOT NULL,
+    UNIQUE(path, kind)
 );
 CREATE TABLE IF NOT EXISTS media_items (
     id TEXT PRIMARY KEY,
@@ -95,6 +97,9 @@ class Storage:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._ensure_library_root_display_name_column()
+            self._migrate_library_roots()
+            self._ensure_library_root_display_name_column()
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.commit()
 
@@ -112,7 +117,56 @@ class Storage:
         with self._lock:
             return self._conn.execute(sql, params).fetchall()
 
+    def _migrate_library_roots(self) -> None:
+        """Allow the same path to be registered once per media kind."""
+        indexes = self._conn.execute(
+            "PRAGMA index_list(library_roots)"
+        ).fetchall()
+        has_path_only_unique = False
+        for index in indexes:
+            if not index["unique"]:
+                continue
+            cols = [
+                row["name"]
+                for row in self._conn.execute(
+                    f"PRAGMA index_info({index['name']})"
+                ).fetchall()
+            ]
+            if cols == ["path"]:
+                has_path_only_unique = True
+                break
+        if not has_path_only_unique:
+            return
+        rows = self._conn.execute(
+            "SELECT id,path,kind,display_name,added_at FROM library_roots ORDER BY added_at"
+        ).fetchall()
+        self._conn.execute("ALTER TABLE library_roots RENAME TO library_roots_old")
+        self._conn.execute(
+            "CREATE TABLE library_roots ("
+            "id TEXT PRIMARY KEY, "
+            "path TEXT NOT NULL, "
+            "kind TEXT NOT NULL DEFAULT 'any', "
+            "display_name TEXT, "
+            "added_at REAL NOT NULL, "
+            "UNIQUE(path, kind))"
+        )
+        for row in rows:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO library_roots(id,path,kind,display_name,added_at) "
+                "VALUES(?,?,?,?,?)",
+                (row["id"], row["path"], row["kind"], row["display_name"] if "display_name" in row.keys() else None, row["added_at"]),
+            )
+        self._conn.execute("DROP TABLE library_roots_old")
+
     # ---------------- settings(補助KV) ----------------
+    def _ensure_library_root_display_name_column(self) -> None:
+        cols = [
+            row["name"]
+            for row in self._conn.execute("PRAGMA table_info(library_roots)").fetchall()
+        ]
+        if "display_name" not in cols:
+            self._conn.execute("ALTER TABLE library_roots ADD COLUMN display_name TEXT")
+
 
     def get_state(self, key: str, default: Any = None) -> Any:
         rows = self._query("SELECT value FROM settings WHERE key=?", (key,))
@@ -132,10 +186,16 @@ class Storage:
 
     # ---------------- library roots ----------------
 
-    def add_root(self, root_id: str, path: str, kind: str = "any") -> None:
+    def add_root(self, root_id: str, path: str, kind: str = "any", display_name: str | None = None) -> None:
         self._execute(
-            "INSERT OR IGNORE INTO library_roots(id,path,kind,added_at) VALUES(?,?,?,?)",
-            (root_id, path, kind, time.time()),
+            "INSERT INTO library_roots(id,path,kind,display_name,added_at) VALUES(?,?,?,?,?)",
+            (root_id, path, kind, display_name, time.time()),
+        )
+
+    def update_root(self, root_id: str, display_name: str | None = None) -> None:
+        self._execute(
+            "UPDATE library_roots SET display_name=? WHERE id=?",
+            (display_name, root_id),
         )
 
     def remove_root(self, root_id: str) -> None:
@@ -143,9 +203,9 @@ class Storage:
 
     def list_roots(self) -> list[dict]:
         return [
-            {"id": r["id"], "path": r["path"], "kind": r["kind"]}
+            {"id": r["id"], "path": r["path"], "kind": r["kind"], "display_name": r["display_name"]}
             for r in self._query(
-                "SELECT id,path,kind FROM library_roots ORDER BY added_at"
+                "SELECT id,path,kind,display_name FROM library_roots ORDER BY added_at"
             )
         ]
 

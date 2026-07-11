@@ -104,6 +104,19 @@ def test_progress_save_and_detail(video_env):
     assert detail["resume_position"] == 63.5
 
 
+def test_progress_save_accepts_null_duration(video_env):
+    client, media_id, _ = video_env
+    response = client.post(
+        f"/api/videos/{media_id}/progress",
+        json={"position_seconds": None, "duration_seconds": None,
+              "playback_speed": None},
+    )
+    assert response.status_code == 200
+    detail = client.get(f"/api/videos/{media_id}").json()
+    assert detail["progress"]["position_seconds"] == 0.0
+
+
+
 def test_completed_video_restarts(video_env):
     client, media_id, _ = video_env
     client.post(

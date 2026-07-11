@@ -7,6 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Res
 
 from ...comic.archive_backend import ArchiveError
 from ...comic.reader_engine import ComicEngineError
+from ...core.library_service import item_id_for
 from ...core.security import PathValidationError
 from ...core.services import Services
 from ..dependencies import get_services
@@ -14,6 +15,53 @@ from ..dependencies import get_services
 router = APIRouter(prefix="/api/comics", tags=["comic"])
 
 PAGE_CACHE_HEADERS = {"Cache-Control": "private, max-age=86400"}
+
+
+def _root_for_path(services: Services, path: str, kind: str | None = None) -> dict | None:
+    best = None
+    for root in services.library.list_roots():
+        if kind and root["kind"] not in (kind, "any"):
+            continue
+        try:
+            if os.path.commonpath([path, root["path"]]) == root["path"]:
+                if (best is None or len(root["path"]) > len(best["path"])
+                        or (kind and len(root["path"]) == len(best["path"])
+                            and root["kind"] == kind and best["kind"] != kind)):
+                    best = root
+        except ValueError:
+            continue
+    return best
+
+
+def _folder_id_for_item(services: Services, item_id: str) -> str | None:
+    row = services.storage.get_media_item(item_id)
+    if not row:
+        return None
+    item_path = row["path"]
+    parent = os.path.dirname(item_path.rstrip(os.sep))
+    root = _root_for_path(services, item_path, "comic")
+    if root and os.path.abspath(parent) == os.path.abspath(root["path"]):
+        return root["id"]
+    if parent and os.path.isdir(parent):
+        folder_id = item_id_for(parent)
+        try:
+            stat = os.stat(parent)
+            services.storage.upsert_media_item(
+                folder_id, os.path.abspath(parent), "folder", None,
+                stat.st_mtime, None,
+            )
+        except OSError:
+            return None
+        return folder_id
+    return None
+
+
+def _state_dict(services: Services, state) -> dict:
+    data = state.to_dict()
+    data["root_folder_id"] = _folder_id_for_item(
+        services, data.get("root_item_id") or ""
+    )
+    return data
 
 
 def _entry_dict(entry) -> dict:
@@ -77,12 +125,12 @@ def create_session(payload: dict = Body(...),
     except (ComicEngineError, ArchiveError) as e:
         raise HTTPException(status_code=422, detail=str(e))
     services.library.mark_opened(item)
-    return state.to_dict()
+    return _state_dict(services, state)
 
 
 def _engine_call(services: Services, func, *args) -> dict:
     try:
-        return func(*args).to_dict()
+        return _state_dict(services, func(*args))
     except ComicEngineError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ArchiveError as e:
@@ -102,22 +150,30 @@ def close_session(session_id: str,
     return {"closed": session_id}
 
 
+@router.post("/session/{session_id}/next-spread")
+def next_spread(session_id: str,
+                services: Services = Depends(get_services)) -> dict:
+    return _engine_call(services, services.comic_engine.next_spread, session_id)
+
+
+@router.post("/session/{session_id}/previous-spread")
+def previous_spread(session_id: str,
+                    services: Services = Depends(get_services)) -> dict:
+    return _engine_call(services, services.comic_engine.previous_spread,
+                        session_id)
+
+
 @router.post("/session/{session_id}/next-page")
-def next_page(session_id: str, payload: dict = Body(default={}),
+def next_page(session_id: str,
               services: Services = Depends(get_services)) -> dict:
-    engine = services.comic_engine
-    if payload.get("unit") == "single":
-        return _engine_call(services, engine.next_page, session_id)
-    return _engine_call(services, engine.next_spread, session_id)
+    return _engine_call(services, services.comic_engine.next_page, session_id)
 
 
 @router.post("/session/{session_id}/previous-page")
-def previous_page(session_id: str, payload: dict = Body(default={}),
+def previous_page(session_id: str,
                   services: Services = Depends(get_services)) -> dict:
-    engine = services.comic_engine
-    if payload.get("unit") == "single":
-        return _engine_call(services, engine.previous_page, session_id)
-    return _engine_call(services, engine.previous_spread, session_id)
+    return _engine_call(services, services.comic_engine.previous_page,
+                        session_id)
 
 
 @router.post("/session/{session_id}/next-entry")
@@ -183,16 +239,58 @@ def _image_response(request: Request, data: bytes, mime: str,
 def get_page(session_id: str, page_index: int, request: Request,
              w: int | None = Query(default=None, ge=64, le=8192),
              h: int | None = Query(default=None, ge=64, le=8192),
+             width: int | None = Query(default=None, ge=64, le=8192),
+             height: int | None = Query(default=None, ge=64, le=8192),
+             dpr: float = Query(default=1.0, ge=1.0, le=4.0),
+             profile: str | None = Query(default=None),
+             format: str | None = Query(default=None),
+             quality: int | None = Query(default=None, ge=40, le=95),
+             auto_crop: bool | None = Query(default=None),
+             split_side: str = Query(default="full"),
              services: Services = Depends(get_services)) -> Response:
     try:
-        data, mime, etag = services.comic_engine.render_page(
-            session_id, page_index, w, h
-        )
+        if profile or format or width or height or auto_crop is not None or split_side != "full":
+            crop_border_types = {
+                name for name, key in (
+                    ("white", "comic_crop_white"),
+                    ("gray", "comic_crop_gray"),
+                    ("black", "comic_crop_black"),
+                )
+                if services.settings.get(key, True)
+            }
+            data, mime, etag = services.comic_engine.render_variant_page(
+                session_id,
+                page_index,
+                viewport_width=width or w,
+                viewport_height=height or h,
+                dpr=dpr,
+                profile=profile or services.settings.get("comic_desktop_delivery_profile", "high"),
+                output_format=format or services.settings.get("comic_output_format", "auto"),
+                quality=quality,
+                auto_crop=bool(services.settings.get("comic_auto_crop", True) if auto_crop is None else auto_crop),
+                split_side=split_side if split_side in {"full", "left", "right"} else "full",
+                crop_border_types=crop_border_types,
+            )
+        else:
+            data, mime, etag = services.comic_engine.render_page(
+                session_id, page_index, w, h
+            )
     except ComicEngineError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except (ArchiveError, OSError) as e:
         raise HTTPException(status_code=422, detail=f"ページ読み込み失敗: {e}")
     return _image_response(request, data, mime, etag)
+
+
+@router.get("/session/{session_id}/page/{page_index}/analysis")
+def get_page_analysis(session_id: str, page_index: int,
+                      services: Services = Depends(get_services)) -> dict:
+    try:
+        return services.comic_engine.analyze_page(session_id, page_index).to_dict()
+    except ComicEngineError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (ArchiveError, OSError) as e:
+        raise HTTPException(status_code=422, detail=f"ページ解析失敗: {e}")
 
 
 @router.get("/session/{session_id}/thumbnail/{page_index}")

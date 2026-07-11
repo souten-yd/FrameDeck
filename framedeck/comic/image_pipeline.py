@@ -21,6 +21,9 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 from ..models import ComicEntry, PageRef
+from .crop_detector import detect_crop_box
+from .image_analysis import ComicImageAnalysis
+from .spread_detector import detect_spread
 
 _RESAMPLE = {
     "lanczos": Image.Resampling.LANCZOS,
@@ -32,6 +35,21 @@ _RESAMPLE = {
 _MIME_BY_EXT = {
     ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
     ".webp": "image/webp", ".bmp": "image/bmp", ".gif": "image/gif",
+}
+
+_COMIC_PROFILES = {
+    "high": {"quality": 92, "max_long_edge": 3200, "dpr_limit": 2.0},
+    "balanced": {"quality": 84, "max_long_edge": 2400, "dpr_limit": 1.5},
+    "mobile": {"quality": 76, "max_long_edge": 1800, "dpr_limit": 1.25},
+    "data_saver": {"quality": 65, "max_long_edge": 1280, "dpr_limit": 1.0},
+    "original": {"quality": 95, "max_long_edge": 0, "dpr_limit": 3.0},
+}
+
+_FORMATS = {
+    "jpeg": ("JPEG", "image/jpeg", ".jpg"),
+    "webp": ("WEBP", "image/webp", ".webp"),
+    "png": ("PNG", "image/png", ".png"),
+    "avif": ("AVIF", "image/avif", ".avif"),
 }
 
 
@@ -72,9 +90,13 @@ class ImagePipeline:
     def __init__(self, page_cache_dir: Path, thumb_cache_dir: Path,
                  memory_limit_bytes: int = 512 * 1024**2,
                  resize_filter: str = "lanczos",
-                 max_workers: int = 4):
+                 max_workers: int = 4,
+                 variant_cache_dir: Path | None = None,
+                 analysis_cache_dir: Path | None = None):
         self._page_cache_dir = Path(page_cache_dir)
         self._thumb_cache_dir = Path(thumb_cache_dir)
+        self._variant_cache_dir = Path(variant_cache_dir or page_cache_dir)
+        self._analysis_cache_dir = Path(analysis_cache_dir or page_cache_dir)
         self._raw_cache = MemoryLRU(memory_limit_bytes)
         self._size_cache: dict[str, tuple[int, int]] = {}
         self._size_lock = threading.Lock()
@@ -234,6 +256,152 @@ class ImagePipeline:
         except OSError:
             pass
         return encoded, "image/jpeg", etag
+
+
+    def analyze_page(self, source, entry: ComicEntry, page: PageRef) -> ComicImageAnalysis:
+        etag = self._disk_key(entry, page, None, None, "analysis-v1")
+        cache_file = self._analysis_cache_dir / f"{etag}.json"
+        if cache_file.exists():
+            try:
+                import json
+                data = json.loads(cache_file.read_text("utf-8"))
+                crop_box = data.get("crop_box")
+                return ComicImageAnalysis(
+                    source_width=int(data["source_width"]),
+                    source_height=int(data["source_height"]),
+                    border_type=data["border_type"],
+                    crop_box=tuple(crop_box) if crop_box else None,
+                    crop_confidence=float(data["crop_confidence"]),
+                    is_spread=bool(data["is_spread"]),
+                    spread_confidence=float(data["spread_confidence"]),
+                    split_x=data.get("split_x"),
+                    center_gutter_type=data.get("center_gutter_type"),
+                    has_center_crossing_content=bool(data["has_center_crossing_content"]),
+                    analysis_version=data.get("analysis_version", "comic-analysis-v1"),
+                )
+            except Exception:
+                pass
+        data = self.get_raw(source, entry, page)
+        with Image.open(io.BytesIO(data)) as img:
+            img = ImageOps.exif_transpose(img) or img
+            crop = detect_crop_box(img)
+            base = img.crop(crop.crop_box) if crop.crop_box else img
+            spread = detect_spread(base)
+            split_x = spread.split_x
+            if split_x is not None and crop.crop_box:
+                split_x += crop.crop_box[0]
+            analysis = ComicImageAnalysis(
+                source_width=img.width,
+                source_height=img.height,
+                border_type=crop.border_type,
+                crop_box=crop.crop_box,
+                crop_confidence=crop.confidence,
+                is_spread=spread.is_spread,
+                spread_confidence=spread.confidence,
+                split_x=split_x,
+                center_gutter_type=spread.center_gutter_type,
+                has_center_crossing_content=spread.has_center_crossing_content,
+            )
+        try:
+            import json
+            self._analysis_cache_dir.mkdir(parents=True, exist_ok=True)
+            tmp = cache_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(analysis.to_dict(), ensure_ascii=False), "utf-8")
+            tmp.replace(cache_file)
+        except OSError:
+            pass
+        return analysis
+
+    def render_variant_page(
+        self,
+        source,
+        entry: ComicEntry,
+        page: PageRef,
+        viewport_width: int | None = None,
+        viewport_height: int | None = None,
+        dpr: float = 1.0,
+        profile: str = "balanced",
+        output_format: str = "auto",
+        quality: int | None = None,
+        auto_crop: bool = True,
+        split_side: str = "full",
+        crop_border_types: set[str] | None = None,
+    ) -> tuple[bytes, str, str]:
+        profile_conf = _COMIC_PROFILES.get(profile, _COMIC_PROFILES["balanced"])
+        dpr = max(1.0, min(float(dpr or 1.0), float(profile_conf["dpr_limit"])))
+        format_name = "webp" if output_format == "auto" else output_format
+        if format_name == "original":
+            return self.render_page(source, entry, page, viewport_width, viewport_height)
+        if format_name not in _FORMATS:
+            format_name = "jpeg"
+        quality = int(quality if quality is not None else profile_conf["quality"])
+        quality = max(40, min(quality, 95))
+        width = int((viewport_width or 0) * dpr) or None
+        height = int((viewport_height or 0) * dpr) or None
+        max_long = int(profile_conf["max_long_edge"] or 0)
+        cache_raw = (
+            f"variant-v1|{entry.id}|{page.index}|{split_side}|{viewport_width}|"
+            f"{viewport_height}|{dpr:.3f}|{profile}|{format_name}|{quality}|"
+            f"{auto_crop}|{sorted(crop_border_types or [])}|{self.resize_filter}"
+        )
+        try:
+            cache_raw += f"|{os.path.getmtime(entry.physical_path)}"
+        except OSError:
+            pass
+        etag = hashlib.sha1(cache_raw.encode()).hexdigest()
+        pil_format, mime, ext = _FORMATS[format_name]
+        cache_file = self._variant_cache_dir / f"{etag}{ext}"
+        if cache_file.exists():
+            return cache_file.read_bytes(), mime, etag
+
+        data = self.get_raw(source, entry, page)
+        with Image.open(io.BytesIO(data)) as img:
+            img = ImageOps.exif_transpose(img) or img
+            if auto_crop:
+                crop = detect_crop_box(img, allowed_border_types=crop_border_types)
+                if crop.crop_box:
+                    img = img.crop(crop.crop_box)
+            if split_side in {"left", "right"}:
+                split_x = img.width // 2
+                if split_side == "left":
+                    img = img.crop((0, 0, split_x, img.height))
+                else:
+                    img = img.crop((split_x, 0, img.width, img.height))
+                if auto_crop:
+                    crop = detect_crop_box(img, allowed_border_types=crop_border_types)
+                    if crop.crop_box:
+                        img = img.crop(crop.crop_box)
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGB")
+            if format_name == "jpeg" and img.mode != "RGB":
+                img = img.convert("RGB")
+            limits = []
+            if width:
+                limits.append(width / img.width)
+            if height:
+                limits.append(height / img.height)
+            if max_long:
+                limits.append(max_long / max(img.width, img.height))
+            ratio = min([1.0, *limits]) if limits else 1.0
+            if ratio < 1.0:
+                new_size = (max(1, int(img.width * ratio)), max(1, int(img.height * ratio)))
+                img = img.resize(new_size, _RESAMPLE.get(self.resize_filter, Image.Resampling.LANCZOS))
+            buf = io.BytesIO()
+            save_kwargs = {}
+            if format_name in {"jpeg", "webp", "avif"}:
+                save_kwargs["quality"] = quality
+            if format_name == "jpeg":
+                save_kwargs["optimize"] = True
+            img.save(buf, pil_format, **save_kwargs)
+        encoded = buf.getvalue()
+        try:
+            self._variant_cache_dir.mkdir(parents=True, exist_ok=True)
+            tmp = cache_file.with_suffix(".tmp")
+            tmp.write_bytes(encoded)
+            tmp.replace(cache_file)
+        except OSError:
+            pass
+        return encoded, mime, etag
 
     def render_thumbnail(self, source, entry: ComicEntry, page: PageRef,
                          size: int = 320) -> tuple[bytes, str, str]:

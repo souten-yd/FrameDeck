@@ -32,33 +32,48 @@ def _item_dict(item: MediaItem, root_path: str | None = None) -> dict:
     }
 
 
-def _resolve_folder(services: Services, folder_id: str) -> str:
+def _resolve_folder(services: Services, folder_id: str, mode: str | None = None) -> str:
     for root in services.library.list_roots():
+        if mode and root["kind"] not in (mode, "any"):
+            continue
         if root["id"] == folder_id:
             return root["path"]
     row = services.storage.get_media_item(folder_id)
     if row and os.path.isdir(row["path"]):
+        root = _find_root_for(services, row["path"], mode)
+        if root is None:
+            raise HTTPException(status_code=404, detail="フォルダが見つかりません")
         return str(services.library.validate_path(row["path"]))
     raise HTTPException(status_code=404, detail="フォルダが見つかりません")
 
 
-def _find_root_for(services: Services, path: str) -> dict | None:
+def _find_root_for(services: Services, path: str, kind: str | None = None) -> dict | None:
     best = None
     for root in services.library.list_roots():
+        if kind and root["kind"] not in (kind, "any"):
+            continue
         try:
             if os.path.commonpath([path, root["path"]]) == root["path"]:
-                if best is None or len(root["path"]) > len(best["path"]):
+                if (best is None or len(root["path"]) > len(best["path"])
+                        or (kind and len(root["path"]) == len(best["path"])
+                            and root["kind"] == kind and best["kind"] != kind)):
                     best = root
         except ValueError:
             continue
     return best
 
 
+def _root_display_name(root: dict) -> str:
+    return root.get("display_name") or os.path.basename(
+        root["path"].rstrip(os.sep)
+    ) or root["path"]
+
+
 @router.get("/roots")
 def list_roots(services: Services = Depends(get_services)) -> list[dict]:
     return [
         {"id": r["id"], "kind": r["kind"],
-         "display_name": os.path.basename(r["path"].rstrip(os.sep)) or r["path"]}
+         "display_name": _root_display_name(r)}
         for r in services.library.list_roots()
     ]
 
@@ -68,12 +83,32 @@ def add_root(payload: dict = Body(...),
              services: Services = Depends(get_services)) -> dict:
     path = payload.get("path", "")
     kind = payload.get("kind", "any")
+    if kind not in ("comic", "video", "any"):
+        raise HTTPException(status_code=422, detail="kindが不正です")
     try:
-        root = services.library.add_root(path, kind)
+        root = services.library.add_root(path, kind, payload.get("display_name"))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    display_name = payload.get("display_name") or os.path.basename(
+        root["path"].rstrip(os.sep)
+    ) or root["path"]
     return {"id": root["id"], "kind": root["kind"],
-            "display_name": os.path.basename(root["path"].rstrip(os.sep))}
+            "display_name": display_name}
+
+
+@router.patch("/roots/{root_id}")
+def update_root(root_id: str, payload: dict = Body(...),
+                services: Services = Depends(get_services)) -> dict:
+    display_name = payload.get("display_name")
+    services.library.update_root(root_id, display_name)
+    roots = [root for root in services.library.list_roots() if root["id"] == root_id]
+    if not roots:
+        raise HTTPException(status_code=404, detail="ライブラリが見つかりません")
+    root = roots[0]
+    return {"id": root["id"], "kind": root["kind"],
+            "display_name": _root_display_name(root)}
 
 
 @router.delete("/roots/{root_id}")
@@ -89,7 +124,7 @@ def list_items(folder_id: str = Query(...),
                sort: str = Query("date"),
                filter: str = Query("all"),
                services: Services = Depends(get_services)) -> dict:
-    folder = _resolve_folder(services, folder_id)
+    folder = _resolve_folder(services, folder_id, mode)
     try:
         items = services.library.list_folder(folder, mode=mode)
     except PathValidationError as e:
@@ -112,7 +147,7 @@ def list_items(folder_id: str = Query(...),
         files.sort(key=lambda i: ((i.rating or 0), i.display_name.lower()))
     # name順はlist_folderの自然順のまま
 
-    root = _find_root_for(services, folder)
+    root = _find_root_for(services, folder, mode)
     root_path = root["path"] if root else None
 
     parent_id = None

@@ -15,6 +15,9 @@ from ..comic.source import ComicSourceResolver
 from ..config import AppPaths, Settings
 from ..video.playback_service import VideoPlaybackService
 from ..video.transcode import TranscodeService
+from ..video.capabilities import EncoderCapabilityService
+from ..video.hls_service import HlsService
+from ..video.job_manager import TranscodeJobManager
 from .library_service import LibraryService
 from .rating_service import RatingService
 from .security import ConfirmTokenBox
@@ -45,6 +48,8 @@ class Services:
             paths.comic_page_cache, paths.thumbnail_cache,
             memory_limit_bytes=int(settings.get("memory_cache_mb", 512)) * 1024**2,
             resize_filter=settings.get("resize_filter", "lanczos"),
+            variant_cache_dir=paths.comic_variants_cache,
+            analysis_cache_dir=paths.comic_analysis_cache,
         )
         self.resolver = ComicSourceResolver(self.nested_cache)
         self.comic_engine = ComicReaderEngine(
@@ -53,7 +58,15 @@ class Services:
         )
 
         self.video_playback = VideoPlaybackService(storage)
-        self.transcode = TranscodeService()
+        auto_download_ffmpeg = bool(settings.get("video_ffmpeg_auto_download", True))
+        self.transcode = TranscodeService(auto_download_ffmpeg=auto_download_ffmpeg)
+        self.hls = HlsService(
+            paths.video_variants_cache,
+            segment_duration=int(settings.get("video_segment_duration", 4)),
+            auto_download_ffmpeg=auto_download_ffmpeg,
+        )
+        self.transcode_jobs = TranscodeJobManager()
+        self.encoder_capabilities = EncoderCapabilityService()
         self.confirm_tokens = ConfirmTokenBox()
 
         settings.add_listener(self._on_settings_changed)
@@ -63,12 +76,24 @@ class Services:
             values.get("include_parent_direct_images", True)
         )
         self.pipeline.resize_filter = values.get("resize_filter", "lanczos")
+        auto_download_ffmpeg = bool(values.get("video_ffmpeg_auto_download", True))
+        self.transcode.configure(auto_download_ffmpeg=auto_download_ffmpeg)
+        self.hls.configure(auto_download_ffmpeg=auto_download_ffmpeg)
+        self.hls.update_segment_duration(int(values.get("video_segment_duration", 4)))
 
     def startup_maintenance(self) -> None:
         try:
             self.nested_cache.prune()
         except Exception:
             logger.exception("キャッシュ整理に失敗しました")
+        try:
+            status = self.transcode.ffmpeg_status()
+            if status.get("available"):
+                logger.info("ffmpeg available via %s", status.get("source"))
+            else:
+                logger.warning("ffmpeg unavailable: %s", status.get("error"))
+        except Exception:
+            logger.exception("ffmpeg検出に失敗しました")
 
     def shutdown(self) -> None:
         try:
