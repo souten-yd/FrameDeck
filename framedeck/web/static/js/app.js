@@ -29,6 +29,7 @@ const S = {
     pendingSeekSeconds: null,
     errorRetryCount: 0, errorRetryTimer: null,
     orientationLocked: false, orientationLockMode: null,
+    lastSeenOrientation: null, orientationRevealTimer: null,
   },
 };
 
@@ -1250,17 +1251,51 @@ function applyVideoOrientationRotation() {
   set("z-index", "1000");
 }
 
+/* OS側の回転アニメーションと回転補正の適用差で「ぐるん」と見えるのを
+   隠すため、向きが実際に切り替わった間だけプレーヤーを非表示にし、
+   確定後にフェードインで復帰させる。 */
+function clearOrientationMask() {
+  const style = $("video-player").style;
+  style.removeProperty("opacity");
+  style.removeProperty("transition");
+  if (S.video.orientationRevealTimer) {
+    clearTimeout(S.video.orientationRevealTimer);
+    S.video.orientationRevealTimer = null;
+  }
+}
+
 function refreshVideoOrientationLock() {
   if (!S.video.orientationLocked) return;
+  const current = currentOrientationMode();
+  if (current === S.video.lastSeenOrientation) {
+    // 向きは変わっていない(ツールバー開閉等のresize)。点滅させない
+    applyVideoOrientationRotation();
+    return;
+  }
+  S.video.lastSeenOrientation = current;
+  const style = $("video-player").style;
+  style.removeProperty("transition");
+  style.setProperty("opacity", "0", "important");
   applyVideoOrientationRotation();
   // 実機は回転イベント直後に向き/寸法の確定が遅れることがあるため、
-  // フレーム後と少し後にもう一度適用して自己修復する
+  // フレーム後にも適用し、確定を待ってから表示を戻す
   requestAnimationFrame(() => {
     if (S.video.orientationLocked) applyVideoOrientationRotation();
   });
-  setTimeout(() => {
-    if (S.video.orientationLocked) applyVideoOrientationRotation();
-  }, 350);
+  clearTimeout(S.video.orientationRevealTimer);
+  S.video.orientationRevealTimer = setTimeout(() => {
+    S.video.orientationRevealTimer = null;
+    if (!S.video.orientationLocked) {
+      clearOrientationMask();
+      return;
+    }
+    applyVideoOrientationRotation();
+    style.setProperty("transition", "opacity .15s ease", "important");
+    style.setProperty("opacity", "1", "important");
+    setTimeout(() => {
+      if (!S.video.orientationRevealTimer) clearOrientationMask();
+    }, 220);
+  }, 380);
 }
 
 async function applyVideoOrientationLock() {
@@ -1279,9 +1314,11 @@ async function applyVideoOrientationLock() {
 
 function clearVideoOrientationLock() {
   S.video.orientationLockMode = null;
+  S.video.lastSeenOrientation = null;
   document.body.classList.remove(
     "orientation-lock-active", "orientation-lock-landscape", "orientation-lock-portrait"
   );
+  clearOrientationMask();
   clearVideoOrientationRotation();
   try { screen.orientation?.unlock?.(); } catch (e) {}
 }
@@ -1290,6 +1327,7 @@ async function toggleVideoOrientationLock() {
   S.video.orientationLocked = !S.video.orientationLocked;
   if (S.video.orientationLocked) {
     S.video.orientationLockMode = currentOrientationMode();
+    S.video.lastSeenOrientation = S.video.orientationLockMode;
     await applyVideoOrientationLock();
     toast("画面回転をロックしました");
   } else {

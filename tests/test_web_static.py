@@ -237,4 +237,9 @@ def test_mobile_video_orientation_lock_is_stateful_with_inline_rotation():
     assert 'window.addEventListener("orientationchange", refreshVideoOrientationLock)' in js
     assert 'set("width", "100dvh")' in js
     assert 'set("height", "100dvw")' in js
+    # 回転時の「ぐるん」はマスク(向きが変わった間だけ非表示→フェード復帰)で隠す
+    assert "function clearOrientationMask" in js
+    assert "S.video.lastSeenOrientation" in js
+    assert 'style.setProperty("opacity", "0", "important")' in js
+    assert '"opacity .15s ease"' in js
 
