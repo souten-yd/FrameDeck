@@ -1201,13 +1201,19 @@ function videoSeekTo(seconds) {
 function videoSeekBy(delta) { videoSeekTo(currentPosition() + delta); }
 
 function currentOrientationMode() {
+  // CSSエンジンと同じ判定を使う。実機の回転直後は innerWidth/innerHeight が
+  // 旧向きの値を返すことがあり、それに依存すると誤判定して
+  // 「一致している」とみなし回転が外れたままになる
+  const query = matchMedia?.("(orientation: landscape)");
+  if (query) return query.matches ? "landscape" : "portrait";
   return window.innerWidth >= window.innerHeight ? "landscape" : "portrait";
 }
 
 /* 回転フォールバックはインラインstyle(!important)で適用する。
-   メディアクエリ+dvh/dvw方式は、全画面(.fullscreen-active)の
+   メディアクエリCSS方式は、全画面(.fullscreen-active)の
    width/height !important に負けて表示が崩れるため使わない。
-   寸法も innerWidth/innerHeight から直接計算し、単位差の影響を受けない。 */
+   寸法はビューポート単位で指定し、回転直後の未確定なピクセル値に
+   依存しない(ブラウザが常時再評価する)。 */
 const ORIENTATION_ROTATION_PROPS = [
   "position", "top", "left", "right", "bottom",
   "width", "height", "transform", "transform-origin", "z-index",
@@ -1234,11 +1240,27 @@ function applyVideoOrientationRotation() {
   set("left", "50%");
   set("right", "auto");
   set("bottom", "auto");
-  set("width", `${window.innerHeight}px`);
-  set("height", `${window.innerWidth}px`);
+  // dvh/dvw未対応ブラウザ向けにvh/vwを先に置き、対応環境では上書きする
+  set("width", "100vh");
+  set("width", "100dvh");
+  set("height", "100vw");
+  set("height", "100dvw");
   set("transform", `translate(-50%, -50%) rotate(${angle}deg)`);
   set("transform-origin", "center");
   set("z-index", "1000");
+}
+
+function refreshVideoOrientationLock() {
+  if (!S.video.orientationLocked) return;
+  applyVideoOrientationRotation();
+  // 実機は回転イベント直後に向き/寸法の確定が遅れることがあるため、
+  // フレーム後と少し後にもう一度適用して自己修復する
+  requestAnimationFrame(() => {
+    if (S.video.orientationLocked) applyVideoOrientationRotation();
+  });
+  setTimeout(() => {
+    if (S.video.orientationLocked) applyVideoOrientationRotation();
+  }, 350);
 }
 
 async function applyVideoOrientationLock() {
@@ -1636,8 +1658,13 @@ comicStageResizeObserver.observe($("comic-stage"));
 window.addEventListener("resize", () => {
   applyUiProfile();
   layoutComicSpread();
-  if (S.video.orientationLocked) applyVideoOrientationLock();
+  refreshVideoOrientationLock();
 });
+// 実機の回転検知はresizeだけでは信頼できない(発火順・寸法確定の遅れ)。
+// 向きの切替そのものを監視して回転フォールバックを再評価する。
+window.addEventListener("orientationchange", refreshVideoOrientationLock);
+matchMedia?.("(orientation: landscape)")
+  ?.addEventListener?.("change", refreshVideoOrientationLock);
 document.addEventListener("fullscreenchange", () => {
   if (!fullscreenElement()) {
     $("comic-viewer").classList.remove("fullscreen-active");

@@ -230,4 +230,11 @@ def test_mobile_video_orientation_lock_is_stateful_with_inline_rotation():
     # メディアクエリによる回転フォールバックは廃止(競合の原因だった)
     assert "@media (orientation: portrait)" not in css
     assert "orientation-lock-active" in css
+    # 実機回転対策: 向き判定はmatchMedia、寸法はビューポート単位、
+    # 回転検知は orientationchange / matchMedia change + 遅延再適用
+    assert 'matchMedia?.("(orientation: landscape)")' in js
+    assert "function refreshVideoOrientationLock" in js
+    assert 'window.addEventListener("orientationchange", refreshVideoOrientationLock)' in js
+    assert 'set("width", "100dvh")' in js
+    assert 'set("height", "100dvw")' in js
 
