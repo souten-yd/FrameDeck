@@ -34,7 +34,7 @@ def test_aux_mouse_navigation_is_debounced_and_window_captured():
 def test_comic_image_load_handler_is_registered_before_src():
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
     handler_pos = js.index('img.onload = layoutComicSpread')
-    src_pos = js.index('img.src = comicPageUrl(pageIndex)')
+    src_pos = js.index('img.src = comicPageUrl(page.index, page.side)')
     assert handler_pos < src_pos
 
 

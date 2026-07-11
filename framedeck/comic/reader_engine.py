@@ -44,6 +44,8 @@ class _EngineSession:
         self.source = source
         self.pages = pages
         self.page_index = 0
+        # 単ページモードで横長画像を半分ずつ表示するときの面(0=最初, 1=次)
+        self.half = 0
         self.options = options
 
     @property
@@ -76,6 +78,8 @@ class ComicReaderEngine:
                 self._settings.get("cover_as_single_page", True)),
             landscape_threshold=float(
                 self._settings.get("landscape_threshold", 1.25)),
+            split_spread_in_single_mode=bool(
+                self._settings.get("comic_split_spread_in_single_mode", True)),
         )
 
     def entries_for_item(self, item_path: str) -> list[ComicEntry]:
@@ -177,6 +181,43 @@ class ComicReaderEngine:
             session.options.landscape_threshold,
         )
 
+    # ---------------- 横長ページの半分表示(単ページモード) ----------------
+
+    def _splittable(self, session: _EngineSession, index: int) -> bool:
+        opts = session.options
+        if not (opts.view_mode == "single"
+                and opts.split_spread_in_single_mode
+                and 0 <= index < session.page_count
+                and self._is_landscape(session, index)):
+            return False
+        # レターボックス入りスクリーンショット等では元画像が横長でも
+        # トリミング後は単ページのことがある。トリミング後の縦横比で判定する。
+        # (状態計算を待たせないため自ページの解析のみで判定する)
+        try:
+            analysis = self._pipeline.analyze_page(
+                session.source, session.entry, session.pages[index])
+        except Exception:
+            return True
+        if analysis.crop_box:
+            width = analysis.crop_box[2] - analysis.crop_box[0]
+            height = analysis.crop_box[3] - analysis.crop_box[1]
+        else:
+            width, height = analysis.source_width, analysis.source_height
+        return height > 0 and width / height >= opts.landscape_threshold
+
+    def _side_for_half(self, session: _EngineSession, half: int) -> str:
+        # 右綴じは右半分が先。左綴じは左半分が先。
+        if session.options.reading_direction == "rtl":
+            return "right" if half == 0 else "left"
+        return "left" if half == 0 else "right"
+
+    def _visible_sides(self, session: _EngineSession,
+                       group: tuple[int, ...]) -> tuple[str, ...]:
+        if (len(group) == 1 and group[0] == session.page_index
+                and self._splittable(session, session.page_index)):
+            return (self._side_for_half(session, session.half),)
+        return tuple("full" for _ in group)
+
     def _group_at(self, session: _EngineSession, index: int) -> tuple[int, ...]:
         opts = session.options
         count = session.page_count
@@ -236,6 +277,7 @@ class ComicReaderEngine:
             page_index=session.page_index,
             page_count=session.page_count,
             visible_pages=group,
+            visible_page_sides=self._visible_sides(session, group),
             has_previous_entry=has_prev,
             has_next_entry=has_next,
             title=session.entry.label,
@@ -266,38 +308,65 @@ class ComicReaderEngine:
 
     # ---------------- ページ移動 ----------------
 
-    def _move_to(self, session: _EngineSession, index: int) -> ComicViewState:
+    def _move_to(self, session: _EngineSession, index: int,
+                 half: int = 0) -> ComicViewState:
         session.page_index = max(0, min(index, session.page_count - 1))
+        session.half = half if self._splittable(session, session.page_index) else 0
         self._save_progress(session)
         self._prefetch(session)
         return self._state(session)
+
+    def _advance(self, session: _EngineSession, target: int) -> ComicViewState:
+        """前方移動。分割表示中は同一ページの残り半分を先に消化する。"""
+        if self._splittable(session, session.page_index) and session.half == 0:
+            session.half = 1
+            self._save_progress(session)
+            self._prefetch(session)
+            return self._state(session)
+        if target >= session.page_count:
+            return self._state(session)
+        return self._move_to(session, target)
+
+    def _retreat(self, session: _EngineSession, target: int) -> ComicViewState:
+        """後方移動。分割表示中は同一ページの先頭半分へ戻り、
+        前ページへ戻るときはそのページの最後の半分から表示する。"""
+        if self._splittable(session, session.page_index) and session.half == 1:
+            session.half = 0
+            self._save_progress(session)
+            self._prefetch(session)
+            return self._state(session)
+        if target < 0 or target == session.page_index:
+            return self._state(session)
+        landing_half = 1 if self._splittable(session, target) else 0
+        return self._move_to(session, target, half=landing_half)
 
     def next_spread(self, session_id: str) -> ComicViewState:
         with self._lock:
             session = self._get(session_id)
             group = self._group_at(session, session.page_index)
-            target = group[-1] + 1
-            if target >= session.page_count:
-                return self._state(session)
-            return self._move_to(session, target)
+            return self._advance(session, group[-1] + 1)
 
     def previous_spread(self, session_id: str) -> ComicViewState:
         with self._lock:
             session = self._get(session_id)
+            if self._splittable(session, session.page_index) and session.half == 1:
+                return self._retreat(session, session.page_index)
             group = self._prev_group(session, session.page_index)
             if group is None:
                 return self._state(session)
-            return self._move_to(session, group[0])
+            return self._retreat(session, group[0])
 
     def next_page(self, session_id: str) -> ComicViewState:
         with self._lock:
             session = self._get(session_id)
-            return self._move_to(session, session.page_index + 1)
+            return self._advance(session, session.page_index + 1)
 
     def previous_page(self, session_id: str) -> ComicViewState:
         with self._lock:
             session = self._get(session_id)
-            return self._move_to(session, session.page_index - 1)
+            if self._splittable(session, session.page_index) and session.half == 1:
+                return self._retreat(session, session.page_index)
+            return self._retreat(session, session.page_index - 1)
 
     def goto_page(self, session_id: str, page_index: int) -> ComicViewState:
         with self._lock:
@@ -307,15 +376,22 @@ class ComicReaderEngine:
     def set_view_options(self, session_id: str, *,
                          view_mode: str | None = None,
                          reading_direction: str | None = None,
-                         cover_as_single_page: bool | None = None) -> ComicViewState:
+                         cover_as_single_page: bool | None = None,
+                         split_spread_in_single_mode: bool | None = None) -> ComicViewState:
         with self._lock:
             session = self._get(session_id)
             if view_mode in ("single", "spread"):
+                if view_mode != session.options.view_mode:
+                    session.half = 0
                 session.options.view_mode = view_mode
             if reading_direction in ("rtl", "ltr"):
                 session.options.reading_direction = reading_direction
             if cover_as_single_page is not None:
                 session.options.cover_as_single_page = bool(cover_as_single_page)
+            if split_spread_in_single_mode is not None:
+                session.options.split_spread_in_single_mode = bool(
+                    split_spread_in_single_mode)
+                session.half = 0
             self._save_progress(session)
             return self._state(session)
 
@@ -427,8 +503,8 @@ class ComicReaderEngine:
                 raise ComicEngineError(f"ページ範囲外です: {page_index}")
             source = session.source
             entry = session.entry
-            page = session.pages[page_index]
-        return self._pipeline.analyze_page(source, entry, page)
+            pages = session.pages
+        return self._pipeline.analyze_page_stable(source, entry, pages, page_index)
 
     def render_variant_page(
         self,
@@ -451,6 +527,7 @@ class ComicReaderEngine:
             source = session.source
             entry = session.entry
             page = session.pages[page_index]
+            pages = session.pages
         return self._pipeline.render_variant_page(
             source, entry, page,
             viewport_width=viewport_width,
@@ -462,6 +539,7 @@ class ComicReaderEngine:
             auto_crop=auto_crop,
             split_side=split_side,
             crop_border_types=crop_border_types,
+            context_pages=pages,
         )
 
     def render_thumbnail(self, session_id: str, page_index: int,

@@ -218,6 +218,7 @@ def set_options(session_id: str, payload: dict = Body(...),
             view_mode=payload.get("view_mode"),
             reading_direction=payload.get("reading_direction"),
             cover_as_single_page=payload.get("cover_as_single_page"),
+            split_spread_in_single_mode=payload.get("split_spread_in_single_mode"),
         )
     except ComicEngineError as e:
         raise HTTPException(status_code=404, detail=str(e))
