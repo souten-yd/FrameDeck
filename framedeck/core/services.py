@@ -51,6 +51,8 @@ class Services:
             variant_cache_dir=paths.comic_variants_cache,
             analysis_cache_dir=paths.comic_analysis_cache,
         )
+        self.pipeline.variant_sharpen = bool(
+            settings.get("comic_variant_sharpen", True))
         self.resolver = ComicSourceResolver(self.nested_cache)
         self.comic_engine = ComicReaderEngine(
             self.sequence_builder, self.resolver, self.pipeline,
@@ -77,6 +79,8 @@ class Services:
             values.get("include_parent_direct_images", True)
         )
         self.pipeline.resize_filter = values.get("resize_filter", "lanczos")
+        self.pipeline.variant_sharpen = bool(
+            values.get("comic_variant_sharpen", True))
         auto_download_ffmpeg = bool(values.get("video_ffmpeg_auto_download", True))
         self.transcode.configure(auto_download_ffmpeg=auto_download_ffmpeg)
         self.hls.configure(

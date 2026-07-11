@@ -71,13 +71,25 @@ def find_best_gutter(image: Image.Image, search_start: int | None = None,
     return x, _luminance_type(mean), score
 
 
+DETECT_MAX_WIDTH = 1000
+
+
 def detect_spread(image: Image.Image, threshold: float = 0.68) -> SpreadDetection:
-    width, height = image.size
+    full_width, height = image.size
     if height <= 0:
         return SpreadDetection(False, 0.0, None, None, False)
-    aspect = width / height
+    aspect = full_width / height
     if aspect < 1.35:
         return SpreadDetection(False, 0.0, None, None, False)
+
+    # 中身の走査がPythonループのため縮小画像で検出し、座標だけ戻す
+    scale = full_width / float(DETECT_MAX_WIDTH)
+    if scale > 1.0:
+        size = (DETECT_MAX_WIDTH, max(1, round(image.height / scale)))
+        image = image.resize(size, Image.Resampling.BILINEAR)
+    else:
+        scale = 1.0
+    width, height = image.size
 
     split_x, gutter_type, gutter_score = find_best_gutter(image)
     center_width = max(4, width // 80)
@@ -99,16 +111,20 @@ def detect_spread(image: Image.Image, threshold: float = 0.68) -> SpreadDetectio
     balance = 1.0 - abs(left_content - right_content) / max(left_content, right_content, 0.01)
     balance = max(0.0, min(1.0, balance))
 
-    aspect_score = min(1.0, max(0.0, (aspect - 1.35) / 0.75))
+    # 典型的な見開き(B判2ページ分 ≒ 1.4)が満点近くになるようにする。
+    # 1.35のゲートを通過した時点で横長は確定しているため、比率の寄与は小さく、
+    # 綴じ目の明瞭さ・左右バランス・分割位置を主な根拠とする。
+    aspect_score = min(1.0, max(0.0, (aspect - 1.30) / 0.20))
     page_shape_score = 1.0 if 0.42 <= split_x / width <= 0.58 else 0.0
     confidence = (
-        aspect_score * 0.30
-        + center_gutter_score * 0.35
+        aspect_score * 0.15
+        + center_gutter_score * 0.45
         + balance * 0.20
         - (0.25 if has_crossing else 0.0)
-        + page_shape_score * 0.15
+        + page_shape_score * 0.20
     )
     confidence = max(0.0, min(1.0, confidence))
     if confidence < threshold:
         return SpreadDetection(False, confidence, None, gutter_type, has_crossing)
-    return SpreadDetection(True, confidence, split_x, gutter_type, has_crossing)
+    return SpreadDetection(True, confidence, int(round(split_x * scale)),
+                           gutter_type, has_crossing)

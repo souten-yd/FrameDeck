@@ -61,6 +61,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "comic_crop_black": True,
     "comic_crop_tolerance": 18,
     "comic_crop_safety_margin": 4,
+    "comic_variant_sharpen": True,           # 縮小配信時に輪郭を復元してから圧縮
+
     "comic_spread_detection": True,
     "comic_split_spread_in_single_mode": True,
     "comic_spread_display_behavior": "auto", # keep_original | split | auto

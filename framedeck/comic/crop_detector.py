@@ -42,15 +42,9 @@ def _classify_border(rgb: tuple[int, int, int], variance: float) -> str:
     return "colored_or_unknown"
 
 
-def _sample_background(image: Image.Image) -> tuple[tuple[int, int, int], float]:
-    width, height = image.size
-    band = max(2, min(width, height) // 40)
-    boxes = [
-        (0, 0, width, band),
-        (0, height - band, width, height),
-        (0, 0, band, height),
-        (width - band, 0, width, height),
-    ]
+def _stat_boxes(image: Image.Image,
+                boxes: list[tuple[int, int, int, int]]
+                ) -> tuple[list[tuple[int, int, int]], list[float]]:
     samples: list[tuple[int, int, int]] = []
     variances: list[float] = []
     for box in boxes:
@@ -58,6 +52,41 @@ def _sample_background(image: Image.Image) -> tuple[tuple[int, int, int], float]
         stat = ImageStat.Stat(crop)
         samples.append(tuple(int(v) for v in stat.median[:3]))
         variances.extend(float(v) for v in stat.var[:3])
+    return samples, variances
+
+
+def _sample_background(image: Image.Image) -> tuple[tuple[int, int, int], float]:
+    """余白の背景色を推定する。
+
+    まず四隅のパッチを見る。ページ内容が上下端(または左右端)まで達する
+    レターボックス画像では辺全体のサンプリングが内容に汚染されるため、
+    四隅が一致する場合はそれを背景とする。一致しない場合のみ従来の
+    辺バンドへフォールバックする。
+    """
+    width, height = image.size
+    band = max(2, min(width, height) // 40)
+    corner_boxes = [
+        (0, 0, band, band),
+        (width - band, 0, width, band),
+        (0, height - band, band, height),
+        (width - band, height - band, width, height),
+    ]
+    corners, corner_vars = _stat_boxes(image, corner_boxes)
+    max_diff = max(
+        abs(corner[ch] - other[ch])
+        for corner in corners for other in corners for ch in range(3)
+    )
+    if max_diff <= 24:
+        rgb = tuple(int(median(channel)) for channel in zip(*corners))
+        return rgb, float(median(corner_vars)) if corner_vars else 0.0
+
+    edge_boxes = [
+        (0, 0, width, band),
+        (0, height - band, width, height),
+        (0, 0, band, height),
+        (width - band, 0, width, height),
+    ]
+    samples, variances = _stat_boxes(image, edge_boxes)
     rgb = tuple(int(median(channel)) for channel in zip(*samples))
     return rgb, float(median(variances)) if variances else 0.0
 
@@ -106,6 +135,19 @@ def _scan_right(image: Image.Image, bg: tuple[int, int, int], tolerance: int, th
     return image.width
 
 
+ANALYSIS_MAX_EDGE = 1280
+
+
+def _analysis_scale(image: Image.Image,
+                    max_edge: int = ANALYSIS_MAX_EDGE) -> tuple[Image.Image, float]:
+    """検出はダウンスケール画像で行う(列/行の走査がPythonループのため)。"""
+    scale = max(image.width, image.height) / float(max_edge)
+    if scale <= 1.0:
+        return image, 1.0
+    size = (max(1, round(image.width / scale)), max(1, round(image.height / scale)))
+    return image.resize(size, Image.Resampling.BILINEAR), scale
+
+
 def detect_crop_box(
     image: Image.Image,
     tolerance: int = 18,
@@ -113,7 +155,9 @@ def detect_crop_box(
     max_crop_ratio: float = 0.18,
     allowed_border_types: set[str] | None = None,
 ) -> CropDetection:
+    full_width, full_height = image.size
     image = _rgb(image)
+    image, scale = _analysis_scale(image)
     bg, variance = _sample_background(image)
     border_type = _classify_border(bg, variance)
     if border_type == "colored_or_unknown":
@@ -140,12 +184,14 @@ def detect_crop_box(
     if max(ratios) > max_crop_ratio and confidence < 0.90:
         return CropDetection(border_type, None, confidence, bg)
 
+    # 元解像度へ戻す。縮小走査の量子化誤差はsafety_marginへ吸収する
+    margin = safety_margin + (int(scale) + 1 if scale > 1.0 else 0)
     box = (
-        max(0, left - safety_margin),
-        max(0, top - safety_margin),
-        min(width, right + safety_margin),
-        min(height, bottom + safety_margin),
+        max(0, int(left * scale) - margin),
+        max(0, int(top * scale) - margin),
+        min(full_width, int(right * scale + 0.5) + margin),
+        min(full_height, int(bottom * scale + 0.5) + margin),
     )
-    if box == (0, 0, width, height):
+    if box == (0, 0, full_width, full_height):
         return CropDetection(border_type, None, confidence, bg)
     return CropDetection(border_type, box, confidence, bg)

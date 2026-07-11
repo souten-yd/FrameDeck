@@ -53,6 +53,8 @@ class ReaderOptions:
     reading_direction: str = "rtl"       # rtl | ltr
     cover_as_single_page: bool = True
     landscape_threshold: float = 1.25
+    # 単ページモードで横長(見開き)画像を左右半分ずつ表示する
+    split_spread_in_single_mode: bool = True
 
 
 @dataclass
@@ -86,8 +88,12 @@ class ComicViewState:
     root_folder_id: str | None = None
     at_sequence_end: bool = False
     at_sequence_start: bool = False
+    # visible_pages と対の表示面("full" | "left" | "right")。
+    # 単ページモードで横長画像を半分ずつ表示するときに使う。
+    visible_page_sides: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
+        sides = self.visible_page_sides or tuple("full" for _ in self.visible_pages)
         return {
             "session_id": self.session_id,
             "entry_id": self.entry_id,
@@ -98,6 +104,7 @@ class ComicViewState:
             "page_index": self.page_index,
             "page_count": self.page_count,
             "visible_pages": list(self.visible_pages),
+            "visible_page_sides": list(sides),
             "has_previous_entry": self.has_previous_entry,
             "has_next_entry": self.has_next_entry,
             "title": self.title,

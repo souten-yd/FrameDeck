@@ -565,10 +565,12 @@ function comicDeliveryProfile() {
   return S.settings[`${prefix}_delivery_profile`] || (S.uiProfile === "mobile" ? "mobile" : "high");
 }
 
-function comicPageUrl(pageIndex) {
+function comicPageUrl(pageIndex, side = "full") {
   const state = S.comic.state;
   const base = `/api/comics/session/${state.session_id}/page/${pageIndex}`;
-  if (S.settings.comic_delivery_mode === "original") return base;
+  if (S.settings.comic_delivery_mode === "original") {
+    return side === "full" ? base : `${base}?split_side=${side}`;
+  }
   const rect = $("comic-stage").getBoundingClientRect();
   const params = new URLSearchParams();
   params.set("width", String(Math.max(64, Math.round(rect.width || window.innerWidth))));
@@ -577,8 +579,17 @@ function comicPageUrl(pageIndex) {
   params.set("profile", comicDeliveryProfile());
   params.set("format", S.settings.comic_output_format || "auto");
   params.set("auto_crop", String(S.settings.comic_auto_crop !== false));
+  if (side !== "full") params.set("split_side", side);
   params.set("entry", state.entry_id || "");
   return `${base}?${params.toString()}`;
+}
+
+function comicVisiblePageSpecs(state) {
+  const sides = state.visible_page_sides || [];
+  return state.visible_pages.map((pageIndex, i) => ({
+    index: pageIndex,
+    side: sides[i] || "full",
+  }));
 }
 
 
@@ -634,14 +645,14 @@ function renderComicPages() {
   const container = $("comic-pages");
   container.innerHTML = "";
   $("comic-msg").classList.add("hidden");
-  let pages = [...state.visible_pages];
+  let pages = comicVisiblePageSpecs(state);
   if (state.reading_direction === "rtl" && pages.length === 2) {
     pages.reverse();
   }
   container.classList.toggle("two", pages.length === 2);
-  for (const pageIndex of pages) {
+  for (const page of pages) {
     const img = document.createElement("img");
-    img.alt = `page ${pageIndex + 1}`;
+    img.alt = `page ${page.index + 1}`;
     img.draggable = false;
     img.decoding = "async";
     img.onload = layoutComicSpread;
@@ -650,7 +661,7 @@ function renderComicPages() {
       $("comic-msg").classList.remove("hidden");
     };
     container.appendChild(img);
-    img.src = comicPageUrl(pageIndex);
+    img.src = comicPageUrl(page.index, page.side);
     if (img.complete) requestAnimationFrame(layoutComicSpread);
   }
   requestAnimationFrame(layoutComicSpread);
@@ -658,7 +669,15 @@ function renderComicPages() {
 
 function preloadComicPages() {
   const state = S.comic.state;
+  const splitActive = (state.visible_page_sides || []).some((s) => s !== "full");
   const last = state.visible_pages[state.visible_pages.length - 1];
+  if (splitActive) {
+    // 分割表示中: 現ページと次ページの両面を先読みする
+    for (const side of ["right", "left"]) {
+      new Image().src = comicPageUrl(last, side);
+      if (last + 1 < state.page_count) new Image().src = comicPageUrl(last + 1, side);
+    }
+  }
   for (let i = 1; i <= 4; i++) {
     const idx = last + i;
     if (idx < state.page_count) new Image().src = comicPageUrl(idx);
@@ -740,7 +759,10 @@ async function performComicPageAction(apiPath, direction) {
     return;
   }
   const didMove =
-    state.entry_id !== before.entry_id || state.page_index !== before.page_index;
+    state.entry_id !== before.entry_id ||
+    state.page_index !== before.page_index ||
+    JSON.stringify(state.visible_page_sides || []) !==
+      JSON.stringify(before.visible_page_sides || []);
   if (didMove) {
     setComicState(state);
     return;
@@ -1782,6 +1804,9 @@ async function openSettings() {
   settingRow(grid, "自動トリミング", makeSelect("comic_auto_crop", [
     ["true", "有効"], ["false", "無効"],
   ]));
+  settingRow(grid, "縮小後シャープ化", makeSelect("comic_variant_sharpen", [
+    ["true", "有効"], ["false", "無効"],
+  ]), "軽量配信時に縮小でなまった線を復元してから圧縮します。");
   settingRow(grid, "白枠トリミング", makeSelect("comic_crop_white", [
     ["true", "有効"], ["false", "無効"],
   ]));
