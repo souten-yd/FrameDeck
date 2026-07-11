@@ -188,3 +188,33 @@ def test_empty_archive_rejected(app_env, tmp_path):
     services, _, _ = app_env
     sequence = services.sequence_builder.build_sequence(str(root))
     assert len(sequence.entries) == 0
+
+def test_next_page_shifts_spread_by_one(app_env, comic_root):
+    services, _, _ = app_env
+    engine = services.comic_engine
+    state = _create_session(services, comic_root, "B1")
+    assert state.visible_pages == (0,)
+
+    state = engine.next_spread(state.session_id)
+    assert state.page_index == 1
+    assert state.visible_pages == (1, 2)
+
+    state = engine.next_page(state.session_id)
+    assert state.page_index == 2
+    assert state.visible_pages == (2, 3)
+
+    state = engine.previous_page(state.session_id)
+    assert state.page_index == 1
+    assert state.visible_pages == (1, 2)
+
+
+def test_next_spread_moves_by_group_after_shift(app_env, comic_root):
+    services, _, _ = app_env
+    engine = services.comic_engine
+    state = _create_session(services, comic_root, "C")
+    state = engine.next_page(state.session_id)
+    assert state.visible_pages == (1, 2)
+    state = engine.next_spread(state.session_id)
+    assert state.page_index == 3
+    assert state.visible_pages == (3, 4)
+

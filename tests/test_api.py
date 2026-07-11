@@ -119,8 +119,8 @@ def test_comic_session_flow(client_env):
     assert state["visible_pages"] == [0]
     session_id = state["session_id"]
 
-    # ページ送り → 見開き
-    state = client.post(f"/api/comics/session/{session_id}/next-page").json()
+    # 見開き送り
+    state = client.post(f"/api/comics/session/{session_id}/next-spread").json()
     assert state["visible_pages"] == [1, 2]
 
     # ページ画像取得 + ETag
@@ -185,6 +185,8 @@ def test_system_info(client_env):
     client, *_ = client_env
     info = client.get("/api/system/info").json()
     assert "tools" in info and "mpv" in info["tools"]
+    assert "ffmpeg_source" in info["tools"]
+
 
 
 def test_invalid_app_mode_rejected(tmp_path):
@@ -192,3 +194,255 @@ def test_invalid_app_mode_rejected(tmp_path):
     with pytest.raises(ValueError):
         run(app_mode="desktop_only", port=59999, open_browser=False,
             base_dir=tmp_path / "home")
+
+def test_comic_spread_and_page_endpoints_are_distinct(client_env):
+    client, services, root_id, comic_root = client_env
+    items = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic"
+    ).json()["items"]
+    c_cbz = next(i for i in items if i["display_name"] == "C.cbz")
+    state = client.post("/api/comics/session",
+                        json={"item_id": c_cbz["id"]}).json()
+    session_id = state["session_id"]
+
+    state = client.post(f"/api/comics/session/{session_id}/next-spread").json()
+    assert state["page_index"] == 1
+    assert state["visible_pages"] == [1, 2]
+    assert state["root_item_id"] == c_cbz["id"]
+    assert state["root_folder_id"] == root_id
+
+    state = client.post(f"/api/comics/session/{session_id}/next-page").json()
+    assert state["page_index"] == 2
+    assert state["visible_pages"] == [2, 3]
+
+    state = client.post(f"/api/comics/session/{session_id}/previous-page").json()
+    assert state["page_index"] == 1
+    assert state["visible_pages"] == [1, 2]
+
+
+def test_library_roots_allow_same_path_for_different_kinds(client_env):
+    client, services, root_id, comic_root = client_env
+
+    response = client.post("/api/library/roots",
+                           json={"path": str(comic_root), "kind": "video"})
+    assert response.status_code == 200
+    video_root = response.json()
+    assert video_root["kind"] == "video"
+    assert video_root["id"] != root_id
+
+    response = client.post("/api/library/roots",
+                           json={"path": str(comic_root), "kind": "comic"})
+    assert response.status_code == 409
+
+    roots = services.library.list_roots()
+    resolved = str(comic_root.resolve())
+    assert sum(
+        1 for root in roots
+        if root["kind"] == "comic" and root["path"] == resolved
+    ) == 1
+    assert sum(
+        1 for root in roots
+        if root["kind"] == "video" and root["path"] == resolved
+    ) == 1
+
+    comic_items = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic"
+    ).json()
+    assert comic_items["folder"]["root_id"] == root_id
+
+    any_root = client.post("/api/library/roots",
+                           json={"path": str(comic_root), "kind": "any"}).json()
+    assert any_root["id"] != root_id
+    comic_items = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic"
+    ).json()
+    assert comic_items["folder"]["root_id"] == root_id
+
+    video_items = client.get(
+        f"/api/library/items?folder_id={video_root['id']}&mode=video"
+    ).json()
+    assert video_items["folder"]["root_id"] == video_root["id"]
+
+    response = client.get(
+        f"/api/library/items?folder_id={video_root['id']}&mode=comic"
+    )
+    assert response.status_code == 404
+
+
+def test_library_root_display_name_is_persisted(client_env):
+    client, services, root_id, comic_root = client_env
+    extra = comic_root / "B"
+    response = client.post("/api/library/roots", json={
+        "path": str(extra),
+        "kind": "comic",
+        "display_name": "Nested Comics",
+    })
+    assert response.status_code == 200
+    created = response.json()
+    assert created["display_name"] == "Nested Comics"
+
+    roots = client.get("/api/library/roots").json()
+    assert any(
+        root["id"] == created["id"] and root["display_name"] == "Nested Comics"
+        for root in roots
+    )
+
+    response = client.patch(f"/api/library/roots/{created['id']}",
+                            json={"display_name": "Updated Comics"})
+    assert response.status_code == 200
+    assert response.json()["display_name"] == "Updated Comics"
+
+    roots = client.get("/api/library/roots").json()
+    assert any(
+        root["id"] == created["id"] and root["display_name"] == "Updated Comics"
+        for root in roots
+    )
+
+
+def test_folder_item_id_cannot_cross_library_kind(client_env, tmp_path):
+    client, services, root_id, comic_root = client_env
+    video_root_path = tmp_path / "video_root"
+    video_root_path.mkdir()
+    response = client.post("/api/library/roots",
+                           json={"path": str(video_root_path), "kind": "video"})
+    assert response.status_code == 200
+
+    items = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic"
+    ).json()["items"]
+    folder = next(item for item in items if item["display_name"] == "B")
+
+    response = client.get(
+        f"/api/library/items?folder_id={folder['id']}&mode=video"
+    )
+    assert response.status_code == 404
+
+
+
+def test_comic_analysis_and_variant_page_api(client_env):
+    client, services, root_id, comic_root = client_env
+    items = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic"
+    ).json()["items"]
+    c_cbz = next(i for i in items if i["display_name"] == "C.cbz")
+    state = client.post("/api/comics/session", json={"item_id": c_cbz["id"]}).json()
+    session_id = state["session_id"]
+
+    analysis = client.get(
+        f"/api/comics/session/{session_id}/page/0/analysis"
+    )
+    assert analysis.status_code == 200
+    assert analysis.json()["source_width"] > 0
+    assert "is_spread" in analysis.json()
+
+    response = client.get(
+        f"/api/comics/session/{session_id}/page/0?width=240&height=320&dpr=1&profile=mobile&format=webp"
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"] in {"image/webp", "image/jpeg"}
+    assert "etag" in response.headers
+
+
+def test_video_playback_profile_api(client_env, tmp_path):
+    from framedeck.core.library_service import item_id_for
+
+    client, services, root_id, comic_root = client_env
+    video_root = tmp_path / "videos"
+    video_root.mkdir()
+    video_path = video_root / "sample.mp4"
+    video_path.write_bytes(b"not a real video")
+    services.library.add_root(str(video_root), "video")
+    media_id = item_id_for(str(video_path))
+    stat = video_path.stat()
+    services.storage.upsert_media_item(
+        media_id, str(video_path), "video", None, stat.st_mtime, stat.st_size
+    )
+
+    response = client.post(
+        f"/api/videos/{media_id}/playback-profile",
+        json={
+            "uiProfile": "mobile",
+            "saveData": True,
+            "viewportWidth": 390,
+            "viewportHeight": 844,
+            "devicePixelRatio": 2,
+        },
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["profile"]["name"] == "480p"
+    assert data["profile"]["height"] == 480
+
+
+def test_hls_cached_playlist_and_segment_delivery(client_env, tmp_path):
+    from framedeck.core.library_service import item_id_for
+
+    client, services, root_id, comic_root = client_env
+    video_root = tmp_path / "hls_videos"
+    video_root.mkdir()
+    video_path = video_root / "sample.mp4"
+    video_path.write_bytes(b"not a real video")
+    services.library.add_root(str(video_root), "video")
+    media_id = item_id_for(str(video_path))
+    stat = video_path.stat()
+    services.storage.upsert_media_item(
+        media_id, str(video_path), "video", None, stat.st_mtime, stat.st_size
+    )
+
+    manifest = services.hls.manifest_for(
+        str(video_path), profiles=["480p"], source_height=0
+    )
+    variant_dir = manifest.cache_dir / "480p"
+    variant_dir.mkdir(parents=True)
+    manifest.master.write_text(
+        "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-STREAM-INF:BANDWIDTH=914000,RESOLUTION=0x480\n480p/playlist.m3u8\n",
+        "utf-8",
+    )
+    (variant_dir / "playlist.m3u8").write_text(
+        "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4.0,\nsegment_00000.m4s\n#EXT-X-ENDLIST\n",
+        "utf-8",
+    )
+    (variant_dir / "init.mp4").write_bytes(b"init")
+    (variant_dir / "segment_00000.m4s").write_bytes(b"segment")
+
+    response = client.get(f"/api/videos/{media_id}/hls/master.m3u8?profile=480p")
+    assert response.status_code == 200
+    assert "#EXTM3U" in response.text
+
+    response = client.get(f"/api/videos/{media_id}/hls/480p/playlist.m3u8")
+    assert response.status_code == 200
+    assert "segment_00000.m4s" in response.text
+
+    response = client.get(f"/api/videos/{media_id}/hls/480p/segment_00000.m4s")
+    assert response.status_code == 200
+    assert response.content == b"segment"
+
+
+def test_video_playback_profile_requested_resolution_wins(client_env, tmp_path):
+    from framedeck.core.library_service import item_id_for
+
+    client, services, root_id, comic_root = client_env
+    video_root = tmp_path / "requested_videos"
+    video_root.mkdir()
+    video_path = video_root / "sample.mp4"
+    video_path.write_bytes(b"not a real video")
+    services.library.add_root(str(video_root), "video")
+    media_id = item_id_for(str(video_path))
+    stat = video_path.stat()
+    services.storage.upsert_media_item(
+        media_id, str(video_path), "video", None, stat.st_mtime, stat.st_size
+    )
+
+    response = client.post(
+        f"/api/videos/{media_id}/playback-profile",
+        json={"uiProfile": "desktop", "requestedProfile": "360p"},
+    )
+    assert response.status_code == 200
+    assert response.json()["profile"]["name"] == "360p"
+
+    response = client.post(
+        f"/api/videos/{media_id}/playback-profile",
+        json={"uiProfile": "desktop", "requestedProfile": "original"},
+    )
+    assert response.status_code == 200
+    assert response.json()["profile"]["transcode"] is False

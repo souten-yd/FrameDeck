@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ... import __version__
 from ...comic.archive_backend import rar_backend_available
+from ...video.ffmpeg import resolve_ffmpeg, system_ffprobe_path
 from ...core.services import Services
 from ..dependencies import get_services
 
@@ -21,13 +22,16 @@ def health() -> dict:
 
 @router.get("/system/info")
 def system_info(services: Services = Depends(get_services)) -> dict:
+    ffmpeg = resolve_ffmpeg(bool(services.settings.get("video_ffmpeg_auto_download", True)))
     return {
         "name": "FrameDeck",
         "version": __version__,
         "tools": {
             "mpv": shutil.which("mpv") is not None,
-            "ffmpeg": shutil.which("ffmpeg") is not None,
-            "ffprobe": shutil.which("ffprobe") is not None,
+            "ffmpeg": ffmpeg.available,
+            "ffmpeg_source": ffmpeg.source,
+            "ffmpeg_error": ffmpeg.error,
+            "ffprobe": system_ffprobe_path() is not None,
             "rar_backend": rar_backend_available(),
         },
         "transcode_available": services.transcode.available(),

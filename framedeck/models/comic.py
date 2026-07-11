@@ -83,6 +83,7 @@ class ComicViewState:
     reading_direction: str
     view_mode: str
     root_item_id: str = ""
+    root_folder_id: str | None = None
     at_sequence_end: bool = False
     at_sequence_start: bool = False
 
@@ -91,6 +92,7 @@ class ComicViewState:
             "session_id": self.session_id,
             "entry_id": self.entry_id,
             "root_item_id": self.root_item_id,
+            "root_folder_id": self.root_folder_id,
             "entry_index": self.entry_index,
             "entry_count": self.entry_count,
             "page_index": self.page_index,

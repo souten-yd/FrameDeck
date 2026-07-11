@@ -23,6 +23,7 @@ from .archive_backend import ArchiveError
 from .image_pipeline import ImagePipeline
 from .sequence_builder import ReadingSequenceLazy, SequenceBuilder
 from .source import ComicSourceResolver
+from .image_analysis import ComicImageAnalysis
 
 MAX_SESSIONS = 32
 
@@ -418,6 +419,50 @@ class ComicReaderEngine:
             page = session.pages[page_index]
         return self._pipeline.render_page(source, entry, page,
                                           max_width, max_height)
+
+    def analyze_page(self, session_id: str, page_index: int) -> ComicImageAnalysis:
+        with self._lock:
+            session = self._get(session_id)
+            if not (0 <= page_index < session.page_count):
+                raise ComicEngineError(f"ページ範囲外です: {page_index}")
+            source = session.source
+            entry = session.entry
+            page = session.pages[page_index]
+        return self._pipeline.analyze_page(source, entry, page)
+
+    def render_variant_page(
+        self,
+        session_id: str,
+        page_index: int,
+        viewport_width: int | None = None,
+        viewport_height: int | None = None,
+        dpr: float = 1.0,
+        profile: str = "balanced",
+        output_format: str = "auto",
+        quality: int | None = None,
+        auto_crop: bool = True,
+        split_side: str = "full",
+        crop_border_types: set[str] | None = None,
+    ) -> tuple[bytes, str, str]:
+        with self._lock:
+            session = self._get(session_id)
+            if not (0 <= page_index < session.page_count):
+                raise ComicEngineError(f"ページ範囲外です: {page_index}")
+            source = session.source
+            entry = session.entry
+            page = session.pages[page_index]
+        return self._pipeline.render_variant_page(
+            source, entry, page,
+            viewport_width=viewport_width,
+            viewport_height=viewport_height,
+            dpr=dpr,
+            profile=profile,
+            output_format=output_format,
+            quality=quality,
+            auto_crop=auto_crop,
+            split_side=split_side,
+            crop_border_types=crop_border_types,
+        )
 
     def render_thumbnail(self, session_id: str, page_index: int,
                          size: int = 320) -> tuple[bytes, str, str]:

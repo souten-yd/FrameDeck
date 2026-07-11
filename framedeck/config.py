@@ -4,6 +4,8 @@
     config/  settings.json
     data/    framedeck.db
     cache/   comic_pages / nested_archives / thumbnails / transcodes
+             video_variants / video_segments / comic_variants
+             comic_analysis / device_models
     logs/    framedeck.log
     runtime/ mpv / locks
 """
@@ -50,10 +52,48 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "nested_cache_max_gb": 10,
     "nested_cache_max_age_days": 30,
     "resize_filter": "lanczos",              # lanczos | bicubic | bilinear | nearest
+    # 漫画適応配信・画像解析
+    "comic_delivery_mode": "auto",           # original | auto | compressed
+    "comic_output_format": "auto",           # auto | jpeg | webp | avif | png | original
+    "comic_auto_crop": True,
+    "comic_crop_white": True,
+    "comic_crop_gray": True,
+    "comic_crop_black": True,
+    "comic_crop_tolerance": 18,
+    "comic_crop_safety_margin": 4,
+    "comic_spread_detection": True,
+    "comic_split_spread_in_single_mode": True,
+    "comic_spread_display_behavior": "auto", # keep_original | split | auto
+    "comic_client_enhancement": "auto",      # off | auto | sharpen | contrast | super_resolution
+    "comic_desktop_view_mode": "spread",     # single | spread
+    "comic_desktop_delivery_profile": "high",# original | high | balanced | mobile | data_saver | custom
+    "comic_desktop_page_fit": "height",      # width | height | contain
+    "comic_desktop_split_spread": False,
+    "comic_desktop_client_enhancement": "off",
+    "comic_mobile_view_mode": "single",
+    "comic_mobile_delivery_profile": "mobile",
+    "comic_mobile_page_fit": "width",
+    "comic_mobile_split_spread": True,
+    "comic_mobile_client_enhancement": "auto",
     # 動画
     "video_wheel_action": "seek",            # seek | volume
     "resume_playback": True,
     "default_volume": 0,
+    # 動画適応配信
+    "video_stream_mode": "auto",             # original | auto | transcode
+    "video_profile_desktop": "1080p",       # auto | original | 2160p | 1440p | 1080p | 720p | 480p | 360p
+    "video_profile_mobile": "720p",
+    "video_codec": "h264",                   # h264 | hevc | av1 | vp9 | copy
+    "video_container": "hls_fmp4",           # hls_fmp4
+    "video_max_resolution": "1080p",
+    "video_bitrate_kbps": 1800,
+    "video_audio_bitrate_kbps": 96,
+    "video_fps_limit": 30,
+    "video_segment_duration": 4,
+    "video_hardware_encoder": "auto",
+    "video_ffmpeg_auto_download": True,
+    "video_variant_cache_gb": 30,
+    "video_variant_expire_days": 30,
     # 削除
     "delete_to_trash": True,
     # Web
@@ -67,7 +107,98 @@ _VALID_ENUMS = {
     "previous_entry_start": {"first", "last", "saved"},
     "resize_filter": {"lanczos", "bicubic", "bilinear", "nearest"},
     "video_wheel_action": {"seek", "volume"},
+    "comic_delivery_mode": {"original", "auto", "compressed"},
+    "comic_output_format": {"auto", "jpeg", "webp", "avif", "png", "original"},
+    "comic_spread_display_behavior": {"keep_original", "split", "auto"},
+    "comic_client_enhancement": {
+        "off", "auto", "sharpen", "contrast", "super_resolution",
+    },
+    "comic_desktop_view_mode": {"single", "spread"},
+    "comic_mobile_view_mode": {"single", "spread"},
+    "comic_desktop_delivery_profile": {
+        "original", "high", "balanced", "mobile", "data_saver", "custom",
+    },
+    "comic_mobile_delivery_profile": {
+        "original", "high", "balanced", "mobile", "data_saver", "custom",
+    },
+    "comic_desktop_page_fit": {"width", "height", "contain"},
+    "comic_mobile_page_fit": {"width", "height", "contain"},
+    "comic_desktop_client_enhancement": {
+        "off", "auto", "sharpen", "contrast", "super_resolution",
+    },
+    "comic_mobile_client_enhancement": {
+        "off", "auto", "sharpen", "contrast", "super_resolution",
+    },
+    "video_stream_mode": {"original", "auto", "transcode"},
+    "video_profile_desktop": {
+        "auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p",
+        "wifi_high", "mobile_balanced", "mobile_low", "data_saver", "custom",
+    },
+    "video_profile_mobile": {
+        "auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p",
+        "wifi_high", "mobile_balanced", "mobile_low", "data_saver", "custom",
+    },
+    "video_max_resolution": {
+        "auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p",
+    },
+    "video_codec": {"h264", "hevc", "av1", "vp9", "copy"},
+    "video_container": {"hls_fmp4"},
+    "video_hardware_encoder": {
+        "auto", "software", "h264_vaapi", "hevc_vaapi", "h264_amf",
+        "hevc_amf", "h264_nvenc", "hevc_nvenc", "av1_nvenc",
+    },
 }
+
+
+_NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
+    "comic_crop_tolerance": (0, 255),
+    "comic_crop_safety_margin": (0, 128),
+    "video_bitrate_kbps": (0, 100000),
+    "video_audio_bitrate_kbps": (0, 2000),
+    "video_fps_limit": (0, 240),
+    "video_segment_duration": (1, 30),
+    "video_variant_cache_gb": (0, 10000),
+    "video_variant_expire_days": (0, 3650),
+}
+
+
+def resolve_comic_reader_settings(
+    values: dict[str, Any],
+    ui_profile: str,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """PC/モバイル別漫画設定を共通設定へ重ねて解決する。"""
+    profile = "mobile" if ui_profile == "mobile" else "desktop"
+    resolved = {
+        "reading_direction": values.get("reading_direction", "rtl"),
+        "cover_as_single_page": values.get("cover_as_single_page", True),
+        "auto_crop": values.get("comic_auto_crop", True),
+        "delivery_mode": values.get("comic_delivery_mode", "auto"),
+        "output_format": values.get("comic_output_format", "auto"),
+        "crop_white": values.get("comic_crop_white", True),
+        "crop_gray": values.get("comic_crop_gray", True),
+        "crop_black": values.get("comic_crop_black", True),
+        "crop_tolerance": values.get("comic_crop_tolerance", 18),
+        "crop_safety_margin": values.get("comic_crop_safety_margin", 4),
+        "spread_detection": values.get("comic_spread_detection", True),
+        "split_spread_in_single_mode": values.get(
+            "comic_split_spread_in_single_mode", True
+        ),
+        "spread_display_behavior": values.get(
+            "comic_spread_display_behavior", "auto"
+        ),
+        "client_enhancement": values.get("comic_client_enhancement", "auto"),
+        "view_mode": values.get(f"comic_{profile}_view_mode"),
+        "delivery_profile": values.get(f"comic_{profile}_delivery_profile"),
+        "page_fit": values.get(f"comic_{profile}_page_fit"),
+        "split_spread": values.get(f"comic_{profile}_split_spread"),
+    }
+    profile_enhancement = values.get(f"comic_{profile}_client_enhancement")
+    if profile_enhancement is not None:
+        resolved["client_enhancement"] = profile_enhancement
+    if overrides:
+        resolved.update(overrides)
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -102,6 +233,26 @@ class AppPaths:
     @property
     def transcode_cache(self) -> Path:
         return self.cache_dir / "transcodes"
+
+    @property
+    def video_variants_cache(self) -> Path:
+        return self.cache_dir / "video_variants"
+
+    @property
+    def video_segments_cache(self) -> Path:
+        return self.cache_dir / "video_segments"
+
+    @property
+    def comic_variants_cache(self) -> Path:
+        return self.cache_dir / "comic_variants"
+
+    @property
+    def comic_analysis_cache(self) -> Path:
+        return self.cache_dir / "comic_analysis"
+
+    @property
+    def device_models_cache(self) -> Path:
+        return self.cache_dir / "device_models"
 
     @property
     def mpv_runtime(self) -> Path:
@@ -152,6 +303,11 @@ def ensure_runtime_directories(paths: AppPaths) -> None:
         paths.nested_archive_cache,
         paths.thumbnail_cache,
         paths.transcode_cache,
+        paths.video_variants_cache,
+        paths.video_segments_cache,
+        paths.comic_variants_cache,
+        paths.comic_analysis_cache,
+        paths.device_models_cache,
         paths.log_dir,
         paths.runtime_dir,
         paths.mpv_runtime,
@@ -191,6 +347,14 @@ class Settings:
         for key, allowed in _VALID_ENUMS.items():
             if self._values.get(key) not in allowed:
                 self._values[key] = DEFAULT_SETTINGS[key]
+        for key, (low, high) in _NUMERIC_LIMITS.items():
+            try:
+                value = float(self._values.get(key))
+            except (TypeError, ValueError):
+                self._values[key] = DEFAULT_SETTINGS[key]
+                continue
+            if not low <= value <= high:
+                self._values[key] = DEFAULT_SETTINGS[key]
 
     def save(self) -> None:
         with self._lock:
@@ -218,6 +382,10 @@ class Settings:
                 expected = type(DEFAULT_SETTINGS[key])
                 if expected in (int, float) and isinstance(value, (int, float)):
                     value = expected(value)
+                if key in _NUMERIC_LIMITS:
+                    low, high = _NUMERIC_LIMITS[key]
+                    if not low <= float(value) <= high:
+                        raise ValueError(f"Invalid value for {key}: {value!r}")
                 self._values[key] = value
             self._validate()
             self.save()
