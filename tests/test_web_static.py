@@ -108,6 +108,20 @@ def test_comic_nav_buttons_follow_visual_direction():
     assert "btn-comic-spread-fwd" not in html
 
 
+def test_library_search_and_reversible_comic_taps_exist():
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    css = (ROOT / "framedeck/web/static/css/app.css").read_text()
+    assert 'id="library-search"' in html
+    assert 'id="library-search-mobile"' in html
+    assert "URLSearchParams" in js
+    assert 'params.set("query", query)' in js
+    assert 'makeSelect("comic_tap_reverse"' in js
+    assert "S.settings.comic_tap_reverse ? !forward : forward" in js
+    assert "await switchLibraryRoot(created.id, { closeDrawer: false });" in js
+    assert ".search-input" in css
+
+
 def test_comic_view_mode_button_is_in_button_row():
     html = (ROOT / "framedeck/web/templates/index.html").read_text()
     comic = html[html.index('id="comic-controls"'):html.index('id="comic-title"')]

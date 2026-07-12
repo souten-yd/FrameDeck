@@ -39,6 +39,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "default_folder_comic": "/mnt/Download/Manga",
     # 漫画ナビゲーション
     "comic_sequence_end_behavior": "stop",   # stop | wrap | prompt
+    "comic_tap_reverse": False,              # 左右クリックの進む/戻るを反転
     "reading_direction": "rtl",              # rtl | ltr
     "view_mode": "spread",                   # single | spread
     "cover_as_single_page": True,

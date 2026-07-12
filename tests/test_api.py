@@ -43,6 +43,24 @@ def test_list_items(client_env):
         assert not (item.get("relative_path") or "").startswith("/")
 
 
+def test_list_items_searches_files_and_folders(client_env):
+    client, services, root_id, comic_root = client_env
+    (comic_root / "FindFolder").mkdir()
+    response = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic&sort=name&query=findfolder"
+    )
+    assert response.status_code == 200
+    names = [i["display_name"] for i in response.json()["items"]]
+    assert names == ["FindFolder"]
+
+    response = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic&sort=name&query=cbz"
+    )
+    assert response.status_code == 200
+    names = [i["display_name"] for i in response.json()["items"]]
+    assert names == ["C.cbz"]
+
+
 def test_path_outside_roots_forbidden(client_env):
     client, services, root_id, comic_root = client_env
     from framedeck.core.security import PathValidationError

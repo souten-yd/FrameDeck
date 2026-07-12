@@ -52,6 +52,13 @@ def test_safe_member_name_rules():
     assert not is_safe_member_name("")
 
 
+def test_rar_backend_prefers_unrar_over_7z(monkeypatch):
+    from framedeck.comic import archive_backend
+
+    monkeypatch.setattr(archive_backend.shutil, "which", lambda name: f"/usr/bin/{name}" if name in {"7z", "unrar"} else None)
+    assert archive_backend.rar_backend_available() == "rarfile"
+
+
 def test_broken_archive_raises(tmp_path):
     path = tmp_path / "broken.zip"
     path.write_bytes(b"this is not a zip file")

@@ -97,6 +97,10 @@ button { font-family: inherit; }
   min-width: 0;
 }
 .root-select { max-width: 180px; flex-shrink: 0; }
+.search-input {
+  width: 150px;
+  min-width: 96px;
+}
 .mode-chip {
   flex: 1;
   min-height: 36px;
@@ -483,6 +487,7 @@ input[type="range"].rtl { direction: rtl; }
   #topbar .tb-right .star-bar,
   #topbar .tb-right #sel-filter,
   #topbar .tb-right #sel-sort,
+  #topbar .tb-right #library-search,
   #topbar .tb-right #btn-delete,
   #sel-library-root { display: none; }
   .tb-breadcrumb {
@@ -535,7 +540,7 @@ input[type="range"].rtl { direction: rtl; }
   .mobile-mode-row,
   .mobile-nav-row,
   .mobile-filter-row { display: flex; gap: 6px; }
-  .mobile-filter-row > *, .mobile-root-select { width: 100%; flex: 1; min-width: 0; }
+  .mobile-filter-row > *, .mobile-root-select, .mobile-library-tools .search-input { width: 100%; flex: 1; min-width: 0; }
   .mobile-nav-row .icon-btn { flex: 1; }
   .mobile-breadcrumb {
     color: var(--text-dim);

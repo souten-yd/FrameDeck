@@ -254,11 +254,16 @@ async function loadFolder(folderId, { remember = true } = {}) {
   if (!folderId) return;
   const sort = $("sel-sort").value;
   const filter = $("sel-filter").value;
+  const query = ($("library-search")?.value || "").trim();
+  const params = new URLSearchParams({
+    folder_id: folderId,
+    mode: S.mode,
+    sort,
+    filter,
+  });
+  if (query) params.set("query", query);
   try {
-    const data = await api(
-      `/api/library/items?folder_id=${folderId}&mode=${S.mode}` +
-      `&sort=${sort}&filter=${filter}`
-    );
+    const data = await api(`/api/library/items?${params.toString()}`);
     S.folderId = folderId;
     S.folderInfo = data.folder;
     S.items = data.items;
@@ -851,11 +856,17 @@ function comicNextAction() { comicSpreadForward(); }
 function comicPrevAction() { comicSpreadBackward(); }
 function comicTapLeft() {
   if (!S.comic.state) return;
-  S.comic.state.reading_direction === "rtl" ? comicSpreadForward() : comicSpreadBackward();
+  const forward = S.comic.state.reading_direction === "rtl";
+  (S.settings.comic_tap_reverse ? !forward : forward)
+    ? comicSpreadForward()
+    : comicSpreadBackward();
 }
 function comicTapRight() {
   if (!S.comic.state) return;
-  S.comic.state.reading_direction === "rtl" ? comicSpreadBackward() : comicSpreadForward();
+  const forward = S.comic.state.reading_direction !== "rtl";
+  (S.settings.comic_tap_reverse ? !forward : forward)
+    ? comicSpreadForward()
+    : comicSpreadBackward();
 }
 function comicShiftByVisualDirection(direction) {
   if (!S.comic.state) return;
@@ -1871,6 +1882,9 @@ async function openSettings() {
   settingRow(grid, "漫画末尾の動作", makeSelect("comic_sequence_end_behavior", [
     ["stop", "停止"], ["wrap", "ループ"], ["prompt", "確認"],
   ]));
+  settingRow(grid, "左右クリック", makeSelect("comic_tap_reverse", [
+    ["false", "標準"], ["true", "進む/戻るを反転"],
+  ]));
   settingRow(grid, "綴じ方向(既定)", makeSelect("reading_direction", [
     ["rtl", "右綴じ"], ["ltr", "左綴じ"],
   ]));
@@ -2072,9 +2086,8 @@ async function openSettings() {
             display_name: nameInput.value || null,
           },
         });
-        const hadActiveRoot = Boolean(S.activeRootIds[kind]);
         await loadRoots();
-        if (S.mode === kind && !hadActiveRoot) {
+        if (S.mode === kind) {
           await switchLibraryRoot(created.id, { closeDrawer: false });
         }
         closeModal();
@@ -2155,6 +2168,18 @@ $("sel-sort").onchange = () => { syncMobileSelectValue("sel-sort", "sel-sort-mob
 $("sel-filter").onchange = () => { syncMobileSelectValue("sel-filter", "sel-filter-mobile"); refreshCurrentFolder(); };
 $("sel-sort-mobile").onchange = () => { syncMobileSelectValue("sel-sort-mobile", "sel-sort"); refreshCurrentFolder(); };
 $("sel-filter-mobile").onchange = () => { syncMobileSelectValue("sel-filter-mobile", "sel-filter"); refreshCurrentFolder(); };
+let librarySearchTimer = null;
+function bindLibrarySearch(inputId, peerId) {
+  const input = $(inputId);
+  if (!input) return;
+  input.addEventListener("input", () => {
+    if ($(peerId)) $(peerId).value = input.value;
+    clearTimeout(librarySearchTimer);
+    librarySearchTimer = setTimeout(refreshCurrentFolder, 220);
+  });
+}
+bindLibrarySearch("library-search", "library-search-mobile");
+bindLibrarySearch("library-search-mobile", "library-search");
 $("sel-library-root").onchange = (e) => switchLibraryRoot(e.target.value);
 $("sel-library-root-mobile").onchange = (e) => switchLibraryRoot(e.target.value);
 $("btn-delete").onclick = requestDelete;

@@ -123,6 +123,7 @@ def list_items(folder_id: str = Query(...),
                mode: str = Query("comic"),
                sort: str = Query("date"),
                filter: str = Query("all"),
+               query: str = Query(""),
                services: Services = Depends(get_services)) -> dict:
     folder = _resolve_folder(services, folder_id, mode)
     try:
@@ -136,6 +137,10 @@ def list_items(folder_id: str = Query(...),
         items = [i for i in items if i.rating]
     elif filter == "unrated":
         items = [i for i in items if not i.rating]
+
+    search = query.strip().lower()
+    if search:
+        items = [i for i in items if search in i.display_name.lower()]
 
     folders = [i for i in items if i.media_type == "folder"]
     files = [i for i in items if i.media_type != "folder"]
