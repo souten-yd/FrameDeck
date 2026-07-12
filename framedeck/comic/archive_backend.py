@@ -1,6 +1,6 @@
 """アーカイブ読み取りバックエンド(ZIP / RAR)。
 
-RAR対応の優先順位: bsdtar → 7z → rarfile(unrar/unar)。
+RAR対応の優先順位: bsdtar → rarfile(unrar/unar) → 7z。
 すべての外部コマンドにタイムアウトを設定し、アーカイブ内エントリ名は
 Zip Slip対策の検証を通す。
 """
@@ -28,8 +28,6 @@ def rar_backend_available() -> str | None:
     """利用可能なRARバックエンド名を返す(なければNone)。"""
     if shutil.which("bsdtar"):
         return "bsdtar"
-    if shutil.which("7z"):
-        return "7z"
     try:
         import rarfile
         tool = getattr(rarfile, "UNRAR_TOOL", "unrar")
@@ -37,6 +35,8 @@ def rar_backend_available() -> str | None:
             return "rarfile"
     except ImportError:
         pass
+    if shutil.which("7z"):
+        return "7z"
     return None
 
 
