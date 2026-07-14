@@ -124,7 +124,7 @@ class WebServerThread:
 
 
 def run(app_mode: str = "web", host: str = "0.0.0.0", port: int = 9000,
-        open_browser: bool = True, base_dir=None) -> None:
+        open_browser: bool = False, base_dir=None) -> None:
     paths = resolve_app_paths(base_dir)
     ensure_runtime_directories(paths)
     configure_logging(paths)

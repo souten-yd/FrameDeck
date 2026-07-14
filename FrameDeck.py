@@ -28,7 +28,10 @@ APP_MODE = "web"
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 9000
 
-AUTO_OPEN_BROWSER = True
+# Control Deck/systemd などのサービス管理下でブラウザを起動すると、Chromeが
+# FrameDeckの子プロセスとして同じcgroupに入り、FrameDeckの停止・再起動時に
+# Chromeまで巻き込まれることがある。Web UIは必要なときにURLから手動で開く。
+AUTO_OPEN_BROWSER = False
 ENABLE_DESKTOP_UI = APP_MODE == "web_desktop"
 
 VALID_APP_MODES = {"web", "web_desktop"}
