@@ -5,6 +5,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anyio.to_thread
+
 from fastapi import FastAPI, Request, Response, WebSocket
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +27,13 @@ def create_app(services: Services) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         event_bus.attach_loop(asyncio.get_running_loop())
+        # 同期エンドポイント(漫画ページ生成など)は既定40スレッドの
+        # プールを共有する。動画視聴中に枯渇するとアプリ全体が無応答に
+        # なるため余裕を持たせる。
+        try:
+            anyio.to_thread.current_default_thread_limiter().total_tokens = 96
+        except (RuntimeError, ValueError):  # pragma: no cover
+            pass
         yield
         services.shutdown()
 
@@ -50,6 +59,10 @@ def create_app(services: Services) -> FastAPI:
         response = await call_next(request)
         if pin and request.query_params.get("pin") == pin:
             response.set_cookie("framedeck_pin", pin, httponly=True)
+        # UIアセットは毎回再検証させる(更新後に古いCSS/JSが残らないように)
+        if request.url.path.startswith("/static/") or request.url.path in (
+                "/", "/sw.js", "/manifest.webmanifest"):
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     app.include_router(system.router)

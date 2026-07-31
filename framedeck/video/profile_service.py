@@ -43,6 +43,39 @@ class VideoClientHints:
     viewport_height: int = 0
     device_pixel_ratio: float = 1.0
     measured_mbps: float | None = None
+    #: navigator.connection.type ("wifi" / "ethernet" / "cellular" など)
+    connection_type: str | None = None
+    #: クライアントIPがプライベート帯(=同一LAN)かどうか
+    local_network: bool = False
+    #: ブラウザが実際に再生できるコーデック/コンテナ(canPlayTypeの申告)。
+    #: 空ならサーバ側の推定にフォールバックする。
+    video_codecs: tuple[str, ...] = ()
+    audio_codecs: tuple[str, ...] = ()
+    containers: tuple[str, ...] = ()
+
+
+_WIRED_CONNECTION_TYPES = {"wifi", "ethernet", "wimax", "mixed", "other"}
+
+
+def classify_network(hints: VideoClientHints) -> str:
+    """回線種別を判定する: lan | cellular | slow | unknown。
+
+    LAN(Wi-Fi/有線)は原寸配信、モバイル回線は上限付き配信に使う。
+    ブラウザがNetwork Information APIを実装しない場合(Safari等)は
+    クライアントIPがプライベート帯かどうかで代替判定する。
+    """
+    connection_type = (hints.connection_type or "").lower()
+    if connection_type == "cellular":
+        return "cellular"
+    if hints.effective_type in {"slow-2g", "2g"}:
+        return "slow"
+    if connection_type in _WIRED_CONNECTION_TYPES:
+        return "lan"
+    if hints.effective_type == "3g":
+        return "cellular"
+    if hints.local_network:
+        return "lan"
+    return "unknown"
 
 
 @dataclass(frozen=True)
@@ -110,28 +143,6 @@ def _bitrate_kbps(profile_name: str) -> int:
     return int(str(value).rstrip("k"))
 
 
-def _profile_from_bandwidth(mbps: float) -> str:
-    budget_kbps = max(0.0, mbps) * 1000 * 0.60
-    selected = "360p"
-    for name in _PROFILE_ORDER:
-        if _bitrate_kbps(name) <= budget_kbps:
-            selected = name
-    return selected
-
-
-def _profile_from_viewport(hints: VideoClientHints) -> str:
-    long_edge = max(hints.viewport_width, hints.viewport_height)
-    dpr = max(1.0, min(hints.device_pixel_ratio or 1.0, 2.0))
-    target = long_edge * dpr
-    if target <= 480:
-        return "480p"
-    if target <= 900:
-        return "720p"
-    if target <= 1600:
-        return "1080p"
-    return "1440p"
-
-
 def resolve_video_profile(
     name: str,
     source_height: int | None = None,
@@ -159,6 +170,86 @@ def resolve_video_profile(
     )
 
 
+@dataclass(frozen=True)
+class DirectPlayDecision:
+    """クライアントの申告を踏まえた直接再生の可否。"""
+    direct_play: bool
+    #: 映像を再エンコードせずコンテナだけ入れ替えれば再生できる(remux)
+    copy_video: bool = False
+    #: 音声もそのまま流せる
+    copy_audio: bool = False
+    reason: str = ""
+
+
+def resolve_direct_play(info: VideoInfo,
+                        hints: VideoClientHints | None = None) -> DirectPlayDecision:
+    """このクライアントで直接再生できるかを判定する。
+
+    コーデックを再生できるかは本来クライアント固有の情報で、サーバ側の
+    固定テーブルでは実態と食い違う(例: Chrome/SafariはHEVCを再生できるが
+    サーバ側テーブルは非対応扱い → 不要な4K変換で再生がカクつく)。
+    ブラウザからの申告がある場合はそれを優先する。
+    """
+    hints = hints or VideoClientHints()
+    if not hints.video_codecs:
+        # 申告なし(旧クライアント等)はサーバ側の推定を使う
+        return DirectPlayDecision(info.direct_play, reason=info.direct_play_reason)
+
+    video_ok = not info.video_codec or info.video_codec in hints.video_codecs
+    audio_ok = not info.audio_codec or info.audio_codec in hints.audio_codecs
+    container_ok = bool(info.container) and info.container in hints.containers
+
+    if container_ok and video_ok and audio_ok:
+        return DirectPlayDecision(True, reason="client-supported")
+    if not video_ok:
+        return DirectPlayDecision(
+            False, reason=f"動画コーデック {info.video_codec} はこの端末で再生できません")
+    # 映像はそのまま使える → コンテナ入れ替え(+必要なら音声のみ変換)で足りる
+    detail = "コンテナ" if not container_ok else "音声"
+    return DirectPlayDecision(
+        False, copy_video=True, copy_audio=audio_ok,
+        reason=f"{detail}のみ変換します(映像は再エンコードしません)",
+    )
+
+
+def original_profile(transcode: bool, reason: str = "") -> ResolvedVideoProfile:
+    """原寸プロファイル。transcode=Trueでも解像度は変えない(コーデック変換のみ)。"""
+    return ResolvedVideoProfile(
+        name="original", transcode=transcode, resolution="original",
+        video_bitrate=None, audio_bitrate="192k" if transcode else None,
+        fps_limit=None, codec="h264", reason=reason,
+    )
+
+
+def network_resolution_limit(settings: dict[str, Any], network: str,
+                             ui_profile: str = "desktop") -> str:
+    """回線種別ごとの上限解像度。LAN(Wi-Fi/有線)は原寸。"""
+    if network == "slow":
+        return "480p"
+    if network == "cellular":
+        return canonical_video_profile(
+            settings.get("video_cellular_max_resolution", "1080p")) or "1080p"
+    if network == "lan":
+        return "original"
+    # 回線を判別できない外部アクセス: PCは原寸、モバイルはモバイル回線扱い
+    if ui_profile == "mobile":
+        return canonical_video_profile(
+            settings.get("video_cellular_max_resolution", "1080p")) or "1080p"
+    return "original"
+
+
+def _fits_within(name: str, info: VideoInfo) -> bool:
+    """ソースが上限解像度に収まっている(縮小不要)か。"""
+    if name == "original":
+        return True
+    box = VIDEO_RESOLUTION_PROFILES[name]
+    long_edge = max(info.width or 0, info.height or 0)
+    short_edge = min(info.width or 0, info.height or 0)
+    if not long_edge:
+        return False
+    return (long_edge <= box["max_width"] and short_edge <= box["max_height"])
+
+
 def select_video_profile(
     settings: dict[str, Any],
     info: VideoInfo,
@@ -167,50 +258,67 @@ def select_video_profile(
 ) -> ResolvedVideoProfile:
     hints = hints or VideoClientHints()
     mode = settings.get("video_stream_mode", "auto")
-    if mode == "original":
-        selected = resolve_video_profile("original", info.height, info.width)
-        return ResolvedVideoProfile(**{**selected.to_dict(), "reason": "mode=original"})
+    network = classify_network(hints)
+    limit = network_resolution_limit(settings, network, ui_profile)
+    direct = resolve_direct_play(info, hints)
 
     configured = canonical_video_profile(settings.get(
         "video_profile_mobile" if ui_profile == "mobile" else "video_profile_desktop",
-        "720p" if ui_profile == "mobile" else "1080p",
+        "auto",
     ))
     if configured == "auto":
-        configured = canonical_video_profile(settings.get("video_max_resolution", "1080p"))
+        configured = canonical_video_profile(settings.get("video_max_resolution", "auto"))
+
     if mode == "transcode":
-        selected = configured if configured != "original" else "1080p"
-        profile = resolve_video_profile(selected, info.height, info.width)
+        # 手動指定が最優先。未指定(auto)なら回線に応じた上限で変換する。
+        target = configured if configured != "auto" else limit
+        if target == "original":
+            return original_profile(True, "mode=transcode/original")
+        profile = resolve_video_profile(target, info.height, info.width)
         return ResolvedVideoProfile(**{**profile.to_dict(), "reason": "mode=transcode"})
 
     if hints.save_data:
         profile = resolve_video_profile("480p", info.height, info.width)
         return ResolvedVideoProfile(**{**profile.to_dict(), "reason": "saveData"})
 
-    # Local desktop use should avoid unnecessary compression when the browser can
-    # play the original. Mobile/save-data/manual selections are handled above.
-    if ui_profile != "mobile" and info.direct_play and configured in {"auto", "original", "1080p"}:
-        selected = resolve_video_profile("original", info.height, info.width)
-        return ResolvedVideoProfile(**{**selected.to_dict(), "reason": "desktop-direct-play"})
-
-    measured = hints.measured_mbps or hints.downlink_mbps
-    if measured:
-        name = _profile_from_bandwidth(measured)
-        profile = resolve_video_profile(name, info.height, info.width)
-        return ResolvedVideoProfile(**{**profile.to_dict(), "reason": "bandwidth"})
-
-    if hints.effective_type in {"slow-2g", "2g"}:
-        name = "360p"
-    elif hints.effective_type == "3g":
-        name = "480p"
-    elif ui_profile == "mobile":
-        name = configured if configured != "original" else "720p"
-    elif hints.viewport_width and hints.viewport_height:
-        name = _profile_from_viewport(hints)
+    if mode == "original":
+        # 軽量配信を無効にしていても、モバイル回線だけは上限を適用する
+        target = limit if network in {"cellular", "slow"} else "original"
+        reason = "mode=original" if target == "original" else f"mode=original/{network}"
+    elif configured != "auto":
+        target = configured                      # 明示指定(手動)を尊重する
+        reason = "configured"
     else:
-        name = configured if configured != "original" else "1080p"
+        target = limit
+        reason = f"network={network}"
 
-    profile = resolve_video_profile(name, info.height, info.width)
-    return ResolvedVideoProfile(**{**profile.to_dict(), "reason": "auto"})
+    if target == "original":
+        if direct.direct_play:
+            return original_profile(False, f"original/{reason}")
+        if direct.copy_video:
+            # コンテナ(と音声)だけ入れ替える。映像は再エンコードしない
+            return original_profile(True, f"remux/{reason}")
+        # 端末が映像コーデックを再生できない → 実際に再エンコードが要る。
+        # 4K60などを原寸で実時間変換するのは不可能なので上限を掛ける
+        return _fallback_encode_profile(info, reason)
+    if direct.direct_play and _fits_within(target, info):
+        # 上限内の動画をわざわざ再変換しない(直接再生が最も軽く高画質)
+        return original_profile(False, f"direct-play-fits/{reason}")
+    profile = resolve_video_profile(target, info.height, info.width)
+    return ResolvedVideoProfile(**{**profile.to_dict(), "reason": reason})
+
+
+#: 実時間で再エンコードできる現実的な上限(これを超える原寸変換は破綻する)
+REALTIME_ENCODE_MAX = "1080p"
+
+
+def _fallback_encode_profile(info: VideoInfo, reason: str) -> ResolvedVideoProfile:
+    if _fits_within(REALTIME_ENCODE_MAX, info):
+        return original_profile(True, f"encode/{reason}")
+    profile = resolve_video_profile(REALTIME_ENCODE_MAX, info.height, info.width)
+    return ResolvedVideoProfile(
+        **{**profile.to_dict(), "reason": f"encode-limited/{reason}"}
+    )
 
 
 def scale_filter_for_height(max_height: int, source_height: int) -> str:

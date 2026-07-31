@@ -33,7 +33,11 @@ MAX_FOLDER_NEST_DEPTH = 2
 SUBPROCESS_TIMEOUT_LIST = 60
 SUBPROCESS_TIMEOUT_READ = 300
 
+#: settings.json のスキーマ版。上げると Settings._migrate が走る。
+SETTINGS_VERSION = 2
+
 DEFAULT_SETTINGS: dict[str, Any] = {
+    "settings_version": SETTINGS_VERSION,
     # フォルダ
     "default_folder_video": "/mnt/Download/Temp",
     "default_folder_comic": "/mnt/Download/Manga",
@@ -83,13 +87,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "video_wheel_action": "seek",            # seek | volume
     "resume_playback": True,
     "default_volume": 0,
+    "aux_mouse_navigation": True,            # マウス戻る/進むで前後のファイルへ
+    # 画面のリフレッシュレートに合わせて再生速度を微調整する(judder対策)
+    "video_display_sync": "auto",            # auto | off
     # 動画適応配信
     "video_stream_mode": "auto",             # original | auto | transcode
-    "video_profile_desktop": "1080p",       # auto | original | 2160p | 1440p | 1080p | 720p | 480p | 360p
-    "video_profile_mobile": "720p",
+    # auto = 回線種別で自動 (Wi-Fi/有線=原寸, モバイル回線=下の上限)
+    "video_profile_desktop": "auto",         # auto | original | 2160p | ... | 360p
+    "video_profile_mobile": "auto",
+    "video_cellular_max_resolution": "1080p",  # モバイル回線での上限
     "video_codec": "h264",                   # h264 | hevc | av1 | vp9 | copy
     "video_container": "hls_fmp4",           # hls_fmp4
-    "video_max_resolution": "1080p",
+    "video_max_resolution": "auto",
     "video_bitrate_kbps": 1800,
     "video_audio_bitrate_kbps": 96,
     "video_fps_limit": 30,
@@ -98,6 +107,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "video_ffmpeg_auto_download": True,
     "video_variant_cache_mb": 300,
     "video_variant_expire_days": 30,
+    # ライブラリ
+    "library_start_folder": "last",          # last(前回のフォルダ) | root
     # 削除
     "delete_to_trash": True,
     # Web
@@ -145,8 +156,13 @@ _VALID_ENUMS = {
     "video_max_resolution": {
         "auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p",
     },
+    "video_cellular_max_resolution": {
+        "auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p",
+    },
     "video_codec": {"h264", "hevc", "av1", "vp9", "copy"},
     "video_container": {"hls_fmp4"},
+    "library_start_folder": {"last", "root"},
+    "video_display_sync": {"auto", "off"},
     "video_hardware_encoder": {
         "auto", "software", "h264_vaapi", "hevc_vaapi", "h264_amf",
         "hevc_amf", "h264_nvenc", "hevc_nvenc", "av1_nvenc",
@@ -338,15 +354,40 @@ class Settings:
 
     def load(self) -> None:
         with self._lock:
+            version = SETTINGS_VERSION
             try:
                 raw = json.loads(self._paths.settings_file.read_text("utf-8"))
                 if isinstance(raw, dict):
+                    version = int(raw.get("settings_version", 1) or 1)
                     for key, value in raw.items():
                         if key in DEFAULT_SETTINGS:
                             self._values[key] = value
-            except (OSError, ValueError):
+            except (OSError, ValueError, TypeError):
                 pass
             self._validate()
+            if version < SETTINGS_VERSION:
+                self._migrate(version)
+
+    def _migrate(self, version: int) -> None:
+        """旧バージョンの設定を現行の既定方針へ寄せる。"""
+        if version < 2:
+            # v2: 動画画質を回線種別で自動判定するようになった。
+            # 旧既定値のままなら「自動」へ移行し、Wi-Fi/有線で原寸配信にする。
+            if self._values.get("video_profile_desktop") == "1080p":
+                self._values["video_profile_desktop"] = "auto"
+            if self._values.get("video_profile_mobile") == "720p":
+                self._values["video_profile_mobile"] = "auto"
+            if self._values.get("video_max_resolution") == "1080p":
+                self._values["video_max_resolution"] = "auto"
+            if self._values.get("video_stream_mode") == "original":
+                # 原寸のみ = 変換不可形式が再生できない設定。自動なら
+                # LANでは原寸のまま、必要な時だけ変換される。
+                self._values["video_stream_mode"] = "auto"
+        self._values["settings_version"] = SETTINGS_VERSION
+        try:
+            self.save()
+        except OSError:
+            pass
 
     def _validate(self) -> None:
         for key, allowed in _VALID_ENUMS.items():
@@ -380,7 +421,7 @@ class Settings:
     def update(self, values: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             for key, value in values.items():
-                if key not in DEFAULT_SETTINGS:
+                if key not in DEFAULT_SETTINGS or key == "settings_version":
                     continue
                 if key in _VALID_ENUMS and value not in _VALID_ENUMS[key]:
                     raise ValueError(f"Invalid value for {key}: {value!r}")

@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import re
 import threading
 import uuid
 
@@ -26,6 +27,13 @@ from .source import ComicSourceResolver
 from .image_analysis import ComicImageAnalysis
 
 MAX_SESSIONS = 32
+
+_RATING_TAG = re.compile(r"\{zpi\$r=[1-5]\}")
+
+
+def display_label(label: str) -> str:
+    """表示用ラベル。ファイル名末尾の評価タグ `{zpi$r=N}` は見せない。"""
+    return _RATING_TAG.sub("", label)
 
 
 class ComicEngineError(Exception):
@@ -280,7 +288,7 @@ class ComicReaderEngine:
             visible_page_sides=self._visible_sides(session, group),
             has_previous_entry=has_prev,
             has_next_entry=has_next,
-            title=session.entry.label,
+            title=display_label(session.entry.label),
             reading_direction=session.options.reading_direction,
             view_mode=session.options.view_mode,
             root_item_id=session.entry.root_item_id,

@@ -1,5 +1,5 @@
 /* FrameDeck Service Worker - 基本UIアセットのオフラインキャッシュ */
-const CACHE_NAME = "framedeck-ui-v1";
+const CACHE_NAME = "framedeck-ui-v2";
 const UI_ASSETS = [
   "/",
   "/static/css/app.css",

@@ -5,12 +5,44 @@ import os
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from ...core import rating_service as rs
+from ...core.duplicate_finder import (
+    DEFAULT_MAX_DISTANCE,
+    DuplicateCandidate,
+    find_duplicate_groups,
+    stale_duplicate_ids,
+)
 from ...core.security import PathValidationError
 from ...core.services import Services
 from ...models import MediaItem
 from ..dependencies import get_services
 
 router = APIRouter(prefix="/api/library", tags=["library"])
+
+#: 並び順キー。旧クライアント互換のため date / name も受け付ける。
+SORT_ALIASES = {"date": "date_desc", "name": "name_asc"}
+SORT_KEYS = {
+    "date_desc", "date_asc", "name_asc", "name_desc",
+    "rating_desc", "rating_asc",
+}
+
+
+def _sorted_items(items: list[MediaItem], sort: str) -> list[MediaItem]:
+    """フォルダ・ファイルを同じ規則で並べ替える(フォルダを先頭に置く)。"""
+    sort = SORT_ALIASES.get(sort, sort)
+    if sort not in SORT_KEYS:
+        sort = "date_desc"
+    descending = sort.endswith("_desc")
+    ordered = sorted(items, key=lambda i: rs.natural_key(i.display_name))
+    if sort.startswith("date"):
+        ordered.sort(key=lambda i: i.modified_at, reverse=descending)
+    elif sort.startswith("rating"):
+        ordered.sort(key=lambda i: (i.rating or 0), reverse=descending)
+    elif descending:  # name_desc
+        ordered.reverse()
+    folders = [i for i in ordered if i.media_type == "folder"]
+    files = [i for i in ordered if i.media_type != "folder"]
+    return folders + files
 
 
 def _item_dict(item: MediaItem, root_path: str | None = None) -> dict:
@@ -118,14 +150,8 @@ def remove_root(root_id: str,
     return {"removed": root_id}
 
 
-@router.get("/items")
-def list_items(folder_id: str = Query(...),
-               mode: str = Query("comic"),
-               sort: str = Query("date"),
-               filter: str = Query("all"),
-               query: str = Query(""),
-               services: Services = Depends(get_services)) -> dict:
-    folder = _resolve_folder(services, folder_id, mode)
+def _visible_items(services: Services, folder: str, mode: str,
+                   filter_: str = "all", query: str = "") -> list[MediaItem]:
     try:
         items = services.library.list_folder(folder, mode=mode)
     except PathValidationError as e:
@@ -133,24 +159,27 @@ def list_items(folder_id: str = Query(...),
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"フォルダを読めません: {e}")
 
-    if filter == "rated":
+    if filter_ == "rated":
         items = [i for i in items if i.rating]
-    elif filter == "unrated":
+    elif filter_ == "unrated":
         items = [i for i in items if not i.rating]
 
     search = query.strip().lower()
     if search:
         items = [i for i in items if search in i.display_name.lower()]
+    return items
 
-    folders = [i for i in items if i.media_type == "folder"]
-    files = [i for i in items if i.media_type != "folder"]
-    if sort == "date":
-        files.sort(key=lambda i: (-i.modified_at, i.display_name.lower()))
-    elif sort == "rating_desc":
-        files.sort(key=lambda i: (-(i.rating or 0), i.display_name.lower()))
-    elif sort == "rating_asc":
-        files.sort(key=lambda i: ((i.rating or 0), i.display_name.lower()))
-    # name順はlist_folderの自然順のまま
+
+@router.get("/items")
+def list_items(folder_id: str = Query(...),
+               mode: str = Query("comic"),
+               sort: str = Query("date_desc"),
+               filter: str = Query("all"),
+               query: str = Query(""),
+               services: Services = Depends(get_services)) -> dict:
+    folder = _resolve_folder(services, folder_id, mode)
+    items = _visible_items(services, folder, mode, filter, query)
+    ordered = _sorted_items(items, sort)
 
     root = _find_root_for(services, folder, mode)
     root_path = root["path"] if root else None
@@ -177,6 +206,8 @@ def list_items(folder_id: str = Query(...),
 
     folder_name = os.path.basename(folder.rstrip(os.sep)) or folder
     rel = os.path.relpath(folder, root_path) if root_path else folder_name
+    _remember_folder(services, mode, folder_id, folder,
+                     root["id"] if root else None)
     return {
         "folder": {
             "id": folder_id,
@@ -185,9 +216,65 @@ def list_items(folder_id: str = Query(...),
             "root_id": root["id"] if root else None,
             "parent_id": parent_id,
         },
-        "items": [_item_dict(i, root_path) for i in folders + files],
+        "items": [_item_dict(i, root_path) for i in ordered],
         "total": len(items),
         "rated": sum(1 for i in items if i.rating),
+    }
+
+
+def _last_folder_key(mode: str) -> str:
+    return f"last_folder.{mode}"
+
+
+def _remember_folder(services: Services, mode: str, folder_id: str,
+                     folder: str, root_id: str | None) -> None:
+    """最後に開いたフォルダを記録する(再接続時の再開用)。"""
+    if mode not in ("comic", "video"):
+        return
+    services.storage.set_state(_last_folder_key(mode), {
+        "folder_id": folder_id,
+        "path": os.path.abspath(folder),
+        "root_id": root_id,
+    })
+
+
+@router.get("/start-folder")
+def start_folder(mode: str = Query("comic"),
+                 services: Services = Depends(get_services)) -> dict:
+    """起動時に開くフォルダ。復元できない場合は folder_id が null。
+
+    設定 `library_start_folder` が "root" のときは常に null を返し、
+    クライアントはライブラリのルートを開く。
+    """
+    if services.settings.get("library_start_folder", "last") != "last":
+        return {"folder_id": None, "root_id": None, "reason": "root"}
+    state = services.storage.get_state(_last_folder_key(mode)) or {}
+    path = state.get("path")
+    if not path or not os.path.isdir(path):
+        return {"folder_id": None, "root_id": None, "reason": "missing"}
+    root = _find_root_for(services, path, mode)
+    if root is None:
+        return {"folder_id": None, "root_id": None, "reason": "outside-root"}
+
+    from ...core.library_service import item_id_for
+    if os.path.abspath(path).rstrip(os.sep) == root["path"].rstrip(os.sep):
+        folder_id = root["id"]
+    else:
+        folder_id = item_id_for(path)
+        # 再起動後もIDから辿れるようDBへ登録し直す
+        try:
+            services.storage.upsert_media_item(
+                folder_id, os.path.abspath(path), "folder", None,
+                os.path.getmtime(path), None,
+            )
+        except OSError:
+            return {"folder_id": None, "root_id": None, "reason": "missing"}
+    rel = os.path.relpath(path, root["path"])
+    return {
+        "folder_id": folder_id,
+        "root_id": root["id"],
+        "relative_path": "" if rel == "." else rel,
+        "reason": "last",
     }
 
 
@@ -245,6 +332,88 @@ def delete_item(item_id: str, token: str = Query(...),
         raise HTTPException(status_code=404, detail="項目が見つかりません")
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"削除に失敗しました: {e}")
+
+
+@router.get("/duplicates")
+def duplicates(folder_id: str = Query(...),
+               mode: str = Query("comic"),
+               filter: str = Query("all"),
+               query: str = Query(""),
+               max_distance: int = Query(DEFAULT_MAX_DISTANCE, ge=0, le=5),
+               services: Services = Depends(get_services)) -> dict:
+    """表示中フォルダ内の重複候補を返す(削除はしない)。
+
+    拡張子と評価タグを除いた名前の編集距離が `max_distance` 以下で、
+    かつ名前に含まれる数値が一致する項目を同一グループとみなし、
+    各グループの最新1件以外(=更新日が古い方)を選択候補にする。
+    """
+    folder = _resolve_folder(services, folder_id, mode)
+    items = _visible_items(services, folder, mode, filter, query)
+    by_id = {i.id: i for i in items}
+    groups = find_duplicate_groups(
+        [
+            DuplicateCandidate(
+                id=i.id, display_name=i.display_name,
+                modified_at=i.modified_at, media_type=i.media_type,
+                rating=i.rating, size=i.size,
+            )
+            for i in items
+        ],
+        max_distance=max_distance,
+    )
+    return {
+        "max_distance": max_distance,
+        "select_ids": stale_duplicate_ids(groups),
+        "groups": [
+            {
+                "items": [
+                    {**_item_dict(by_id[c.id]), "keep": index == 0}
+                    for index, c in enumerate(group)
+                ],
+            }
+            for group in groups
+        ],
+    }
+
+
+@router.post("/items/bulk-delete-request")
+def bulk_delete_request(payload: dict = Body(...),
+                        services: Services = Depends(get_services)) -> dict:
+    item_ids = [str(i) for i in (payload.get("item_ids") or [])]
+    if not item_ids:
+        raise HTTPException(status_code=422, detail="削除対象がありません")
+    names: list[str] = []
+    valid: list[str] = []
+    for item_id in item_ids:
+        item = services.library.get_item(item_id)
+        if item is None:
+            continue
+        valid.append(item.id)
+        names.append(item.display_name)
+    if not valid:
+        raise HTTPException(status_code=404, detail="項目が見つかりません")
+    token = services.confirm_tokens.issue(f"bulk-delete:{','.join(sorted(valid))}")
+    return {
+        "token": token,
+        "item_ids": valid,
+        "display_names": names,
+        "count": len(valid),
+        "expires_in": 60,
+        "to_trash": bool(services.settings.get("delete_to_trash", True)),
+    }
+
+
+@router.post("/items/bulk-delete")
+def bulk_delete(token: str = Query(...), payload: dict = Body(...),
+                services: Services = Depends(get_services)) -> dict:
+    item_ids = [str(i) for i in (payload.get("item_ids") or [])]
+    subject = f"bulk-delete:{','.join(sorted(item_ids))}"
+    if not item_ids or not services.confirm_tokens.consume(token, subject):
+        raise HTTPException(
+            status_code=403,
+            detail="確認トークンが無効です。削除確認をやり直してください。",
+        )
+    return services.library.delete_items(item_ids)
 
 
 @router.get("/recent")

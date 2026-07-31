@@ -177,15 +177,167 @@ def test_hls_resolve_rejects_path_escape(tmp_path):
         raise AssertionError("path escape should be rejected")
 
 
-def test_default_video_resolution_is_1080p(tmp_path):
+def test_default_video_quality_is_network_adaptive(tmp_path):
     from framedeck.config import Settings, ensure_runtime_directories, resolve_app_paths
 
     paths = resolve_app_paths(tmp_path / "home")
     ensure_runtime_directories(paths)
     settings = Settings(paths)
-    assert settings.get("video_max_resolution") == "1080p"
-    assert settings.get("video_profile_desktop") == "1080p"
-    assert settings.get("video_profile_mobile") == "720p"
+    assert settings.get("video_max_resolution") == "auto"
+    assert settings.get("video_profile_desktop") == "auto"
+    assert settings.get("video_profile_mobile") == "auto"
+    assert settings.get("video_cellular_max_resolution") == "1080p"
+
+
+def test_settings_migrate_old_video_defaults_to_auto(tmp_path):
+    import json
+
+    from framedeck.config import Settings, ensure_runtime_directories, resolve_app_paths
+
+    paths = resolve_app_paths(tmp_path / "home")
+    ensure_runtime_directories(paths)
+    paths.settings_file.write_text(json.dumps({
+        "video_stream_mode": "original",
+        "video_profile_desktop": "1080p",
+        "video_profile_mobile": "720p",
+        "video_max_resolution": "1080p",
+        "comic_cache_max_mb": 250,
+    }), "utf-8")
+    settings = Settings(paths)
+    assert settings.get("video_profile_desktop") == "auto"
+    assert settings.get("video_profile_mobile") == "auto"
+    assert settings.get("video_stream_mode") == "auto"
+    assert settings.get("comic_cache_max_mb") == 250  # 他の設定は保持する
+    # 明示的に選んだ値は移行後も維持される
+    paths.settings_file.write_text(json.dumps({
+        "settings_version": 2, "video_profile_desktop": "720p",
+    }), "utf-8")
+    assert Settings(paths).get("video_profile_desktop") == "720p"
+
+
+def test_lan_client_gets_original_and_cellular_is_capped():
+    lan = select_video_profile(
+        {"video_stream_mode": "auto"},
+        _video_info(width=3840, height=2160),
+        VideoClientHints(connection_type="wifi", viewport_width=1920,
+                         viewport_height=1080),
+        ui_profile="mobile",
+    )
+    assert lan.name == "original"
+    assert lan.transcode is False
+
+    cellular = select_video_profile(
+        {"video_stream_mode": "auto"},
+        _video_info(width=3840, height=2160),
+        VideoClientHints(connection_type="cellular", viewport_width=390,
+                         viewport_height=844),
+        ui_profile="mobile",
+    )
+    assert cellular.name == "1080p"
+    assert cellular.transcode is True
+    assert cellular.height == 1080
+
+
+def test_private_ip_is_treated_as_lan_without_connection_api():
+    from framedeck.web.routers.video import is_local_network_client
+
+    assert is_local_network_client("192.168.1.20") is True
+    assert is_local_network_client("127.0.0.1") is True
+    assert is_local_network_client("8.8.8.8") is False
+    profile = select_video_profile(
+        {"video_stream_mode": "auto"},
+        _video_info(width=3840, height=2160),
+        VideoClientHints(local_network=True),
+        ui_profile="mobile",
+    )
+    assert profile.name == "original"
+
+
+def _unplayable(info, codec="hevc", container="mp4", audio="aac"):
+    return type(info)(**{**info.__dict__, "direct_play": False,
+                         "direct_play_reason": f"{codec}はサーバ判定では非対応",
+                         "video_codec": codec, "container": container,
+                         "audio_codec": audio})
+
+
+def test_client_declared_codec_support_avoids_needless_transcode():
+    """端末がHEVCを再生できるなら、サーバ判定が非対応でも変換しない。
+
+    4K60のHEVCを実時間で再エンコードするのは不可能で、これを行うと
+    再生が激しくカクつく(報告された不具合の原因)。
+    """
+    info = _unplayable(_video_info(width=3840, height=2160))
+    hints = VideoClientHints(
+        local_network=True,
+        video_codecs=("h264", "hevc", "av1", "vp9"),
+        audio_codecs=("aac", "opus"),
+        containers=("mp4", "webm"),
+    )
+    profile = select_video_profile({"video_stream_mode": "auto"}, info, hints,
+                                   ui_profile="desktop")
+    assert profile.name == "original"
+    assert profile.transcode is False
+
+
+def test_container_only_mismatch_is_remuxed_not_reencoded():
+    """MKVのH.264などは映像を再エンコードせずコンテナだけ入れ替える。"""
+    from framedeck.video.profile_service import resolve_direct_play
+
+    info = _unplayable(_video_info(), codec="h264", container="matroska",
+                       audio="ac3")
+    hints = VideoClientHints(
+        local_network=True,
+        video_codecs=("h264", "hevc"), audio_codecs=("aac",),
+        containers=("mp4", "webm"),
+    )
+    decision = resolve_direct_play(info, hints)
+    assert decision.direct_play is False
+    assert decision.copy_video is True
+    assert decision.copy_audio is False        # AC3は変換が必要
+    profile = select_video_profile({"video_stream_mode": "auto"}, info, hints,
+                                   ui_profile="desktop")
+    assert profile.name == "original"
+    assert profile.transcode is True
+    assert profile.reason.startswith("remux")
+
+
+def test_real_reencode_is_capped_to_a_realtime_resolution():
+    """端末が本当に再生できない4K素材は、実時間で変換できる上限まで下げる。"""
+    info = _unplayable(_video_info(width=3840, height=2160))
+    hints = VideoClientHints(local_network=True,
+                             video_codecs=("h264",), audio_codecs=("aac",),
+                             containers=("mp4",))
+    profile = select_video_profile({"video_stream_mode": "auto"}, info, hints,
+                                   ui_profile="desktop")
+    assert profile.name == "1080p"
+    assert profile.transcode is True
+    assert profile.height == 1080
+    assert profile.reason.startswith("encode-limited")
+
+
+def test_original_transcodes_when_browser_cannot_direct_play():
+    """1080p以下なら原寸のまま(縮小なしで)変換する。"""
+    info = _unplayable(_video_info())
+    hints = VideoClientHints(local_network=True,
+                             video_codecs=("h264",), audio_codecs=("aac",),
+                             containers=("mp4",))
+    profile = select_video_profile({"video_stream_mode": "auto"}, info, hints,
+                                   ui_profile="desktop")
+    assert profile.name == "original"
+    assert profile.transcode is True
+    assert profile.height is None  # 縮小せずコーデック変換のみ
+
+
+def test_remux_command_copies_video_stream():
+    from framedeck.video.transcode import build_fmp4_transcode_cmd
+
+    cmd = build_fmp4_transcode_cmd("/tmp/a.mkv", copy_video=True, copy_audio=False)
+    assert ["-c:v", "copy"] == cmd[cmd.index("-c:v"):cmd.index("-c:v") + 2]
+    assert "libx264" not in cmd
+    assert "-vf" not in cmd                    # スケーリングもしない
+    assert ["-c:a", "aac"] == cmd[cmd.index("-c:a"):cmd.index("-c:a") + 2]
+    both = build_fmp4_transcode_cmd("/tmp/a.mkv", copy_video=True, copy_audio=True)
+    assert ["-c:a", "copy"] == both[both.index("-c:a"):both.index("-c:a") + 2]
 
 
 def test_resolution_2160p_and_portrait_box():
@@ -319,7 +471,7 @@ def test_desktop_auto_direct_play_does_not_compress():
     )
     assert profile.name == "original"
     assert profile.transcode is False
-    assert profile.reason == "desktop-direct-play"
+    assert profile.reason.startswith("direct-play-fits")
 
 
 def test_ffmpeg_auto_download_setting_defaults_enabled(tmp_path):
@@ -343,3 +495,90 @@ def test_progressive_fmp4_command_is_mobile_compatible():
     assert ["-tag:v", "avc1"] == cmd[cmd.index("-tag:v"):cmd.index("-tag:v") + 2]
     assert "+frag_keyframe+empty_moov+default_base_moof" in cmd
     assert "force_original_aspect_ratio=decrease" in cmd[cmd.index("-vf") + 1]
+
+
+def test_transcode_stream_is_replaced_per_client_session():
+    """同じタブからの新しい要求は、古い変換プロセスを止めてから始まる。"""
+    import subprocess
+
+    from framedeck.video.transcode import TranscodeService
+
+    service = TranscodeService()
+    started = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self.stdout = None
+            self.stderr = None
+            self.terminated = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_popen(cmd, **kwargs):
+        process = FakeProcess()
+        started.append(process)
+        return process
+
+    original_popen = subprocess.Popen
+    subprocess.Popen = fake_popen
+    try:
+        first = service.open_fmp4("/tmp/a.mkv", owner="tab1")
+        second = service.open_fmp4("/tmp/a.mkv", start_seconds=30, owner="tab1")
+        other = service.open_fmp4("/tmp/a.mkv", owner="tab2")
+    finally:
+        subprocess.Popen = original_popen
+
+    assert started[0].terminated is True     # 同一タブの古い変換は停止
+    assert started[1].terminated is False
+    assert started[2].terminated is False    # 別タブは影響を受けない
+    second.close()
+    assert started[1].terminated is True
+    assert service.cancel_owner("tab2") is True
+    assert started[2].terminated is True
+    assert other._closed is True
+    assert first._closed is True
+
+
+def test_original_transcode_command_does_not_scale():
+    from framedeck.video.transcode import build_fmp4_transcode_cmd
+
+    cmd = build_fmp4_transcode_cmd("/tmp/source.mkv", max_width=None, max_height=None)
+    assert cmd[cmd.index("-vf") + 1] == "scale=iw:ih"
+
+
+def test_hls_start_is_serialized_per_source(tmp_path, monkeypatch):
+    """シーク連打で同一ソースのHLSジョブが多重起動しないこと。"""
+    import threading
+
+    from framedeck.video.hls_service import HlsService
+
+    source = tmp_path / "movie.mp4"
+    source.write_bytes(b"x" * 1024)
+    service = HlsService(tmp_path / "cache", segment_duration=4)
+    monkeypatch.setattr(service, "available", lambda: True)
+    monkeypatch.setattr(service, "_generate",
+                        lambda *a, **k: threading.Event().wait(0.5))
+
+    threads = [threading.Thread(target=service.ensure_async,
+                                args=(str(source), ["720p"], 1080, float(i)))
+               for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    with service._lock:
+        alive = [job for job in service._jobs.values() if not job.cancelled]
+    assert len(alive) <= 1   # 停止要求されていない生成は常に1本以下
+    service.shutdown()

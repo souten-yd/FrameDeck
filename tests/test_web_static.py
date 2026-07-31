@@ -41,7 +41,8 @@ def test_comic_image_load_handler_is_registered_before_src():
 def test_video_transcode_path_keeps_progressive_fallback_and_mobile_hls():
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
     assert "逐次軽量配信" in js
-    assert "stream-transcode?start=" in js
+    assert "function transcodeStreamUrl" in js
+    assert "/stream-transcode?" in js
     assert "function shouldUseNativeHls" in js
     assert "S.uiProfile === \"mobile\"" in js
     assert "/hls/master.m3u8" in js
@@ -153,10 +154,79 @@ def test_video_error_is_retried_while_transcode_pending():
 def test_hls_seek_restarts_generation_and_stops_on_close():
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
     assert "function hlsMasterUrl" in js
-    assert "function requestHlsStop" in js
+    assert "function requestTranscodeStop" in js
     assert '/hls/stop' in js
     assert "generatedEnd" in js
     assert 'window.addEventListener("pagehide"' in js
+
+
+def test_library_sort_offers_both_directions():
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    sort = html[html.index('id="sel-sort"'):html.index('id="library-search"')]
+    for value in ["date_desc", "date_asc", "name_asc", "name_desc",
+                  "rating_desc", "rating_asc"]:
+        assert f'value="{value}"' in sort
+
+
+def test_library_pane_can_be_collapsed_and_resized():
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    css = (ROOT / "framedeck/web/static/css/app.css").read_text()
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert 'id="library-toolbar"' in html
+    assert 'id="library-resizer"' in html
+    assert 'id="library-expand"' in html
+    assert "--library-width" in css
+    assert "cursor: col-resize;" in css
+    assert "function applyLibraryWidth" in js
+    assert "function setLibraryCollapsed" in js
+    assert 'resizer.addEventListener("pointermove"' in js
+    assert "LIBRARY_WIDTH_KEY" in js
+
+
+def test_bulk_selection_and_duplicate_tools_exist():
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    for element in ["btn-select-mode", "btn-select-low-rated", "btn-select-duplicates",
+                    "btn-bulk-delete", "library-bulk-bar"]:
+        assert f'id="{element}"' in html
+    assert "function selectLowRatedItems" in js
+    assert "i.rating && i.rating <= 2" in js
+    assert "function selectDuplicates" in js
+    assert "/api/library/duplicates?" in js
+    assert "/api/library/items/bulk-delete-request" in js
+    # 重複は選択のみ(自動削除はしない)
+    assert "古い方を選択する" in js
+
+
+def test_mobile_rating_bar_is_available_in_drawer():
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    css = (ROOT / "framedeck/web/static/css/app.css").read_text()
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert 'id="star-bar-mobile"' in html
+    assert 'id="btn-delete-mobile"' in html
+    assert ".mobile-rating-row" in css
+    assert "body.ui-mobile .star-bar .star" in css
+    assert "function openRatingSheet" in js
+    assert 'for (const id of ["star-bar", "star-bar-mobile"])' in js
+
+
+def test_history_fallback_navigation_for_side_buttons():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function setupHistoryNavigation" in js
+    assert 'window.addEventListener("popstate"' in js
+    assert "HISTORY_NAV_CENTER" in js
+    assert "function restoreHistoryCenter" in js
+    assert "aux_mouse_navigation" in js
+
+
+def test_playback_watchdog_and_seek_debounce_exist():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "TRANSCODE_SEEK_DEBOUNCE_MS" in js
+    assert "function scheduleTranscodeReload" in js
+    assert "function startPlaybackWatchdog" in js
+    assert "function recoverPlayback" in js
+    assert "S.video.loadToken" in js
+    assert "CLIENT_SESSION_ID" in js
 
 
 def test_mobile_fullscreen_hotspots_and_fallback_exist():
@@ -257,3 +327,40 @@ def test_mobile_video_orientation_lock_is_stateful_with_inline_rotation():
     assert 'style.setProperty("opacity", "0", "important")' in js
     assert '"opacity .15s ease"' in js
 
+
+
+def test_client_declares_playable_codecs_to_the_server():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function clientCodecSupport" in js
+    assert "CODEC_PROBES" in js
+    # MSEの可否ではなく canPlayType のみで判定する(直接再生の可否とは別物)
+    assert 'canPlayType(type) === "probably"' in js
+    assert "videoCodecs" in js and "audioCodecs" in js and "containers" in js
+    assert "...clientCodecSupport()" in js
+    # 端末が再生できるならremuxのみ(再エンコードしない)
+    assert 'params.set("copy_video", "1")' in js
+    assert "function fallbackToTranscode" in js
+
+
+def test_start_folder_resume_is_wired():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function resumeFolderForMode" in js
+    assert "/api/library/start-folder?mode=" in js
+    assert 'makeSelect("library_start_folder"' in js
+    assert "前回の場所から再開" in js
+
+
+def test_display_sync_adjusts_playback_rate_not_server_side_fps():
+    """judder対策は端末側の速度微調整で行う(サーバ側fps変換は採らない)。"""
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function measureDisplayRefreshHz" in js
+    assert "function computeDisplaySync" in js
+    assert "DISPLAY_SYNC_TOLERANCE" in js
+    # 速度設定は必ず補正を通す
+    assert "function applyPlaybackRate" in js
+    assert "function syncedRate" in js
+    assert 'video.playbackRate = Number($("sel-speed").value)' not in js
+    # 別ディスプレイへ移動したら測り直す
+    assert 'window.addEventListener("resize", invalidateRefreshHz)' in js
+    assert "REFRESH_HZ_TTL_MS" in js
+    assert 'makeSelect("video_display_sync"' in js

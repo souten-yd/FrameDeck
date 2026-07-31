@@ -10,7 +10,10 @@ import os
 import re
 from typing import Iterator
 
-CHUNK_SIZE = 1024 * 256
+# NAS(SMB/NFS)越しの読み出しでは、細かすぎるチャンクは往復回数が増えて
+# 不利になる。CIFSの既定 rsize(4MB)に対して1MBは十分大きく、
+# かつ1チャンクの遅延が体感に響かないサイズ。
+CHUNK_SIZE = 1024 * 1024
 
 _RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)$")
 
