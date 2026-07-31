@@ -49,6 +49,10 @@ router = APIRouter(prefix="/api/videos", tags=["video"])
 #: ストリーム送出や生成待ちが他のAPI(一覧・設定・漫画ページ)を待たせる。
 _STREAM_LIMITER = anyio.CapacityLimiter(24)
 
+#: 停止要求が新しい再生の開始より後に届くことがあるため、始めたばかりの
+#: 生成は止めない。これが無いと再生開始直後に自分の生成を殺してしまう。
+HLS_STOP_GRACE_SECONDS = 3.0
+
 
 def _hls_profiles(profile: str | None) -> list[str]:
     if profile and profile in HLS_PROFILES:
@@ -189,6 +193,7 @@ def encoder_capabilities(services: Services = Depends(get_services)) -> list[dic
 async def hls_master(media_id: str,
                      profile: str | None = Query(default=None),
                      start: float = Query(default=0.0, ge=0.0),
+                     session: str = Query(default=""),
                      services: Services = Depends(get_services)):
     """HLS生成を開始し、キャッシュキー付きマスターURLへリダイレクトする。
 
@@ -205,6 +210,7 @@ async def hls_master(media_id: str,
             lambda: services.hls.ensure_async(
                 item.path, profiles=profiles,
                 source_height=info.height, start_seconds=start,
+                owner=session.strip()[:64] or None,
             ),
             limiter=_STREAM_LIMITER,
         )
@@ -275,8 +281,10 @@ def hls_stop(media_id: str, session: str = Query(default=""),
     HLS生成ジョブと、同一タブのfMP4変換プロセスの両方を止める。
     """
     item = _resolve_video(services, media_id)
-    stopped = services.hls.cancel_source(item.path)
     owner = session.strip()[:64]
+    # 自分の生成だけを、かつ開始直後のものは残して止める
+    stopped = services.hls.cancel_source(
+        item.path, owner=owner or None, min_age=HLS_STOP_GRACE_SECONDS)
     if owner and services.transcode.cancel_owner(owner):
         stopped += 1
     return {"stopped": stopped}

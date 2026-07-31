@@ -63,6 +63,9 @@ class _HlsCancelled(Exception):
 class _HlsJob:
     key: str
     source_path: str
+    #: 生成を要求したクライアント(タブ)。他人の再生を巻き添えで止めないため
+    owner: str | None = None
+    started_at: float = field(default_factory=time.monotonic)
     process: subprocess.Popen | None = None
     cancelled: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -195,7 +198,8 @@ class HlsService:
 
     def ensure_async(self, source_path: str, profiles: list[str] | None = None,
                      source_height: int = 0,
-                     start_seconds: float = 0.0) -> HlsManifest:
+                     start_seconds: float = 0.0,
+                     owner: str | None = None) -> HlsManifest:
         """バックグラウンド生成を開始してマスタープレイリストを即返す。
 
         同一ソースの他ジョブ(別start/プロファイル)は停止し、未完成
@@ -207,8 +211,9 @@ class HlsService:
         if not self.available():
             raise TranscodeError("ffmpeg が見つかりません。HLSを生成できません。")
         with self._start_lock:
-            self.cancel_source(source_path, except_key=manifest.key)
-            job = self._register_job(manifest, source_path)
+            # 自分(同じタブ)の古い生成だけを止める
+            self.cancel_source(source_path, except_key=manifest.key, owner=owner)
+            job = self._register_job(manifest, source_path, owner=owner)
         if job is None:
             # 同一keyの生成が進行中
             return manifest
@@ -233,12 +238,14 @@ class HlsService:
                          daemon=True).start()
         return manifest
 
-    def _register_job(self, manifest: HlsManifest, source_path: str) -> _HlsJob | None:
+    def _register_job(self, manifest: HlsManifest, source_path: str,
+                      owner: str | None = None) -> _HlsJob | None:
         key = manifest.key
         with self._lock:
             if key in self._jobs:
                 return None
-            job = _HlsJob(key=key, source_path=os.path.abspath(source_path))
+            job = _HlsJob(key=key, source_path=os.path.abspath(source_path),
+                          owner=owner)
             self._jobs[key] = job
         # 未完成の残骸(クラッシュ等)は作り直す
         if manifest.cache_dir.exists() and not self._is_complete(manifest.cache_dir):
@@ -249,15 +256,24 @@ class HlsService:
         with self._lock:
             self._jobs.pop(job.key, None)
 
-    def cancel_source(self, source_path: str, except_key: str | None = None) -> int:
+    def cancel_source(self, source_path: str, except_key: str | None = None,
+                      owner: str | None = None, min_age: float = 0.0) -> int:
         """指定ソースの生成ジョブを停止する。停止したジョブ数を返す。
+
+        `owner` を渡すとそのクライアントの生成だけを止める。指定しないと
+        同じファイルを見ている別の端末・タブの再生まで巻き添えで止まる。
+        `min_age` は「開始直後のジョブは止めない」猶予。停止要求(beacon)が
+        新しい再生の開始より後に届いても、始めたばかりの生成を殺さないため。
 
         停止されたジョブの未完成キャッシュはworker側で削除される。
         """
         abspath = os.path.abspath(source_path)
+        now = time.monotonic()
         with self._lock:
             jobs = [job for job in self._jobs.values()
-                    if job.source_path == abspath and job.key != except_key]
+                    if job.source_path == abspath and job.key != except_key
+                    and (owner is None or job.owner == owner)
+                    and (now - job.started_at) >= min_age]
         for job in jobs:
             job.cancel()
         return len(jobs)

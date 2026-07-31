@@ -39,6 +39,7 @@ const S = {
     maxHeight: null, maxWidth: null,
     copyVideo: false, copyAudio: false, transcodeFallback: false,
     syncRate: 1, syncInfo: null,
+    starveTimes: [], adapting: false, qualityIsManual: false, hlsFallback: false,
     watchdogTimer: null, watchdogPosition: 0, watchdogStrikes: 0,
     recovering: false,
   },
@@ -90,11 +91,23 @@ function hlsProfileName(profile) {
 
 function hlsMasterUrl(itemId, profile, startSeconds) {
   const start = Math.max(0, Number(startSeconds) || 0);
-  return `/api/videos/${itemId}/hls/master.m3u8?profile=${encodeURIComponent(profile)}&start=${start.toFixed(2)}`;
+  return `/api/videos/${itemId}/hls/master.m3u8?profile=${encodeURIComponent(profile)}` +
+    `&start=${start.toFixed(2)}&session=${encodeURIComponent(CLIENT_SESSION_ID)}`;
 }
 
-function shouldUseNativeHls(playbackProfile) {
-  return S.uiProfile === "mobile" && playbackProfile?.transcode && videoSupportsNativeHls();
+/* モバイルで変換が必要な場合はHLSを使う。
+   逐次fMP4はRange要求に応えられない(chunkedの200を返す)ため、
+   iOS Safariのように「まずRangeで問い合わせる」実装では再生できない。 */
+function shouldUseNativeHls() {
+  return S.uiProfile === "mobile" && videoSupportsNativeHls();
+}
+
+/* 素材の解像度に収まる最大のHLSプロファイルを選ぶ */
+function hlsProfileForSource(height) {
+  for (const [name, h] of [["1080p", 1080], ["720p", 720], ["480p", 480]]) {
+    if ((height || 1080) >= h) return name;
+  }
+  return "360p";
 }
 
 /* この端末が実際に再生できるコーデック/コンテナを調べてサーバへ申告する。
@@ -1580,6 +1593,8 @@ async function openVideo(item) {
   S.video.copyVideo = false;
   S.video.copyAudio = false;
   S.video.transcodeFallback = false;
+  S.video.hlsFallback = false;
+  S.video.starveTimes = [];
   try {
     const hints = clientMediaHints();
     if (S.video.quality && S.video.quality !== "auto") hints.requestedProfile = S.video.quality;
@@ -1632,8 +1647,10 @@ async function openVideo(item) {
     }
   } else if (detail.transcode_available) {
     const original = !S.video.maxHeight;
-    if (!original && shouldUseNativeHls(playbackProfile)) {
-      const profile = hlsProfileName(playbackProfile?.name || configuredVideoQuality());
+    if (shouldUseNativeHls()) {
+      const profile = original
+        ? hlsProfileForSource(detail.info.height)
+        : hlsProfileName(playbackProfile?.name || configuredVideoQuality());
       S.video.transcode = false;
       S.video.hls = true;
       S.video.hlsProfile = profile;
@@ -2142,6 +2159,7 @@ video.addEventListener("waiting", () => {
     const b = video.buffered;
     const ahead = b.length ? (b.end(b.length - 1) - video.currentTime).toFixed(1) : 0;
     recordGlitch("buffer", `先読み残り ${ahead}秒`);
+    noteStarvation();
   }
 });
 video.addEventListener("stalled", () => {
@@ -2186,6 +2204,27 @@ video.addEventListener("error", () => {
     fallbackToTranscode();
     return;
   }
+  // 逐次fMP4はRange要求に応えられないため、iOS Safari等では再生できない。
+  // 同じ経路で粘らずHLSへ切り替える(4回リトライして失敗する事象への対策)
+  if (S.video.transcode && !S.video.hls && videoSupportsNativeHls() &&
+      S.video.item && !S.video.hlsFallback) {
+    S.video.hlsFallback = true;
+    const position = currentPosition();
+    const profile = hlsProfileForSource(S.video.info?.height);
+    S.video.transcode = false;
+    S.video.hls = true;
+    S.video.hlsProfile = profile;
+    S.video.offset = position;
+    clearVideoErrorRetry();
+    $("video-spinner").classList.remove("hidden");
+    $("video-badge").textContent = `HLS配信 ${profile} (この端末向けに切替)`;
+    $("video-badge").classList.remove("hidden");
+    video.src = hlsMasterUrl(S.video.item.id, profile, position);
+    applyPlaybackRate();
+    video.play().catch(() => {});
+    startPlaybackWatchdog();
+    return;
+  }
   // 変換/HLSは初回アクセス時に圧縮動画が未生成でエラーになり得るため、
   // すぐエラー表示せず少し待ってから読み直す
   if ((S.video.hls || S.video.transcode) &&
@@ -2226,6 +2265,36 @@ video.addEventListener("click", (e) => {
   togglePlay();
 });
 video.addEventListener("dblclick", () => toggleFullscreen($("video-player")));
+
+/* ================= 回線に合わせた自動調整 =================
+   Wi-Fi越しでは帯域も遅延も揺らぐため、原寸配信が続かないことがある。
+   供給不足(バッファ切れ)が短時間に続いたら画質を一段下げて安定させる。
+   手動で画質を選んでいる場合は尊重して何もしない。 */
+const ADAPT_WINDOW_MS = 45000;
+const ADAPT_STARVE_LIMIT = 3;
+const QUALITY_LADDER = ["original", "1440p", "1080p", "720p", "480p"];
+
+function noteStarvation() {
+  if (S.video.qualityIsManual || S.video.adapting) return;
+  const now = performance.now();
+  S.video.starveTimes = (S.video.starveTimes || [])
+    .filter((t) => now - t < ADAPT_WINDOW_MS);
+  S.video.starveTimes.push(now);
+  if (S.video.starveTimes.length >= ADAPT_STARVE_LIMIT) stepDownQuality();
+}
+
+function stepDownQuality() {
+  const current = ["auto", "remux", ""].includes(S.video.quality || "auto")
+    ? "original" : S.video.quality;
+  const index = QUALITY_LADDER.indexOf(current);
+  const next = QUALITY_LADDER[Math.min(QUALITY_LADDER.length - 1,
+                                       (index < 0 ? 0 : index) + 1)];
+  if (!next || next === current) return;
+  S.video.starveTimes = [];
+  S.video.adapting = true;
+  toast(`回線が追いつかないため画質を ${next} に下げました`);
+  changeVideoQuality(next).finally(() => { S.video.adapting = false; });
+}
 
 function togglePlay() {
   if (!S.video.item) return;
@@ -2277,6 +2346,8 @@ $("sel-speed").addEventListener("change", () => {
   applyPlaybackRate();
 });
 $("sel-video-quality")?.addEventListener("change", () => {
+  // 手動で選んだ画質は自動調整で上書きしない
+  S.video.qualityIsManual = $("sel-video-quality").value !== "auto";
   changeVideoQuality($("sel-video-quality").value);
 });
 
