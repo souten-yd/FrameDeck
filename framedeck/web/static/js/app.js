@@ -2847,7 +2847,9 @@ async function openSettings() {
     "4K変換は通信量・CPU/GPU負荷・キャッシュ容量が大きくなります。");
   settingRow(grid, "PC 動画品質", makeSelect("video_profile_desktop", videoQualityOptions),
     "自動: Wi-Fi/有線(同一LAN)なら原寸、モバイル回線なら下の上限で配信します。");
-  settingRow(grid, "モバイル動画品質", makeSelect("video_profile_mobile", videoQualityOptions));
+  settingRow(grid, "モバイル動画品質", makeSelect("video_profile_mobile", videoQualityOptions),
+    "既定は1080p。iOSでは原寸の直接再生が安定しないため、回線によらず" +
+    "セグメント配信(HLS)で届けます。原寸にしたい場合はここで変更できます。");
   settingRow(grid, "モバイル回線の上限",
     makeSelect("video_cellular_max_resolution", videoQualityOptions.filter(([v]) => v !== "auto")),
     "モバイル回線と判定された時だけ適用される上限です。");

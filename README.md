@@ -13,7 +13,7 @@ NASや自宅サーバに置いたアーカイブをブラウザから開くだ�
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?logo=fastapi&logoColor=white)
 ![PWA](https://img.shields.io/badge/PWA-ready-5A0FC8?logo=pwa&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-166%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-171%20passed-brightgreen)
 ![Local First](https://img.shields.io/badge/cloud-not%20required-1a1b26)
 
 </div>
@@ -107,7 +107,7 @@ WEB_PORT = 9000
 - 非対応形式・低速回線では **ffmpegによる逐次トランスコード**
   - PC: フラグメントMP4のパイプ配信(シークは `?start=` 再要求)
   - iOS Safari: ネイティブ **HLS**(シーク位置からの再生成、視聴終了で変換停止・掃除)
-- Wi-Fi / 有線(同一LAN)は **原寸配信**、モバイル回線のみ上限(既定1080p)を適用。手動指定も可
+- PCはWi-Fi/有線(同一LAN)で **原寸配信**、モバイルは既定1080p(HLS)。いずれも手動指定可
   - 回線種別は Network Information API + クライアントIPがプライベート帯かで判定
 - **再生できる形式は変換しない** — 対応コーデックはブラウザ自身に問い合わせて判定
   (HEVCを再生できる端末では4K HEVCもそのまま配信)。コンテナだけ非対応なら
@@ -131,7 +131,7 @@ framedeck/
 ├── video/                ffprobe / Range配信 / トランスコード / HLS
 ├── web/                  FastAPI + Web UI(PWA)
 └── desktop/              Tkinter UI(mpv連携)
-tests/                    pytest(166件)
+tests/                    pytest(171件)
 ```
 
 データはすべて `FrameDeck_venv/` 配下に保存されます(設定・DB・キャッシュ・ログ)。

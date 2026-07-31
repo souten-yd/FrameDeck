@@ -34,7 +34,7 @@ SUBPROCESS_TIMEOUT_LIST = 60
 SUBPROCESS_TIMEOUT_READ = 300
 
 #: settings.json のスキーマ版。上げると Settings._migrate が走る。
-SETTINGS_VERSION = 2
+SETTINGS_VERSION = 3
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_version": SETTINGS_VERSION,
@@ -96,7 +96,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "video_stream_mode": "auto",             # original | auto | transcode
     # auto = 回線種別で自動 (Wi-Fi/有線=原寸, モバイル回線=下の上限)
     "video_profile_desktop": "auto",         # auto | original | 2160p | ... | 360p
-    "video_profile_mobile": "auto",
+    # モバイルは回線によらず1080pを既定にする(iOSでは原寸の直接再生が
+    # 安定しないため。手動で変更すればその指定が優先される)
+    "video_profile_mobile": "1080p",
     "video_cellular_max_resolution": "1080p",  # モバイル回線での上限
     "video_codec": "h264",                   # h264 | hevc | av1 | vp9 | copy
     "video_container": "hls_fmp4",           # hls_fmp4
@@ -386,6 +388,11 @@ class Settings:
                 # 原寸のみ = 変換不可形式が再生できない設定。自動なら
                 # LANでは原寸のまま、必要な時だけ変換される。
                 self._values["video_stream_mode"] = "auto"
+        if version < 3:
+            # v3: モバイルの既定を1080pへ。iOSでは原寸の直接再生が
+            # 安定せず、1080p(HLS)なら問題なく再生できるため。
+            if self._values.get("video_profile_mobile") == "auto":
+                self._values["video_profile_mobile"] = "1080p"
         self._values["settings_version"] = SETTINGS_VERSION
         try:
             self.save()
