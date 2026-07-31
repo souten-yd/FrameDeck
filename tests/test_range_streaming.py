@@ -160,3 +160,19 @@ def test_stream_sends_cache_validators(video_env):
     changed = client.get(f"/api/videos/{media_id}/stream",
                          headers={"Range": "bytes=0-99"})
     assert changed.headers["etag"] != etag
+
+
+def test_range_stream_uses_readahead(video_env):
+    """NAS側の一時的な遅延を吸収するため、読み出しは先読みして送出する。"""
+    from framedeck.web.routers import video as video_router
+
+    assert video_router.READAHEAD_CHUNKS >= 4
+    assert video_router.SLOW_READ_WARN_MS > 0
+    client, media_id, video = video_env
+    # 先読みを挟んでも内容・長さは一致する
+    response = client.get(f"/api/videos/{media_id}/stream",
+                          headers={"Range": "bytes=1000-5999"})
+    assert response.status_code == 206
+    assert response.content == video.read_bytes()[1000:6000]
+    whole = client.get(f"/api/videos/{media_id}/stream")
+    assert whole.content == video.read_bytes()

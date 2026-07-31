@@ -9,8 +9,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import ipaddress
+import logging
 import os
+import threading
+import time
 from email.utils import formatdate
+from queue import Empty, Full, Queue
 
 import anyio
 import anyio.to_thread
@@ -36,6 +40,8 @@ from ...video.profile_service import (
 )
 from ...video.transcode import TranscodeError, video_thumbnail
 from ..dependencies import get_services
+
+logger = logging.getLogger("framedeck")
 
 router = APIRouter(prefix="/api/videos", tags=["video"])
 
@@ -276,20 +282,82 @@ def hls_stop(media_id: str, session: str = Query(default=""),
     return {"stopped": stopped}
 
 
-async def _aiter_file_range(path: str, start: int, end: int):
-    """Range配信をイベントループ上で行う(切断時に確実に閉じる)。"""
+#: 1チャンクの読み出しがこれを超えたら記録する(NAS側のスパイク検知)。
+#: 不定期なカクつきは、こうした一時的な読み遅延が原因のことが多い。
+SLOW_READ_WARN_MS = 400.0
+
+
+#: 先読みしておくチャンク数(1MB×8 ≒ 8MB)。NAS(SMB/NFS)側の一時的な
+#: 応答遅延を吸収し、再生側へ届く前に埋め合わせるための余裕。
+READAHEAD_CHUNKS = 8
+
+
+def _read_ahead(path: str, start: int, end: int, queue: "Queue", stop: threading.Event):
+    """別スレッドで先読みする。読み出しの遅延と送出を重ねるため。"""
     remaining = end - start + 1
-    handle = await anyio.open_file(path, "rb")
     try:
-        await handle.seek(start)
-        while remaining > 0:
-            chunk = await handle.read(min(FILE_CHUNK_SIZE, remaining))
-            if not chunk:
+        with open(path, "rb") as handle:
+            handle.seek(start)
+            while remaining > 0 and not stop.is_set():
+                began = time.monotonic()
+                chunk = handle.read(min(FILE_CHUNK_SIZE, remaining))
+                elapsed_ms = (time.monotonic() - began) * 1000
+                if elapsed_ms > SLOW_READ_WARN_MS:
+                    logger.warning(
+                        "配信元の読み出しが遅延しました: %.0fms (%s @ %.1fMB) — "
+                        "共有フォルダ側の応答が原因の可能性があります",
+                        elapsed_ms, os.path.basename(path),
+                        (end - remaining + 1) / 1048576,
+                    )
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                # 送出側が止まった(切断された)場合にここで永久に待たない
+                while not stop.is_set():
+                    try:
+                        queue.put(chunk, timeout=0.5)
+                        break
+                    except Full:
+                        continue
+    except OSError as exc:
+        logger.warning("配信元の読み出しに失敗しました: %s", exc)
+    finally:
+        try:
+            queue.put_nowait(None)
+        except Full:
+            pass
+
+
+async def _aiter_file_range(path: str, start: int, end: int):
+    """Range配信。先読みスレッドを介して読み出しの揺らぎを吸収する。
+
+    直読みだと「NASから読む → クライアントへ送る」が交互になり、共有側で
+    一瞬でも遅延するとそのまま再生の途切れになる。先読みしておけば
+    数百ms程度のスパイクは在庫で埋められる。
+    """
+    queue: "Queue" = Queue(maxsize=READAHEAD_CHUNKS)
+    stop = threading.Event()
+    reader = threading.Thread(
+        target=_read_ahead, args=(path, start, end, queue, stop),
+        name="framedeck-readahead", daemon=True,
+    )
+    reader.start()
+    try:
+        while True:
+            chunk = await anyio.to_thread.run_sync(
+                queue.get, abandon_on_cancel=True, limiter=_STREAM_LIMITER,
+            )
+            if chunk is None:
                 break
-            remaining -= len(chunk)
             yield chunk
     finally:
-        await handle.aclose()
+        stop.set()
+        # 先読みスレッドが put() で待っている場合に備えて捌けさせる
+        try:
+            while not queue.empty():
+                queue.get_nowait()
+        except Empty:
+            pass
 
 
 async def _aiter_transcode(stream):
@@ -387,6 +455,7 @@ async def stream_transcode(media_id: str,
                            session: str = Query(default=""),
                            copy_video: bool = Query(default=False),
                            copy_audio: bool = Query(default=False),
+                           smooth_fps: float | None = Query(default=None, ge=20, le=240),
                            services: Services = Depends(get_services)):
     """ブラウザ非対応形式向けのfMP4変換ストリーミング(シークは?start=で再要求)。
 
@@ -401,6 +470,7 @@ async def stream_transcode(media_id: str,
             item.path, start, max_height=max_height, max_width=max_width,
             owner=session.strip()[:64] or None,
             copy_video=copy_video, copy_audio=copy_audio,
+            smooth_fps=smooth_fps,
         )
     except TranscodeError as e:
         raise HTTPException(status_code=503, detail=str(e))

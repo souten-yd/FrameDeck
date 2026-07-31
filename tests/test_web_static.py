@@ -364,3 +364,34 @@ def test_display_sync_adjusts_playback_rate_not_server_side_fps():
     assert 'window.addEventListener("resize", invalidateRefreshHz)' in js
     assert "REFRESH_HZ_TTL_MS" in js
     assert 'makeSelect("video_display_sync"' in js
+
+
+def test_display_sync_has_no_refresh_rate_nag():
+    """画面の周波数変更を促す文言は出さない(設定画面の事実表示のみ)。"""
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function announceDisplaySync" not in js
+    assert "にすると滑らかになります" not in js
+    assert "にすると解消します" not in js
+    # 代わりに端末側で完結する手段を用意する
+    assert "DISPLAY_SYNC_TOLERANCES" in js
+    assert "function smoothMotionTarget" in js
+    assert 'makeSelect("video_smooth_motion"' in js
+    assert 'params.set("smooth_fps"' in js
+
+
+def test_lossless_remux_delivery_option_exists():
+    """直接再生が不安定なときの逃げ道: 画質そのままで連続配信する経路。"""
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert '<option value="remux">' in html
+    assert 'S.video.quality === "remux"' in js
+    assert "S.video.copyVideo = true;" in js          # 再エンコードしない
+
+
+def test_playback_glitches_are_recorded_for_diagnosis():
+    """不定期な乱れを後から確認できるようにする(供給不足と表示落ちを区別)。"""
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function recordGlitch" in js
+    assert "function glitchSummary" in js
+    assert 'recordGlitch("buffer"' in js
+    assert 'recordGlitch("frames"' in js
