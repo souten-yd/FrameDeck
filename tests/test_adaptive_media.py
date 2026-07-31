@@ -597,3 +597,35 @@ def test_smooth_motion_adds_blend_framerate_filter():
     copied = build_fmp4_transcode_cmd("/tmp/a.mkv", copy_video=True, smooth_fps=59.87)
     assert "-vf" not in copied
     assert ["-c:v", "copy"] == copied[copied.index("-c:v"):copied.index("-c:v") + 2]
+
+
+def test_hls_stop_does_not_kill_other_sessions_or_fresh_jobs(tmp_path, monkeypatch):
+    """停止要求で他タブ・開始直後の生成まで止めない。
+
+    ファイル単位で無条件に止めると、再生を始めた直後に自分の生成を
+    巻き添えで殺し、プレーヤーは404を受けて再試行の末に失敗する
+    (モバイルで「4回試行して失敗」となっていた事象)。
+    """
+    import threading
+
+    from framedeck.video.hls_service import HlsService
+
+    source = tmp_path / "movie.mp4"
+    source.write_bytes(b"x" * 1024)
+    service = HlsService(tmp_path / "cache", segment_duration=4)
+    monkeypatch.setattr(service, "available", lambda: True)
+    monkeypatch.setattr(service, "_generate", lambda *a, **k: threading.Event().wait(3))
+
+    service.ensure_async(str(source), ["720p"], 1080, 0.0, owner="tabA")
+    service.ensure_async(str(source), ["480p"], 1080, 0.0, owner="tabB")
+    assert len(service._jobs) == 2
+
+    # 別タブの停止では自分の生成は止まらない
+    assert service.cancel_source(str(source), owner="tabC") == 0
+    # 開始直後(猶予内)は自分の停止要求でも止めない
+    assert service.cancel_source(str(source), owner="tabA", min_age=60) == 0
+    # 猶予なしなら自分の生成だけ止まる
+    assert service.cancel_source(str(source), owner="tabA") == 1
+    remaining = [j for j in service._jobs.values() if not j.cancelled]
+    assert [j.owner for j in remaining] == ["tabB"]
+    service.shutdown()

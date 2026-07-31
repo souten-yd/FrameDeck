@@ -395,3 +395,26 @@ def test_playback_glitches_are_recorded_for_diagnosis():
     assert "function glitchSummary" in js
     assert 'recordGlitch("buffer"' in js
     assert 'recordGlitch("frames"' in js
+
+
+def test_mobile_conversion_uses_hls_not_progressive_fmp4():
+    """逐次fMP4はRange非対応。iOS Safari等では再生できないためHLSへ寄せる。"""
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function shouldUseNativeHls" in js
+    assert "function hlsProfileForSource" in js
+    assert "if (shouldUseNativeHls()) {" in js
+    # 再生できない端末ではリトライを繰り返さずHLSへ切り替える
+    assert "S.video.hlsFallback = true;" in js
+
+
+def test_quality_steps_down_when_network_starves():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function noteStarvation" in js
+    assert "function stepDownQuality" in js
+    assert "QUALITY_LADDER" in js
+    assert "S.video.qualityIsManual" in js
+
+
+def test_hls_requests_carry_the_client_session():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "session=${encodeURIComponent(CLIENT_SESSION_ID)}" in js
