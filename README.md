@@ -13,7 +13,7 @@ NASや自宅サーバに置いたアーカイブをブラウザから開くだ�
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?logo=fastapi&logoColor=white)
 ![PWA](https://img.shields.io/badge/PWA-ready-5A0FC8?logo=pwa&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-161%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-166%20passed-brightgreen)
 ![Local First](https://img.shields.io/badge/cloud-not%20required-1a1b26)
 
 </div>
@@ -113,6 +113,8 @@ WEB_PORT = 9000
   (HEVCを再生できる端末では4K HEVCもそのまま配信)。コンテナだけ非対応なら
   映像を再エンコードせず入れ替えるだけ(MKVのH.264など)
 - 変換プロセスはタブ単位で1本に制限。シークやファイル切替を連打しても多重起動しない
+- 共有フォルダ(NAS)の一時的な遅延を吸収する先読み配信。読み出し遅延はログに記録
+- 画質そのままでコンテナだけ作り直す「原寸(再多重化)」配信も選べる
 - 再生が止まったら同じ位置から自動で読み直す(ウォッチドッグ)
 - **表示同期** — 画面のリフレッシュレートを実測し、映像fpsと整数比にならない時だけ
   再生速度を±1.2%以内で微調整して表示ムラ(judder)を抑える。端末ごとに自動判定
@@ -129,7 +131,7 @@ framedeck/
 ├── video/                ffprobe / Range配信 / トランスコード / HLS
 ├── web/                  FastAPI + Web UI(PWA)
 └── desktop/              Tkinter UI(mpv連携)
-tests/                    pytest(161件)
+tests/                    pytest(166件)
 ```
 
 データはすべて `FrameDeck_venv/` 配下に保存されます(設定・DB・キャッシュ・ログ)。

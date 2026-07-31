@@ -89,7 +89,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "default_volume": 0,
     "aux_mouse_navigation": True,            # マウス戻る/進むで前後のファイルへ
     # 画面のリフレッシュレートに合わせて再生速度を微調整する(judder対策)
-    "video_display_sync": "auto",            # auto | off
+    "video_display_sync": "auto",            # auto | strong | off
+    # 速度補正では均等化できない場合に中間フレームを生成する(実験)
+    "video_smooth_motion": "off",            # off | auto
     # 動画適応配信
     "video_stream_mode": "auto",             # original | auto | transcode
     # auto = 回線種別で自動 (Wi-Fi/有線=原寸, モバイル回線=下の上限)
@@ -162,7 +164,8 @@ _VALID_ENUMS = {
     "video_codec": {"h264", "hevc", "av1", "vp9", "copy"},
     "video_container": {"hls_fmp4"},
     "library_start_folder": {"last", "root"},
-    "video_display_sync": {"auto", "off"},
+    "video_display_sync": {"auto", "strong", "off"},
+    "video_smooth_motion": {"off", "auto"},
     "video_hardware_encoder": {
         "auto", "software", "h264_vaapi", "hevc_vaapi", "h264_amf",
         "hevc_amf", "h264_nvenc", "hevc_nvenc", "av1_nvenc",

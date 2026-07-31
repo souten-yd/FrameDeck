@@ -94,7 +94,8 @@ class TranscodeService:
                   max_width: int | None = None,
                   owner: str | None = None,
                   copy_video: bool = False,
-                  copy_audio: bool = False) -> Fmp4Stream:
+                  copy_audio: bool = False,
+                  smooth_fps: float | None = None) -> Fmp4Stream:
         """変換プロセスを起動してストリームハンドルを返す。
 
         `owner`(クライアントセッションID)が同じ古いストリームは停止する。
@@ -109,7 +110,7 @@ class TranscodeService:
             path, start_seconds=start_seconds,
             max_height=max_height, max_width=max_width,
             copy_video=copy_video, copy_audio=copy_audio,
-            ffmpeg_bin=ffmpeg.path,
+            smooth_fps=smooth_fps, ffmpeg_bin=ffmpeg.path,
         )
         # stderrはパイプにするとログが溜まった時にffmpegが書き込みで
         # ブロックして配信が止まるため、一時ファイルへ逃がす
@@ -248,6 +249,7 @@ def build_fmp4_transcode_cmd(
     max_width: int | None = None,
     copy_video: bool = False,
     copy_audio: bool = False,
+    smooth_fps: float | None = None,
     ffmpeg_bin: str = "ffmpeg",
 ) -> list[str]:
     """Build a mobile-compatible progressive fragmented MP4 command.
@@ -257,6 +259,10 @@ def build_fmp4_transcode_cmd(
     端末が映像コーデックを再生できる場合(MKVのH.264など)はこちらを使う。
     実時間の再エンコードは高解像度・高フレームレートで破綻するため、
     可能な限りコピーで済ませることが再生の安定に直結する。
+
+    smooth_fps はディスプレイのリフレッシュレートに合わせた中間フレーム生成。
+    `framerate` フィルタは前後フレームをブレンドするため、単純複製と違い
+    3:2プルダウン特有の不均等な見え方が出ない(その代わり動きは柔らかくなる)。
     """
     cmd = [ffmpeg_bin, "-hide_banner", "-loglevel", "error"]
     if start_seconds > 0:
@@ -265,6 +271,9 @@ def build_fmp4_transcode_cmd(
     if copy_video:
         cmd += ["-c:v", "copy"]
     else:
+        filters = [scale_filter_for_box(max_width, max_height)]
+        if smooth_fps and smooth_fps > 0:
+            filters.append(f"framerate=fps={smooth_fps:.3f}")
         cmd += [
             "-c:v", "libx264",
             "-preset", "veryfast",
@@ -278,7 +287,7 @@ def build_fmp4_transcode_cmd(
             "-keyint_min", "60",
             "-sc_threshold", "0",
             "-crf", "23",
-            "-vf", scale_filter_for_box(max_width, max_height),
+            "-vf", ",".join(filters),
         ]
     if copy_audio:
         cmd += ["-c:a", "copy"]

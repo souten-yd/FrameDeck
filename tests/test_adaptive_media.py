@@ -582,3 +582,18 @@ def test_hls_start_is_serialized_per_source(tmp_path, monkeypatch):
         alive = [job for job in service._jobs.values() if not job.cancelled]
     assert len(alive) <= 1   # 停止要求されていない生成は常に1本以下
     service.shutdown()
+
+
+def test_smooth_motion_adds_blend_framerate_filter():
+    """速度補正で均等化できない場合の中間フレーム生成(任意機能)。"""
+    from framedeck.video.transcode import build_fmp4_transcode_cmd
+
+    cmd = build_fmp4_transcode_cmd("/tmp/a.mp4", max_height=1080, max_width=1920,
+                                   smooth_fps=59.87)
+    vf = cmd[cmd.index("-vf") + 1]
+    assert "framerate=fps=59.870" in vf          # 複製ではなくブレンド補間
+    assert "scale=" in vf
+    # remux(コピー)時はフィルタを使わない
+    copied = build_fmp4_transcode_cmd("/tmp/a.mkv", copy_video=True, smooth_fps=59.87)
+    assert "-vf" not in copied
+    assert ["-c:v", "copy"] == copied[copied.index("-c:v"):copied.index("-c:v") + 2]

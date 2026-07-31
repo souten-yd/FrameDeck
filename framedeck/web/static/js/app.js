@@ -161,7 +161,15 @@ function clientCodecSupport() {
    代わりに mpv の --video-sync=display-resample と同じ考え方で、
    再生速度をごく僅かに補正して「fps×補正 = リフレッシュレート÷整数」に
    合わせる。補正が小さい場合(既定1.2%以内)だけ自動適用する。 */
-const DISPLAY_SYNC_TOLERANCE = 0.012;
+/* 許容する速度補正の上限。auto は体感できない範囲(±1.2%)まで。
+   strong は PAL変換相当(±5%)まで許し、49.99Hz+24fps のように
+   auto では届かない組み合わせを均等表示にできる(音程はブラウザが保持)。 */
+const DISPLAY_SYNC_TOLERANCES = { auto: 0.012, strong: 0.05 };
+
+function displaySyncTolerance() {
+  const mode = S.settings.video_display_sync || "auto";
+  return DISPLAY_SYNC_TOLERANCES[mode] ?? DISPLAY_SYNC_TOLERANCES.auto;
+}
 
 let cachedRefreshHz = null;
 let refreshHzMeasuredAt = 0;
@@ -211,7 +219,24 @@ function computeDisplaySync(fps, hz) {
   const repeats = Math.max(1, Math.round(ratio));
   const rate = ratio / repeats;
   const deviation = Math.abs(rate - 1);
-  return { ratio, repeats, rate, deviation, ok: deviation <= DISPLAY_SYNC_TOLERANCE };
+  return { ratio, repeats, rate, deviation, ok: deviation <= displaySyncTolerance() };
+}
+
+/* 速度補正では均等化できない組み合わせ(60Hzで23.976fpsなど)のとき、
+   サーバ側で画面のリフレッシュレートに合わせて中間フレームを作る。
+   単純なフレーム複製では同じ不均等パターンが残るため、ブレンド補間
+   (ffmpegのframerateフィルタ)を使う。動きは滑らかになるが速い動きでは
+   輪郭が柔らかくなるため、既定では無効の任意機能とする。 */
+function smoothMotionTarget() {
+  if ((S.settings.video_smooth_motion || "off") === "off") return null;
+  const info = S.video.syncInfo;
+  const fps = Number(S.video.info?.frame_rate) || 0;
+  const height = Number(S.video.info?.height) || 0;
+  if (!info || info.ok || info.tooFast) return null;
+  if (info.deviation < 0.02) return null;
+  // 実時間で変換できる範囲に限る(4K等は間に合わないため対象外)
+  if (!fps || height > 1088 || fps > 31) return null;
+  return Math.round(info.hz * 100) / 100;
 }
 
 function syncedRate(base) {
@@ -225,43 +250,48 @@ function applyPlaybackRate() {
   video.playbackRate = syncedRate(base);
 }
 
-/* 開いた動画のfpsと実測リフレッシュレートから、補正するか判断する */
-async function updateDisplaySync() {
+/* 開いた動画のfpsと実測リフレッシュレートから、補正するか判断する。
+   判定結果は設定画面の診断に出すだけで、通知は出さない。 */
+async function updateDisplaySync({ silent = true } = {}) {
   S.video.syncRate = 1;
   S.video.syncInfo = null;
-  if (S.settings.video_display_sync === "off") return;
+  if (S.settings.video_display_sync === "off") return null;
   const fps = Number(S.video.info?.frame_rate) || 0;
-  if (!fps) return;
+  if (!fps) return null;
   const hz = await measureDisplayRefreshHz();
-  if (!hz) return;
+  if (!hz) return null;
   const sync = computeDisplaySync(fps, hz);
-  if (!sync) return;
+  if (!sync) return null;
   S.video.syncInfo = { ...sync, fps, hz };
   if (sync.ok && sync.deviation > 0.00005) {
     S.video.syncRate = sync.rate;
     applyPlaybackRate();
   }
-  announceDisplaySync();
+  return S.video.syncInfo;
 }
 
-let lastSyncWarningKey = null;
-function announceDisplaySync() {
-  const info = S.video.syncInfo;
-  if (!info) return;
-  const key = `${Math.round(info.hz)}/${info.fps.toFixed(2)}`;
-  if (info.ok || info.tooFast || key === lastSyncWarningKey) return;
-  // 速度補正では吸収できないほどズレている場合だけ、原因と対処を伝える
-  if (info.deviation < 0.02) return;
-  lastSyncWarningKey = key;
-  const better = [60, 120, 144, 240].find(
-    (hz) => Math.abs((hz / info.fps) - Math.round(hz / info.fps)) < 0.01
-  );
-  toast(
-    `表示が不均等になります: 画面 ${info.hz.toFixed(1)}Hz ÷ 映像 ${info.fps.toFixed(2)}fps ` +
-    `= ${info.ratio.toFixed(2)} 回/コマ` +
-    (better ? ` — 画面を ${better}Hz にすると滑らかになります` : ""),
-    false
-  );
+/* ================= 再生の乱れの記録 =================
+   不定期なカクつきは再現しづらいので、起きた事実を残して後から見られる
+   ようにする。バッファ待ち(供給不足)と表示落ち(描画が間に合わない)は
+   原因が違うため区別して数える。 */
+const PLAYBACK_GLITCH_LIMIT = 40;
+const playbackGlitches = [];
+
+function recordGlitch(kind, detail) {
+  playbackGlitches.push({ at: Date.now(), kind, detail });
+  if (playbackGlitches.length > PLAYBACK_GLITCH_LIMIT) playbackGlitches.shift();
+}
+
+function glitchSummary() {
+  if (!playbackGlitches.length) return "直近の再生で乱れは記録されていません。";
+  const counts = {};
+  for (const g of playbackGlitches) counts[g.kind] = (counts[g.kind] || 0) + 1;
+  const last = playbackGlitches[playbackGlitches.length - 1];
+  const label = { buffer: "バッファ待ち", frames: "表示落ち", reload: "読み直し" };
+  const parts = Object.entries(counts)
+    .map(([k, n]) => `${label[k] || k} ${n}回`).join(" / ");
+  return `直近の乱れ: ${parts} — 最後 ${new Date(last.at).toLocaleTimeString()}` +
+    (last.detail ? ` (${last.detail})` : "");
 }
 
 /* 設定画面に出す診断文。端末ごとに実測値が違うため、その場で測って見せる */
@@ -282,9 +312,9 @@ function buildDisplaySyncHint() {
       ? `速度を ${((S.video.syncRate - 1) * 100).toFixed(2)}% 補正して均等表示にしています`
       : "整数比なので補正は不要です"}`;
   }
-  return `${base} / ${cadence} — 整数比にならないため表示間隔が不均等になります` +
-    "(速度補正では吸収できない差)。画面のリフレッシュレートを映像fpsの整数倍" +
-    "(30fps系なら60/120Hz、24fps系なら48/120Hz)にすると解消します。";
+  return `${base} / ${cadence} — 整数比にならないため表示間隔が不均等になります。` +
+    "「強め」にすると±5%まで速度補正を許可します。それでも届かない場合は" +
+    "下の「なめらか変換」で中間フレームを生成できます。";
 }
 
 function clientMediaHints() {
@@ -1506,6 +1536,7 @@ function transcodeStreamUrl(itemId, seconds) {
   // 端末が映像コーデックを再生できるなら再エンコードしない(remux)
   if (S.video.copyVideo) params.set("copy_video", "1");
   if (S.video.copyAudio) params.set("copy_audio", "1");
+  if (S.video.smoothFps) params.set("smooth_fps", String(S.video.smoothFps));
   return `/api/videos/${itemId}/stream-transcode?${params.toString()}`;
 }
 
@@ -1568,7 +1599,27 @@ async function openVideo(item) {
   // 変換時の上限。原寸(null)ならスケーリングなしで配信する
   S.video.maxHeight = playbackProfile?.height || null;
   S.video.maxWidth = playbackProfile?.width || null;
-  const wantsTranscode = Boolean(playbackProfile?.transcode);
+
+  if (S.video.quality === "remux") {
+    // 画質はそのまま(再エンコードなし)、コンテナだけ作り直して連続配信する。
+    // 直接再生で不定期に引っかかる場合の逃げ道。データトラック等の
+    // 余計なストリームも落ちるため、素の配信より素直に流れる
+    playbackProfile = { name: "original", transcode: true, height: null, width: null };
+    canDirectPlay = false;
+    S.video.maxHeight = null;
+    S.video.maxWidth = null;
+    S.video.copyVideo = true;
+    S.video.copyAudio = clientCodecSupport().audioCodecs.includes(
+      (detail.info.audio_codec || "").toLowerCase());
+  }
+
+  // 画面との相性を先に判定する(なめらか変換を使うかの判断に必要)
+  S.video.info = detail.info;
+  await updateDisplaySync();
+  if (token !== S.video.loadToken) return;
+  S.video.smoothFps = detail.transcode_available ? smoothMotionTarget() : null;
+
+  const wantsTranscode = Boolean(playbackProfile?.transcode) || Boolean(S.video.smoothFps);
   if (!wantsTranscode && canDirectPlay) {
     S.video.transcode = false;
     S.video.hls = false;
@@ -1595,8 +1646,15 @@ async function openVideo(item) {
       S.video.transcode = true;
       S.video.hls = false;
       S.video.offset = resume;
+      if (S.video.smoothFps) S.video.copyVideo = false;   // 補間には再エンコードが要る
       video.src = transcodeStreamUrl(item.id, resume);
-      if (S.video.copyVideo) {
+      if (S.video.quality === "remux") {
+        $("video-badge").textContent =
+          `原寸そのまま配信 (再多重化${S.video.copyAudio ? "" : " / 音声のみ変換"})`;
+      } else if (S.video.smoothFps) {
+        $("video-badge").textContent =
+          `なめらか変換 ${S.video.smoothFps.toFixed(1)}fps (${detail.info.frame_rate.toFixed(2)}fps素材)`;
+      } else if (S.video.copyVideo) {
         // 映像は無変換。コンテナ(必要なら音声も)だけ入れ替えるので軽い
         $("video-badge").textContent =
           `原寸そのまま配信 (${detail.info.container} → mp4)`;
@@ -1638,8 +1696,6 @@ async function openVideo(item) {
   try { await video.play(); } catch (e) { /* 自動再生ブロックは無視 */ }
   startProgressTimer();
   startPlaybackWatchdog();
-  // 画面のリフレッシュレートに合わせた微調整(必要なときだけ)
-  updateDisplaySync();
 }
 
 function currentPosition() {
@@ -1717,10 +1773,18 @@ function stopPlaybackWatchdog() {
 function startPlaybackWatchdog() {
   stopPlaybackWatchdog();
   S.video.watchdogPosition = currentPosition();
+  S.video.watchdogDropped = video.getVideoPlaybackQuality?.().droppedVideoFrames || 0;
   S.video.watchdogTimer = setInterval(() => {
     if (!S.video.item || video.paused || video.ended || S.video.recovering) {
       S.video.watchdogStrikes = 0;
       return;
+    }
+    // 表示落ち(描画が間に合っていない)の検知。供給不足とは原因が異なる
+    const quality = video.getVideoPlaybackQuality?.();
+    if (quality) {
+      const dropped = quality.droppedVideoFrames - (S.video.watchdogDropped || 0);
+      if (dropped > 2) recordGlitch("frames", `${dropped}コマ落ち`);
+      S.video.watchdogDropped = quality.droppedVideoFrames;
     }
     const position = currentPosition();
     if (Math.abs(position - S.video.watchdogPosition) > 0.25) {
@@ -1741,6 +1805,7 @@ async function recoverPlayback(position) {
   if (!item || S.video.recovering) return;
   S.video.recovering = true;
   $("video-spinner").classList.remove("hidden");
+  recordGlitch("reload", `${Math.round(position)}秒地点`);
   toast("再生が止まったため読み直します");
   try {
     if (S.video.transcode && !S.video.hls) {
@@ -2071,7 +2136,17 @@ video.addEventListener("seeked", () => {
 });
 video.addEventListener("play", updateVideoUi);
 video.addEventListener("pause", () => { updateVideoUi(); saveVideoProgress(); });
-video.addEventListener("waiting", () => $("video-spinner").classList.remove("hidden"));
+video.addEventListener("waiting", () => {
+  $("video-spinner").classList.remove("hidden");
+  if (S.video.item && !video.seeking) {
+    const b = video.buffered;
+    const ahead = b.length ? (b.end(b.length - 1) - video.currentTime).toFixed(1) : 0;
+    recordGlitch("buffer", `先読み残り ${ahead}秒`);
+  }
+});
+video.addEventListener("stalled", () => {
+  if (S.video.item) recordGlitch("buffer", "データ供給が止まりました");
+});
 video.addEventListener("canplay", () => {
   $("video-spinner").classList.add("hidden");
   clearVideoErrorRetry();
@@ -2706,8 +2781,19 @@ async function openSettings() {
     makeSelect("video_cellular_max_resolution", videoQualityOptions.filter(([v]) => v !== "auto")),
     "モバイル回線と判定された時だけ適用される上限です。");
   settingRow(grid, "表示同期", makeSelect("video_display_sync", [
-    ["auto", "自動 (画面に合わせて微調整)"], ["off", "無効"],
+    ["auto", "自動 (±1.2%まで)"], ["strong", "強め (±5%まで)"], ["off", "無効"],
   ]), buildDisplaySyncHint());
+  const glitchRow = document.createElement("div");
+  glitchRow.className = "hint";
+  glitchRow.style.gridColumn = "1 / -1";
+  glitchRow.textContent = glitchSummary();
+  grid.appendChild(glitchRow);
+  settingRow(grid, "なめらか変換", makeSelect("video_smooth_motion", [
+    ["off", "しない"], ["auto", "必要なときだけ (実験)"],
+  ]), "速度補正で均等にできない組み合わせ(60Hzで23.976fpsなど)のとき、" +
+     "画面に合わせた中間フレームをサーバ側で生成します。コマ表示のムラは" +
+     "消えますが、映像を再エンコードするため速い動きは少し柔らかくなります。" +
+     "対象は1080p以下・30fps以下の素材のみ。");
   settingRow(grid, "動画コーデック", makeSelect("video_codec", [
     ["h264", "H.264"], ["hevc", "HEVC"], ["vp9", "VP9"],
     ["av1", "AV1"], ["copy", "コピー可能ならコピー"],
