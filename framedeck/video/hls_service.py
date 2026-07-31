@@ -110,6 +110,10 @@ class HlsService:
         self.auto_download_ffmpeg = bool(auto_download_ffmpeg)
         self.max_cache_bytes = int(max_cache_bytes)
         self._lock = threading.Lock()
+        # 「古いジョブの停止 → 新ジョブ登録」を直列化する。並行に走ると
+        # 全要求が互いを取り逃がし、シーク連打の分だけffmpegが同時起動して
+        # CPUを食い潰す(再生が止まる原因)
+        self._start_lock = threading.Lock()
         self._jobs: dict[str, _HlsJob] = {}
 
     def configure(self, *, auto_download_ffmpeg: bool | None = None,
@@ -202,8 +206,9 @@ class HlsService:
             return manifest
         if not self.available():
             raise TranscodeError("ffmpeg が見つかりません。HLSを生成できません。")
-        self.cancel_source(source_path, except_key=manifest.key)
-        job = self._register_job(manifest, source_path)
+        with self._start_lock:
+            self.cancel_source(source_path, except_key=manifest.key)
+            job = self._register_job(manifest, source_path)
         if job is None:
             # 同一keyの生成が進行中
             return manifest

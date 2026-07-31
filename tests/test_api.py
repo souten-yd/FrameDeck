@@ -1,4 +1,6 @@
 """Web APIのテスト(ライブラリ・漫画セッション・削除・設定・起動)。"""
+import os
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -481,3 +483,147 @@ def test_video_playback_profile_requested_resolution_wins(client_env, tmp_path):
     )
     assert response.status_code == 200
     assert response.json()["profile"]["transcode"] is False
+
+
+def _names(client, root_id, sort):
+    response = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic&sort={sort}"
+    )
+    assert response.status_code == 200
+    return [i["display_name"] for i in response.json()["items"]]
+
+
+def test_sort_by_date_applies_to_folders_too(client_env):
+    """フォルダも更新日時で並ぶ(名前順に固定されない)。"""
+    client, services, root_id, comic_root = client_env
+    (comic_root / "Zfolder").mkdir()
+    (comic_root / "Afolder").mkdir()
+    os.utime(comic_root / "Zfolder", (5000, 5000))
+    os.utime(comic_root / "Afolder", (1000, 1000))
+    os.utime(comic_root / "B", (3000, 3000))
+    os.utime(comic_root / "A.zip", (2000, 2000))
+    os.utime(comic_root / "C.cbz", (4000, 4000))
+
+    assert _names(client, root_id, "date_desc") == [
+        "Zfolder", "B", "Afolder", "C.cbz", "A.zip",
+    ]
+    assert _names(client, root_id, "date_asc") == [
+        "Afolder", "B", "Zfolder", "A.zip", "C.cbz",
+    ]
+    assert _names(client, root_id, "name_asc") == [
+        "Afolder", "B", "Zfolder", "A.zip", "C.cbz",
+    ]
+    assert _names(client, root_id, "name_desc") == [
+        "Zfolder", "B", "Afolder", "C.cbz", "A.zip",
+    ]
+    # 旧クライアント互換
+    assert _names(client, root_id, "date") == _names(client, root_id, "date_desc")
+    assert _names(client, root_id, "name") == _names(client, root_id, "name_asc")
+
+
+def test_duplicate_detection_selects_older_entries(client_env):
+    """拡張子違い・末尾の僅かな違いは重複、巻数が違うものは別物とみなす。"""
+    client, services, root_id, comic_root = client_env
+    from tests.conftest import make_zip
+
+    make_zip(comic_root / "作品名_第01巻.zip", pages=1)
+    make_zip(comic_root / "作品名_第01巻.rar", pages=1)      # 拡張子違い
+    make_zip(comic_root / "作品名_第01巻s.zip", pages=1)     # 1文字違い
+    make_zip(comic_root / "作品名_第02巻.zip", pages=1)      # 別の巻
+    make_zip(comic_root / "Totally Different.cbz", pages=1)
+    os.utime(comic_root / "作品名_第01巻.zip", (1000, 1000))
+    os.utime(comic_root / "作品名_第01巻.rar", (9000, 9000))
+    os.utime(comic_root / "作品名_第01巻s.zip", (5000, 5000))
+    client.get(f"/api/library/items?folder_id={root_id}&mode=comic")
+
+    response = client.get(
+        f"/api/library/duplicates?folder_id={root_id}&mode=comic"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    groups = [[i["display_name"] for i in g["items"]] for g in data["groups"]]
+    volume = [g for g in groups if any("第01巻" in name for name in g)]
+    assert volume == [["作品名_第01巻.rar", "作品名_第01巻s.zip", "作品名_第01巻.zip"]]
+    # 巻数が違うもの・無関係なものは同じグループに入らない
+    assert not any("第02巻" in name for g in groups for name in g)
+    assert not any("Totally Different" in name for g in groups for name in g)
+    selected = {i["display_name"] for g in data["groups"]
+                for i in g["items"] if not i["keep"]}
+    assert {"作品名_第01巻s.zip", "作品名_第01巻.zip"} <= selected  # 古い方だけ
+    assert "作品名_第01巻.rar" not in selected
+    assert len(data["select_ids"]) == len(selected)
+
+
+def test_bulk_delete_requires_matching_token(client_env):
+    client, services, root_id, comic_root = client_env
+    services.settings.set("delete_to_trash", False)
+    response = client.get(f"/api/library/items?folder_id={root_id}&mode=comic")
+    files = [i for i in response.json()["items"] if i["media_type"] != "folder"]
+    ids = [i["id"] for i in files]
+
+    request = client.post("/api/library/items/bulk-delete-request",
+                          json={"item_ids": ids})
+    assert request.status_code == 200
+    token = request.json()["token"]
+    assert request.json()["count"] == len(ids)
+
+    # 対象が違えばトークンは通らない
+    bad = client.post(f"/api/library/items/bulk-delete?token={token}",
+                      json={"item_ids": ids[:1]})
+    assert bad.status_code == 403
+
+    request = client.post("/api/library/items/bulk-delete-request",
+                          json={"item_ids": ids})
+    token = request.json()["token"]
+    response = client.post(f"/api/library/items/bulk-delete?token={token}",
+                           json={"item_ids": ids})
+    assert response.status_code == 200
+    assert len(response.json()["deleted"]) == len(ids)
+    assert response.json()["failed"] == []
+    remaining = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic").json()["items"]
+    assert [i["media_type"] for i in remaining] == ["folder"]
+
+
+def test_start_folder_resumes_last_opened_folder(client_env):
+    client, services, root_id, comic_root = client_env
+    # ルート直下 → サブフォルダ B の順に開く
+    client.get(f"/api/library/items?folder_id={root_id}&mode=comic")
+    items = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic").json()["items"]
+    folder = next(i for i in items if i["media_type"] == "folder")
+    client.get(f"/api/library/items?folder_id={folder['id']}&mode=comic")
+
+    resume = client.get("/api/library/start-folder?mode=comic").json()
+    assert resume["folder_id"] == folder["id"]
+    assert resume["root_id"] == root_id
+    assert resume["relative_path"] == "B"
+    # 記録済みIDでそのまま開ける
+    listed = client.get(
+        f"/api/library/items?folder_id={resume['folder_id']}&mode=comic")
+    assert listed.status_code == 200
+    assert listed.json()["folder"]["display_name"] == "B"
+
+    # 設定を root にすると復元しない
+    services.settings.set("library_start_folder", "root")
+    assert client.get("/api/library/start-folder?mode=comic").json()["folder_id"] is None
+
+    # フォルダが消えていれば復元しない
+    services.settings.set("library_start_folder", "last")
+    import shutil
+    shutil.rmtree(comic_root / "B")
+    assert client.get("/api/library/start-folder?mode=comic").json()["folder_id"] is None
+
+
+def test_start_folder_is_recorded_per_mode(client_env, tmp_path):
+    client, services, root_id, comic_root = client_env
+    videos = tmp_path / "videos_startfolder"
+    videos.mkdir()
+    (videos / "clip.mp4").write_bytes(b"x")
+    services.library.add_root(str(videos), "video")
+    video_root = services.library.list_roots()[-1]["id"]
+
+    client.get(f"/api/library/items?folder_id={root_id}&mode=comic")
+    client.get(f"/api/library/items?folder_id={video_root}&mode=video")
+    assert client.get("/api/library/start-folder?mode=comic").json()["root_id"] == root_id
+    assert client.get("/api/library/start-folder?mode=video").json()["root_id"] == video_root

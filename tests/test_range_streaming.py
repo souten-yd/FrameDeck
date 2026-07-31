@@ -125,3 +125,38 @@ def test_completed_video_restarts(video_env):
     )
     detail = client.get(f"/api/videos/{media_id}").json()
     assert detail["resume_position"] == 0.0
+
+
+def test_stream_sends_cache_validators(video_env):
+    """ETag/Last-Modifiedが無いとブラウザのメディアキャッシュが範囲を
+    再利用できず、シークのたびに取り直しになって先読みが痩せる。"""
+    client, media_id, video = video_env
+    response = client.get(f"/api/videos/{media_id}/stream",
+                          headers={"Range": "bytes=0-99"})
+    assert response.status_code == 206
+    etag = response.headers["etag"]
+    assert etag.startswith('"') and etag.endswith('"')
+    assert response.headers["last-modified"]
+    assert response.headers["accept-ranges"] == "bytes"
+    assert "max-age" in response.headers["cache-control"]
+
+    # 同じ検証子なら304
+    cached = client.get(f"/api/videos/{media_id}/stream",
+                        headers={"If-None-Match": etag})
+    assert cached.status_code == 304
+
+    # If-Range が一致すれば部分応答、不一致なら全体
+    partial = client.get(f"/api/videos/{media_id}/stream",
+                         headers={"Range": "bytes=10-19", "If-Range": etag})
+    assert partial.status_code == 206
+    assert len(partial.content) == 10
+    stale = client.get(f"/api/videos/{media_id}/stream",
+                       headers={"Range": "bytes=10-19", "If-Range": '"stale"'})
+    assert stale.status_code == 200
+    assert len(stale.content) == FILE_SIZE
+
+    # 内容が変われば検証子も変わる
+    video.write_bytes(video.read_bytes() + b"extra")
+    changed = client.get(f"/api/videos/{media_id}/stream",
+                         headers={"Range": "bytes=0-99"})
+    assert changed.headers["etag"] != etag

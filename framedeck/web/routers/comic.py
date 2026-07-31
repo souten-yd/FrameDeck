@@ -6,7 +6,7 @@ import os
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 
 from ...comic.archive_backend import ArchiveError
-from ...comic.reader_engine import ComicEngineError
+from ...comic.reader_engine import ComicEngineError, display_label
 from ...core.library_service import item_id_for
 from ...core.security import PathValidationError
 from ...core.services import Services
@@ -67,7 +67,7 @@ def _state_dict(services: Services, state) -> dict:
 def _entry_dict(entry) -> dict:
     return {
         "id": entry.id,
-        "label": entry.label,
+        "label": display_label(entry.label),
         "source_type": entry.source_type,
     }
 

@@ -33,9 +33,11 @@
         <option value="rated">評価あり</option>
         <option value="unrated">評価なし</option>
       </select>
-      <select id="sel-sort" class="tb-select">
-        <option value="date">日付順</option>
-        <option value="name">名前順</option>
+      <select id="sel-sort" class="tb-select" aria-label="並び替え">
+        <option value="date_desc">更新が新しい順</option>
+        <option value="date_asc">更新が古い順</option>
+        <option value="name_asc">名前 昇順</option>
+        <option value="name_desc">名前 降順</option>
         <option value="rating_desc">評価が高い順</option>
         <option value="rating_asc">評価が低い順</option>
       </select>
@@ -71,11 +73,38 @@
           <select id="sel-filter-mobile" class="tb-select" aria-label="絞り込み"></select>
         </div>
         <input id="library-search-mobile" class="tb-select search-input" type="search" placeholder="検索" aria-label="ファイルとフォルダを検索">
+        <div class="mobile-rating-row">
+          <div id="star-bar-mobile" class="star-bar" title="選択項目の評価"></div>
+          <button id="btn-delete-mobile" class="icon-btn danger" title="削除">🗑</button>
+        </div>
         <div id="breadcrumb-mobile" class="mobile-breadcrumb"></div>
       </div>
+
+      <!-- 一覧の上に常設する小さな操作エリア -->
+      <div id="library-toolbar" class="library-toolbar">
+        <button id="btn-library-collapse" class="mini-btn desktop-only" title="一覧を最小化 (Ctrl+B)" aria-label="一覧を最小化">⟨</button>
+        <button id="btn-library-reset" class="mini-btn desktop-only" title="既定の幅に戻す" aria-label="既定の幅に戻す">⤢</button>
+        <span id="library-count" class="library-count"></span>
+        <button id="btn-select-mode" class="mini-btn" title="複数選択">☑ 選択</button>
+      </div>
+      <div id="library-bulk-bar" class="bulk-bar hidden">
+        <div class="bulk-row">
+          <button id="btn-select-low-rated" class="chip-btn" title="★2以下(評価済み)をまとめて選択">★2以下</button>
+          <button id="btn-select-duplicates" class="chip-btn" title="似た名前の重複を抽出して古い方を選択">重複</button>
+          <button id="btn-select-all" class="chip-btn">全選択</button>
+          <button id="btn-select-none" class="chip-btn">解除</button>
+        </div>
+        <div class="bulk-row">
+          <span id="bulk-count" class="bulk-count">0 件を選択中</span>
+          <button id="btn-bulk-delete" class="chip-btn danger" disabled>選択を削除</button>
+        </div>
+      </div>
+
       <ul id="item-list"></ul>
       <div id="library-empty" class="pane-placeholder hidden">項目がありません</div>
+      <button id="library-resizer" class="library-resizer desktop-only" title="ドラッグで幅を変更 / ダブルクリックで既定" aria-label="ファイル一覧の幅を変更"></button>
     </aside>
+    <button id="library-expand" class="library-expand desktop-only hidden" title="一覧を表示 (Ctrl+B)" aria-label="ファイル一覧を表示">⟩</button>
 
     <section id="viewer-pane">
       <!-- 漫画ビューア -->

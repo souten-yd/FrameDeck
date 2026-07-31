@@ -15,6 +15,8 @@ const S = {
   histIndex: -1,
   settings: {},
   uiProfile: "desktop",
+  selectMode: false,
+  checked: new Set(),
   comic: {
     state: null,
     boundaryIntent: null,
@@ -30,8 +32,28 @@ const S = {
     errorRetryCount: 0, errorRetryTimer: null,
     orientationLocked: false, orientationLockMode: null,
     lastSeenOrientation: null, orientationRevealTimer: null,
+    // 読み込みの世代番号。連続操作で古い応答が新しい再生を壊さないよう、
+    // openVideo/シークのたびに増やして応答の鮮度を判定する
+    loadToken: 0,
+    reloadTimer: null,
+    maxHeight: null, maxWidth: null,
+    copyVideo: false, copyAudio: false, transcodeFallback: false,
+    syncRate: 1, syncInfo: null,
+    watchdogTimer: null, watchdogPosition: 0, watchdogStrikes: 0,
+    recovering: false,
   },
 };
+
+/* このタブを識別するID。サーバ側で「同じタブの古い変換」を止めるために使う */
+const CLIENT_SESSION_ID = (() => {
+  const key = "framedeck.sessionId";
+  let value = sessionStorage.getItem(key);
+  if (!value) {
+    value = (crypto.randomUUID?.() || `s${Date.now()}${Math.random()}`).slice(0, 40);
+    sessionStorage.setItem(key, value);
+  }
+  return value;
+})();
 
 const $ = (id) => document.getElementById(id);
 
@@ -57,16 +79,7 @@ function configuredVideoQuality() {
   const sessionQuality = S.video.quality || "auto";
   if (sessionQuality !== "auto") return sessionQuality;
   const key = S.uiProfile === "mobile" ? "video_profile_mobile" : "video_profile_desktop";
-  return S.settings[key] || S.settings.video_max_resolution || (S.uiProfile === "mobile" ? "720p" : "1080p");
-}
-
-function videoResolutionHeight(profile) {
-  const map = { "2160p": 2160, "1440p": 1440, "1080p": 1080, "720p": 720, "480p": 480, "360p": 360 };
-  return map[profile] || 1080;
-}
-function videoResolutionWidth(profile) {
-  const map = { "2160p": 3840, "1440p": 2560, "1080p": 1920, "720p": 1280, "480p": 854, "360p": 640 };
-  return map[profile] || 1920;
+  return S.settings[key] || S.settings.video_max_resolution || "auto";
 }
 
 function hlsProfileName(profile) {
@@ -84,16 +97,210 @@ function shouldUseNativeHls(playbackProfile) {
   return S.uiProfile === "mobile" && playbackProfile?.transcode && videoSupportsNativeHls();
 }
 
+/* この端末が実際に再生できるコーデック/コンテナを調べてサーバへ申告する。
+   サーバ側の固定テーブルでは、HEVCを再生できる端末でも「非対応」と
+   判定して不要な変換が走り、4K60などでは再生がカクついてしまうため。 */
+/* 判定は canPlayType のみを使う。MediaSource.isTypeSupported は
+   MSE経由での可否であって <video src> の直接再生とは一致しない
+   (例: Chromeはmpeg-tsをMSEでは扱えるがファイル直再生はできない)。 */
+const CODEC_PROBES = {
+  video: [
+    ["h264", 'video/mp4; codecs="avc1.640028"'],
+    ["hevc", 'video/mp4; codecs="hvc1.1.6.L93.B0"'],
+    ["hevc", 'video/mp4; codecs="hev1.2.4.L153.B0"'],
+    ["av1", 'video/mp4; codecs="av01.0.08M.08"'],
+    ["vp9", 'video/webm; codecs="vp9"'],
+    ["vp8", 'video/webm; codecs="vp8"'],
+  ],
+  audio: [
+    ["aac", 'video/mp4; codecs="mp4a.40.2"'],
+    ["mp3", "audio/mpeg"],
+    ["opus", 'video/webm; codecs="opus"'],
+    ["vorbis", 'video/webm; codecs="vorbis"'],
+    ["flac", "audio/flac"],
+    ["ac3", 'video/mp4; codecs="ac-3"'],
+    ["eac3", 'video/mp4; codecs="ec-3"'],
+  ],
+  // コンテナはコーデック付きで問い合わせる(裸のMIMEは"maybe"しか返らない)
+  container: [
+    ["mp4", 'video/mp4; codecs="avc1.640028"'],
+    ["webm", 'video/webm; codecs="vp9"'],
+    ["matroska", 'video/x-matroska; codecs="avc1.640028"'],
+    ["mov", 'video/quicktime; codecs="avc1.640028"'],
+    ["mpegts", 'video/mp2t; codecs="avc1.640028"'],
+  ],
+};
+
+let cachedCodecSupport = null;
+function clientCodecSupport() {
+  if (cachedCodecSupport) return cachedCodecSupport;
+  const probe = document.createElement("video");
+  const collect = (entries) => [
+    ...new Set(
+      entries
+        .filter(([, type]) => probe.canPlayType(type) === "probably")
+        .map(([name]) => name)
+    ),
+  ];
+  cachedCodecSupport = {
+    videoCodecs: collect(CODEC_PROBES.video),
+    audioCodecs: collect(CODEC_PROBES.audio),
+    containers: collect(CODEC_PROBES.container),
+  };
+  return cachedCodecSupport;
+}
+
+/* ================= 表示同期 (display sync) =================
+   映像のfpsとディスプレイのリフレッシュレートが整数比でないと、
+   1フレームあたりの表示回数が 3,3,2,3,3,2… のように揺れて
+   「カクつき(judder)」として見える。60Hzで24fpsを出す時の3:2プルダウンが典型。
+
+   対策としてサーバ側でfpsを変換する案は採らない。ffmpegのfpsフィルタは
+   同じ不均等パターンでフレームを複製するだけで judder は消えず、
+   実時間エンコードのCPU負荷と通信量だけが増えるため。
+   代わりに mpv の --video-sync=display-resample と同じ考え方で、
+   再生速度をごく僅かに補正して「fps×補正 = リフレッシュレート÷整数」に
+   合わせる。補正が小さい場合(既定1.2%以内)だけ自動適用する。 */
+const DISPLAY_SYNC_TOLERANCE = 0.012;
+
+let cachedRefreshHz = null;
+let refreshHzMeasuredAt = 0;
+const REFRESH_HZ_TTL_MS = 60000;
+
+/* 別のディスプレイへ移動したり、端末の可変リフレッシュが切り替わると
+   実測値は変わる。ウィンドウサイズ変更・復帰時に測り直す。 */
+function invalidateRefreshHz() {
+  cachedRefreshHz = null;
+  refreshHzMeasuredAt = 0;
+}
+window.addEventListener("resize", invalidateRefreshHz);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") invalidateRefreshHz();
+});
+
+function measureDisplayRefreshHz({ force = false } = {}) {
+  const fresh = cachedRefreshHz &&
+    (performance.now() - refreshHzMeasuredAt) < REFRESH_HZ_TTL_MS;
+  if (fresh && !force) return Promise.resolve(cachedRefreshHz);
+  // 非表示タブでは requestAnimationFrame が絞られ、正しく測れない
+  if (document.visibilityState !== "visible") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const stamps = [];
+    const step = (t) => {
+      stamps.push(t);
+      if (stamps.length < 90) { requestAnimationFrame(step); return; }
+      const gaps = [];
+      for (let i = 1; i < stamps.length; i++) gaps.push(stamps[i] - stamps[i - 1]);
+      gaps.sort((a, b) => a - b);
+      const median = gaps[Math.floor(gaps.length / 2)];
+      cachedRefreshHz = median > 0 ? Math.round((1000 / median) * 100) / 100 : null;
+      refreshHzMeasuredAt = performance.now();
+      resolve(cachedRefreshHz);
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+function computeDisplaySync(fps, hz) {
+  if (!fps || !hz || fps <= 0 || hz <= 0) return null;
+  const ratio = hz / fps;
+  if (ratio < 1) {
+    // 映像のほうが速い(120fps素材を60Hzで見る等)。間引きは避けられない
+    return { ratio, repeats: 1, rate: 1, deviation: 0, ok: false, tooFast: true };
+  }
+  const repeats = Math.max(1, Math.round(ratio));
+  const rate = ratio / repeats;
+  const deviation = Math.abs(rate - 1);
+  return { ratio, repeats, rate, deviation, ok: deviation <= DISPLAY_SYNC_TOLERANCE };
+}
+
+function syncedRate(base) {
+  const factor = S.video.syncRate || 1;
+  return Math.max(0.0625, Math.min(16, base * factor));
+}
+
+/* 再生速度は必ずここを通す(ユーザー指定速度 × 表示同期の補正) */
+function applyPlaybackRate() {
+  const base = Number($("sel-speed").value) || 1;
+  video.playbackRate = syncedRate(base);
+}
+
+/* 開いた動画のfpsと実測リフレッシュレートから、補正するか判断する */
+async function updateDisplaySync() {
+  S.video.syncRate = 1;
+  S.video.syncInfo = null;
+  if (S.settings.video_display_sync === "off") return;
+  const fps = Number(S.video.info?.frame_rate) || 0;
+  if (!fps) return;
+  const hz = await measureDisplayRefreshHz();
+  if (!hz) return;
+  const sync = computeDisplaySync(fps, hz);
+  if (!sync) return;
+  S.video.syncInfo = { ...sync, fps, hz };
+  if (sync.ok && sync.deviation > 0.00005) {
+    S.video.syncRate = sync.rate;
+    applyPlaybackRate();
+  }
+  announceDisplaySync();
+}
+
+let lastSyncWarningKey = null;
+function announceDisplaySync() {
+  const info = S.video.syncInfo;
+  if (!info) return;
+  const key = `${Math.round(info.hz)}/${info.fps.toFixed(2)}`;
+  if (info.ok || info.tooFast || key === lastSyncWarningKey) return;
+  // 速度補正では吸収できないほどズレている場合だけ、原因と対処を伝える
+  if (info.deviation < 0.02) return;
+  lastSyncWarningKey = key;
+  const better = [60, 120, 144, 240].find(
+    (hz) => Math.abs((hz / info.fps) - Math.round(hz / info.fps)) < 0.01
+  );
+  toast(
+    `表示が不均等になります: 画面 ${info.hz.toFixed(1)}Hz ÷ 映像 ${info.fps.toFixed(2)}fps ` +
+    `= ${info.ratio.toFixed(2)} 回/コマ` +
+    (better ? ` — 画面を ${better}Hz にすると滑らかになります` : ""),
+    false
+  );
+}
+
+/* 設定画面に出す診断文。端末ごとに実測値が違うため、その場で測って見せる */
+function buildDisplaySyncHint() {
+  const info = S.video.syncInfo;
+  const hz = info?.hz || cachedRefreshHz;
+  if (!hz) {
+    measureDisplayRefreshHz();
+    return "この画面のリフレッシュレートを測定し、映像のfpsと整数比にならない場合だけ" +
+      "再生速度をごく僅か(±1.2%以内)補正します。端末ごとに自動判定します。";
+  }
+  const base = `この画面: 約 ${hz.toFixed(1)}Hz`;
+  if (!info) return `${base} — 動画を開くと映像fpsとの相性を判定します。`;
+  const cadence = `映像 ${info.fps.toFixed(2)}fps → 1コマあたり ${info.ratio.toFixed(2)} 回表示`;
+  if (info.ok) {
+    const applied = Math.abs((S.video.syncRate || 1) - 1) > 0.00005;
+    return `${base} / ${cadence} — ${applied
+      ? `速度を ${((S.video.syncRate - 1) * 100).toFixed(2)}% 補正して均等表示にしています`
+      : "整数比なので補正は不要です"}`;
+  }
+  return `${base} / ${cadence} — 整数比にならないため表示間隔が不均等になります` +
+    "(速度補正では吸収できない差)。画面のリフレッシュレートを映像fpsの整数倍" +
+    "(30fps系なら60/120Hz、24fps系なら48/120Hz)にすると解消します。";
+}
+
 function clientMediaHints() {
   const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   return {
     effectiveType: connection?.effectiveType || null,
+    // Wi-Fi/有線は原寸、モバイル回線は上限付き配信。type非対応の
+    // ブラウザではサーバ側がクライアントIP(LANかどうか)で補完する
+    connectionType: connection?.type || null,
     downlink: connection?.downlink || null,
     saveData: Boolean(connection?.saveData),
     viewportWidth: window.innerWidth,
     viewportHeight: window.innerHeight,
     devicePixelRatio: window.devicePixelRatio || 1,
     uiProfile: S.uiProfile,
+    ...clientCodecSupport(),
   };
 }
 
@@ -250,10 +457,26 @@ function updateNavButtons() {
   setDisabled("btn-mobile-up", upDisabled);
 }
 
+const SORT_STORAGE_KEY = "framedeck.sort";
+const FILTER_STORAGE_KEY = "framedeck.filter";
+
+function restoreListPreferences() {
+  const sort = localStorage.getItem(SORT_STORAGE_KEY);
+  const filter = localStorage.getItem(FILTER_STORAGE_KEY);
+  if (sort && [...$("sel-sort").options].some((o) => o.value === sort)) {
+    $("sel-sort").value = sort;
+  }
+  if (filter && [...$("sel-filter").options].some((o) => o.value === filter)) {
+    $("sel-filter").value = filter;
+  }
+}
+
 async function loadFolder(folderId, { remember = true } = {}) {
   if (!folderId) return;
   const sort = $("sel-sort").value;
   const filter = $("sel-filter").value;
+  localStorage.setItem(SORT_STORAGE_KEY, sort);
+  localStorage.setItem(FILTER_STORAGE_KEY, filter);
   const query = ($("library-search")?.value || "").trim();
   const params = new URLSearchParams({
     folder_id: folderId,
@@ -264,9 +487,15 @@ async function loadFolder(folderId, { remember = true } = {}) {
   if (query) params.set("query", query);
   try {
     const data = await api(`/api/library/items?${params.toString()}`);
+    const sameFolder = S.folderId === folderId;
     S.folderId = folderId;
     S.folderInfo = data.folder;
     S.items = data.items;
+    // 移動したら選択は破棄、同じフォルダの再読込では残す
+    const available = new Set(S.items.map((i) => i.id));
+    S.checked = new Set(
+      sameFolder ? [...S.checked].filter((id) => available.has(id)) : []
+    );
     if (remember) pushHistory(folderId);
     renderBreadcrumb();
     renderList();
@@ -278,9 +507,8 @@ async function loadFolder(folderId, { remember = true } = {}) {
 
 function renderBreadcrumb() {
   const info = S.folderInfo;
-  const text = info
-    ? (info.relative_path ? `${info.display_name} - ${info.relative_path}` : info.display_name)
-    : "";
+  // relative_path は末尾がフォルダ名なので、それだけで階層が分かる
+  const text = info ? (info.relative_path || info.display_name) : "";
   $("breadcrumb").textContent = text;
   if ($("breadcrumb-mobile")) $("breadcrumb-mobile").textContent = text;
 }
@@ -300,6 +528,20 @@ function renderList() {
     li.dataset.id = item.id;
     if (item.id === S.selectedId) li.classList.add("selected");
     if (item.id === S.readingItemId) li.classList.add("reading");
+    if (S.selectMode && S.checked.has(item.id)) li.classList.add("checked");
+
+    if (S.selectMode) {
+      const check = document.createElement("input");
+      check.type = "checkbox";
+      check.className = "item-check";
+      check.checked = S.checked.has(item.id);
+      check.setAttribute("aria-label", `${item.display_name} を選択`);
+      check.onclick = (e) => {
+        e.stopPropagation();
+        toggleChecked(item.id, check.checked);
+      };
+      li.appendChild(check);
+    }
 
     const icon = document.createElement("span");
     icon.className = "item-icon";
@@ -311,11 +553,32 @@ function renderList() {
     const stars = document.createElement("span");
     stars.className = "item-stars" + (item.rating ? "" : " none");
     stars.textContent = item.stars;
+    stars.title = "タップして評価";
+    stars.onclick = (e) => {
+      e.stopPropagation();
+      openRatingSheet(item);
+    };
 
     li.append(icon, name, stars);
-    li.onclick = () => activateItem(item);
+    li.onclick = () => {
+      if (S.selectMode) toggleChecked(item.id, !S.checked.has(item.id));
+      else activateItem(item);
+    };
+    li.ondblclick = () => { if (S.selectMode) activateItem(item); };
     list.appendChild(li);
   }
+  updateLibraryCount();
+  updateBulkBar();
+}
+
+function updateLibraryCount() {
+  const label = $("library-count");
+  if (!label) return;
+  const folders = S.items.filter((i) => i.media_type === "folder").length;
+  const files = S.items.length - folders;
+  label.textContent = S.items.length
+    ? `${folders ? `📁${folders} · ` : ""}${files} 件`
+    : "";
 }
 
 function selectItem(id) {
@@ -372,51 +635,293 @@ async function switchLibraryRoot(rootId, { closeDrawer = true } = {}) {
   toast(`ライブラリを切り替えました: ${root.display_name}`);
 }
 
-async function switchToActiveRoot() {
+/* 前回開いていたフォルダ(サーバ保存)から再開する。
+   設定が「ルート」のとき、または保存先が消えている場合は null。 */
+async function resumeFolderForMode(mode = S.mode) {
+  try {
+    const result = await api(`/api/library/start-folder?mode=${encodeURIComponent(mode)}`);
+    return result?.folder_id ? result : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function switchToActiveRoot({ announceResume = false } = {}) {
   const root = activeRootForMode();
   renderRootSelectors();
-  if (root) await switchLibraryRoot(root.id, { closeDrawer: false });
-  else showMissingLibraryRoot(S.mode);
+  if (!root) {
+    showMissingLibraryRoot(S.mode);
+    return;
+  }
+  const resume = await resumeFolderForMode();
+  if (resume && rootsForMode().some((r) => r.id === resume.root_id)) {
+    if (resume.root_id !== root.id) {
+      S.activeRootIds[S.mode] = resume.root_id;
+      saveActiveRootId(S.mode, resume.root_id);
+      renderRootSelectors();
+    }
+    resetNavigationState();
+    clearCurrentViewer();
+    await loadFolder(resume.folder_id, { remember: true });
+    if (announceResume && resume.relative_path) {
+      toast(`前回の場所から再開: ${resume.relative_path}`);
+    }
+    return;
+  }
+  await switchLibraryRoot(root.id, { closeDrawer: false });
 }
 
 /* ================= star rating ================= */
-function buildStarBar() {
-  const bar = $("star-bar");
+function fillStarBar(bar, rating, onPick) {
   bar.innerHTML = "";
   for (let n = 1; n <= 5; n++) {
     const star = document.createElement("span");
-    star.className = "star";
+    star.className = "star" + (n <= (rating || 0) ? " on" : "");
     star.textContent = "★";
     star.dataset.n = n;
-    star.onclick = () => applyRating(n);
+    star.setAttribute("role", "button");
+    star.setAttribute("aria-label", `★${n}`);
+    star.onclick = () => onPick(n);
     bar.appendChild(star);
   }
   const clear = document.createElement("span");
   clear.className = "star-clear";
   clear.textContent = "✕";
   clear.title = "評価を解除";
-  clear.onclick = () => applyRating(null);
+  clear.setAttribute("role", "button");
+  clear.setAttribute("aria-label", "評価を解除");
+  clear.onclick = () => onPick(null);
   bar.appendChild(clear);
+}
+
+function buildStarBar() {
+  for (const id of ["star-bar", "star-bar-mobile"]) {
+    const bar = $(id);
+    if (bar) fillStarBar(bar, 0, (rating) => applyRating(rating));
+  }
 }
 
 function updateStarBar() {
   const item = S.items.find((i) => i.id === S.selectedId);
   const rating = item ? item.rating || 0 : 0;
-  for (const star of $("star-bar").querySelectorAll(".star")) {
-    star.classList.toggle("on", Number(star.dataset.n) <= rating);
+  for (const id of ["star-bar", "star-bar-mobile"]) {
+    const bar = $(id);
+    if (!bar) continue;
+    for (const star of bar.querySelectorAll(".star")) {
+      star.classList.toggle("on", Number(star.dataset.n) <= rating);
+    }
   }
+}
+
+async function setItemRating(itemId, rating) {
+  await api(`/api/library/items/${itemId}/rating`, { json: { rating } });
+  await loadFolder(S.folderId, { remember: false });
+  updateStarBar();
 }
 
 async function applyRating(rating) {
   if (!S.selectedId) { toast("項目を選択してください"); return; }
   try {
-    await api(`/api/library/items/${S.selectedId}/rating`, { json: { rating } });
-    await loadFolder(S.folderId, { remember: false });
-    updateStarBar();
+    await setItemRating(S.selectedId, rating);
   } catch (e) {
     toast(`評価の設定に失敗: ${e.message}`, true);
   }
 }
+
+/* 一覧の★をタップして、その項目を開かずに評価する(モバイル対応の要) */
+function openRatingSheet(item) {
+  const wrap = document.createElement("div");
+  wrap.className = "rating-sheet";
+  const name = document.createElement("div");
+  name.className = "sheet-name";
+  name.textContent = item.display_name;
+  const bar = document.createElement("div");
+  bar.className = "star-bar";
+  const apply = async (rating) => {
+    closeModal();
+    try {
+      await setItemRating(item.id, rating);
+      toast(rating ? `★${rating} を設定しました` : "評価を解除しました");
+    } catch (e) {
+      toast(`評価の設定に失敗: ${e.message}`, true);
+    }
+  };
+  fillStarBar(bar, item.rating, apply);
+  wrap.append(name, bar);
+  showModal("評価", wrap, [{ label: "閉じる", onClick: closeModal }]);
+}
+
+/* ================= 複数選択 / 一括操作 ================= */
+function setSelectMode(enabled) {
+  S.selectMode = Boolean(enabled);
+  if (!S.selectMode) S.checked.clear();
+  $("btn-select-mode")?.classList.toggle("active", S.selectMode);
+  $("library-bulk-bar")?.classList.toggle("hidden", !S.selectMode);
+  renderList();
+}
+
+function toggleChecked(id, checked) {
+  if (checked) S.checked.add(id);
+  else S.checked.delete(id);
+  const row = $("item-list").querySelector(`[data-id="${CSS.escape(id)}"]`);
+  if (row) {
+    row.classList.toggle("checked", checked);
+    const box = row.querySelector(".item-check");
+    if (box) box.checked = checked;
+  }
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  const count = S.checked.size;
+  const label = $("bulk-count");
+  if (label) label.textContent = `${count} 件を選択中`;
+  const button = $("btn-bulk-delete");
+  if (button) {
+    button.disabled = count === 0;
+    button.textContent = count ? `選択した ${count} 件を削除` : "選択を削除";
+  }
+}
+
+function replaceSelection(ids) {
+  S.checked = new Set(ids.filter((id) => S.items.some((i) => i.id === id)));
+  renderList();
+}
+
+function selectLowRatedItems() {
+  const targets = S.items.filter((i) => i.rating && i.rating <= 2);
+  if (!targets.length) {
+    toast("★2以下の項目はありません");
+    return;
+  }
+  replaceSelection(targets.map((i) => i.id));
+  toast(`★2以下を ${targets.length} 件選択しました`);
+}
+
+function formatDate(seconds) {
+  if (!seconds) return "";
+  const d = new Date(seconds * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
+}
+
+async function selectDuplicates() {
+  if (!S.folderId) return;
+  const params = new URLSearchParams({
+    folder_id: S.folderId,
+    mode: S.mode,
+    filter: $("sel-filter").value,
+  });
+  const query = ($("library-search")?.value || "").trim();
+  if (query) params.set("query", query);
+  let data;
+  try {
+    data = await api(`/api/library/duplicates?${params.toString()}`);
+  } catch (e) {
+    toast(`重複を抽出できません: ${e.message}`, true);
+    return;
+  }
+  if (!data.groups.length) {
+    toast("重複候補は見つかりませんでした");
+    return;
+  }
+
+  const wrap = document.createElement("div");
+  const summary = document.createElement("div");
+  summary.className = "dup-summary";
+  summary.textContent =
+    `${data.groups.length} グループ / 選択候補 ${data.select_ids.length} 件。` +
+    `名前の違いが${data.max_distance}文字以内(拡張子の違いは数えない)で、` +
+    "含まれる数値が一致する項目を同一とみなし、" +
+    "更新日が古い方を選択します(削除はしません)。";
+  wrap.appendChild(summary);
+  for (const group of data.groups) {
+    const list = document.createElement("ul");
+    list.className = "dup-group";
+    for (const item of group.items) {
+      const li = document.createElement("li");
+      const tag = document.createElement("span");
+      tag.className = `dup-tag ${item.keep ? "keep" : "old"}`;
+      tag.textContent = item.keep ? "残す" : "選択";
+      const name = document.createElement("span");
+      name.className = "dup-name";
+      name.textContent = item.display_name;
+      const date = document.createElement("span");
+      date.className = "dup-date";
+      date.textContent = formatDate(item.modified_at);
+      li.append(tag, name, date);
+      list.appendChild(li);
+    }
+    wrap.appendChild(list);
+  }
+  showModal("重複候補", wrap, [
+    { label: "キャンセル", onClick: closeModal },
+    {
+      label: "古い方を選択する",
+      kind: "primary",
+      onClick: () => {
+        closeModal();
+        setSelectMode(true);
+        replaceSelection(data.select_ids);
+        toast(`${S.checked.size} 件を選択しました。内容を確認して削除してください`);
+      },
+    },
+  ]);
+}
+
+async function requestBulkDelete() {
+  const ids = [...S.checked];
+  if (!ids.length) { toast("削除する項目を選択してください"); return; }
+  let req;
+  try {
+    req = await api("/api/library/items/bulk-delete-request", { json: { item_ids: ids } });
+  } catch (e) { toast(e.message, true); return; }
+
+  const body = document.createElement("div");
+  const head = document.createElement("div");
+  head.textContent = req.to_trash
+    ? `${req.count} 件をゴミ箱へ移動します。よろしいですか?`
+    : `${req.count} 件をディスクから完全に削除します。この操作は元に戻せません。`;
+  const list = document.createElement("ul");
+  list.className = "delete-preview";
+  for (const name of req.display_names) {
+    const li = document.createElement("li");
+    li.textContent = name;
+    list.appendChild(li);
+  }
+  body.append(head, list);
+  showModal("一括削除の確認", body, [
+    { label: "キャンセル", onClick: closeModal },
+    {
+      label: req.to_trash ? `${req.count} 件をゴミ箱へ` : `${req.count} 件を完全に削除`,
+      kind: "danger",
+      onClick: async () => {
+        closeModal();
+        try {
+          const result = await api(
+            `/api/library/items/bulk-delete?token=${encodeURIComponent(req.token)}`,
+            { json: { item_ids: req.item_ids } }
+          );
+          S.checked.clear();
+          S.selectedId = null;
+          await loadFolder(S.folderId, { remember: false });
+          if (result.failed.length) {
+            toast(`${result.deleted.length} 件削除、${result.failed.length} 件失敗`, true);
+          } else {
+            toast(`${result.deleted.length} 件削除しました`);
+          }
+        } catch (e) { toast(`削除に失敗: ${e.message}`, true); }
+      },
+    },
+  ]);
+}
+
+$("btn-select-mode").onclick = () => setSelectMode(!S.selectMode);
+$("btn-select-low-rated").onclick = selectLowRatedItems;
+$("btn-select-duplicates").onclick = selectDuplicates;
+$("btn-select-all").onclick = () => replaceSelection(S.items.map((i) => i.id));
+$("btn-select-none").onclick = () => replaceSelection([]);
+$("btn-bulk-delete").onclick = requestBulkDelete;
 
 /* ================= delete ================= */
 async function requestDelete() {
@@ -990,8 +1495,23 @@ function fmtTime(seconds) {
   return h > 0 ? `${h}:${m.toString().padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
 
+function transcodeStreamUrl(itemId, seconds) {
+  const params = new URLSearchParams({
+    start: Math.max(0, Number(seconds) || 0).toFixed(2),
+    session: CLIENT_SESSION_ID,
+  });
+  // 上限未指定 = 原寸(コーデック変換のみ)
+  if (S.video.maxHeight) params.set("max_height", String(S.video.maxHeight));
+  if (S.video.maxWidth) params.set("max_width", String(S.video.maxWidth));
+  // 端末が映像コーデックを再生できるなら再エンコードしない(remux)
+  if (S.video.copyVideo) params.set("copy_video", "1");
+  if (S.video.copyAudio) params.set("copy_audio", "1");
+  return `/api/videos/${itemId}/stream-transcode?${params.toString()}`;
+}
+
 async function openVideo(item) {
-  stopVideo();
+  const token = ++S.video.loadToken;
+  stopVideo({ notifyServer: false });
   showViewer("video");
   $("video-msg").classList.add("hidden");
   $("video-badge").classList.add("hidden");
@@ -1002,11 +1522,15 @@ async function openVideo(item) {
   try {
     detail = await api(`/api/videos/${item.id}`);
   } catch (e) {
+    if (token !== S.video.loadToken) return;
     $("video-spinner").classList.add("hidden");
     $("video-msg").textContent = `動画情報を取得できません\n${e.message}`;
     $("video-msg").classList.remove("hidden");
     return;
   }
+  // 読み込み中に別の動画へ切り替わっていたら、この応答は捨てる
+  // (古い応答が video.src を上書きして再生が止まるのを防ぐ)
+  if (token !== S.video.loadToken) return;
   S.video.item = item;
   S.video.info = detail.info;
   S.video.duration = detail.info.duration_seconds || 0;
@@ -1017,6 +1541,14 @@ async function openVideo(item) {
   const resume = detail.resume_position || 0;
   if ($("sel-video-quality")) $("sel-video-quality").value = S.video.quality || "auto";
   let playbackProfile = null;
+  let network = null;
+  // 直接再生できるかは端末側の申告を反映したサーバ判定を使う
+  // (サーバ単独の推定だと、再生できるHEVCを不要に変換してしまう)
+  let canDirectPlay = detail.info.direct_play;
+  let directPlayReason = detail.info.direct_play_reason;
+  S.video.copyVideo = false;
+  S.video.copyAudio = false;
+  S.video.transcodeFallback = false;
   try {
     const hints = clientMediaHints();
     if (S.video.quality && S.video.quality !== "auto") hints.requestedProfile = S.video.quality;
@@ -1024,11 +1556,20 @@ async function openVideo(item) {
       json: hints,
     });
     playbackProfile = decision.profile;
+    network = decision.network;
+    canDirectPlay = decision.direct_play;
+    directPlayReason = decision.direct_play_reason || directPlayReason;
+    S.video.copyVideo = Boolean(decision.copy_video);
+    S.video.copyAudio = Boolean(decision.copy_audio);
   } catch (e) {
     playbackProfile = null;
   }
+  if (token !== S.video.loadToken) return;
+  // 変換時の上限。原寸(null)ならスケーリングなしで配信する
+  S.video.maxHeight = playbackProfile?.height || null;
+  S.video.maxWidth = playbackProfile?.width || null;
   const wantsTranscode = Boolean(playbackProfile?.transcode);
-  if (!wantsTranscode && detail.info.direct_play) {
+  if (!wantsTranscode && canDirectPlay) {
     S.video.transcode = false;
     S.video.hls = false;
     video.src = `/api/videos/${item.id}/stream`;
@@ -1039,11 +1580,9 @@ async function openVideo(item) {
       toast(`続きから再生: ${fmtTime(resume)}`);
     }
   } else if (detail.transcode_available) {
-    const fallbackQuality = configuredVideoQuality();
-    const maxHeight = playbackProfile?.height || videoResolutionHeight(fallbackQuality);
-    const maxWidth = playbackProfile?.width || videoResolutionWidth(playbackProfile?.name || fallbackQuality);
-    if (shouldUseNativeHls(playbackProfile)) {
-      const profile = hlsProfileName(playbackProfile?.name || fallbackQuality);
+    const original = !S.video.maxHeight;
+    if (!original && shouldUseNativeHls(playbackProfile)) {
+      const profile = hlsProfileName(playbackProfile?.name || configuredVideoQuality());
       S.video.transcode = false;
       S.video.hls = true;
       S.video.hlsProfile = profile;
@@ -1056,14 +1595,25 @@ async function openVideo(item) {
       S.video.transcode = true;
       S.video.hls = false;
       S.video.offset = resume;
-      video.src = `/api/videos/${item.id}/stream-transcode?start=${resume}&max_height=${maxHeight}&max_width=${maxWidth}`;
-      $("video-badge").textContent = playbackProfile
-        ? `逐次軽量配信 ${playbackProfile.name} (${maxHeight}p)`
-        : `変換ストリーミング (${detail.info.video_codec || detail.info.container})`;
+      video.src = transcodeStreamUrl(item.id, resume);
+      if (S.video.copyVideo) {
+        // 映像は無変換。コンテナ(必要なら音声も)だけ入れ替えるので軽い
+        $("video-badge").textContent =
+          `原寸そのまま配信 (${detail.info.container} → mp4)`;
+      } else if (original) {
+        $("video-badge").textContent =
+          `原寸変換配信 (${detail.info.video_codec || detail.info.container})`;
+      } else {
+        $("video-badge").textContent = `逐次軽量配信 ${playbackProfile.name}`;
+        if (playbackProfile?.reason?.startsWith("encode-limited")) {
+          $("video-badge").textContent += " · 実時間変換のため縮小";
+        }
+      }
       if (resume > 0) toast(`続きから再生: ${fmtTime(resume)}`);
     }
+    $("video-badge").textContent += network === "cellular" ? " · モバイル回線" : "";
     $("video-badge").classList.remove("hidden");
-  } else if (detail.info.direct_play) {
+  } else if (canDirectPlay) {
     S.video.transcode = false;
     S.video.hls = false;
     video.src = `/api/videos/${item.id}/stream`;
@@ -1078,15 +1628,18 @@ async function openVideo(item) {
   } else {
     $("video-spinner").classList.add("hidden");
     $("video-msg").textContent =
-      `この形式はブラウザで再生できません\n${detail.info.direct_play_reason}\n` +
+      `この形式はブラウザで再生できません\n${directPlayReason}\n` +
       "ffmpegをインストールすると変換再生が可能になります";
     $("video-msg").classList.remove("hidden");
     return;
   }
-  video.playbackRate = Number($("sel-speed").value);
+  applyPlaybackRate();
   video.volume = Number($("video-volume").value) / 100;
   try { await video.play(); } catch (e) { /* 自動再生ブロックは無視 */ }
   startProgressTimer();
+  startPlaybackWatchdog();
+  // 画面のリフレッシュレートに合わせた微調整(必要なときだけ)
+  updateDisplaySync();
 }
 
 function currentPosition() {
@@ -1140,11 +1693,70 @@ function stopProgressTimer() {
   if (S.video.saveTimer) { clearInterval(S.video.saveTimer); S.video.saveTimer = null; }
 }
 
-function requestHlsStop(itemId) {
-  // 生成中の変換ジョブを止めてキャッシュが溜まらないようにする
-  const url = `/api/videos/${itemId}/hls/stop`;
+function requestTranscodeStop(itemId) {
+  // 生成中の変換ジョブ(HLS/fMP4)を止めて、CPUとキャッシュを解放する
+  const url = `/api/videos/${itemId}/hls/stop?session=${encodeURIComponent(CLIENT_SESSION_ID)}`;
   if (!navigator.sendBeacon?.(url, "")) {
     api(url, { method: "POST" }).catch(() => {});
+  }
+}
+
+/* ---- 再生ストールの自動復帰 ----
+   変換配信は、シークやファイル切替の連打でサーバ側の生成が取り残されると
+   バッファが進まなくなることがある。進捗を監視し、止まったら同じ位置から
+   読み直して復帰させる(アプリの再起動を不要にする)。 */
+const WATCHDOG_INTERVAL_MS = 4000;
+const WATCHDOG_STRIKES = 3;
+
+function stopPlaybackWatchdog() {
+  if (S.video.watchdogTimer) clearInterval(S.video.watchdogTimer);
+  S.video.watchdogTimer = null;
+  S.video.watchdogStrikes = 0;
+}
+
+function startPlaybackWatchdog() {
+  stopPlaybackWatchdog();
+  S.video.watchdogPosition = currentPosition();
+  S.video.watchdogTimer = setInterval(() => {
+    if (!S.video.item || video.paused || video.ended || S.video.recovering) {
+      S.video.watchdogStrikes = 0;
+      return;
+    }
+    const position = currentPosition();
+    if (Math.abs(position - S.video.watchdogPosition) > 0.25) {
+      S.video.watchdogPosition = position;
+      S.video.watchdogStrikes = 0;
+      return;
+    }
+    S.video.watchdogStrikes += 1;
+    if (S.video.watchdogStrikes >= WATCHDOG_STRIKES) {
+      S.video.watchdogStrikes = 0;
+      recoverPlayback(position);
+    }
+  }, WATCHDOG_INTERVAL_MS);
+}
+
+async function recoverPlayback(position) {
+  const item = S.video.item;
+  if (!item || S.video.recovering) return;
+  S.video.recovering = true;
+  $("video-spinner").classList.remove("hidden");
+  toast("再生が止まったため読み直します");
+  try {
+    if (S.video.transcode && !S.video.hls) {
+      S.video.offset = position;
+      video.src = transcodeStreamUrl(item.id, position);
+    } else if (S.video.hls) {
+      S.video.offset = position;
+      video.src = hlsMasterUrl(item.id, S.video.hlsProfile || "720p", position);
+    } else {
+      video.load();
+      video.currentTime = position;
+    }
+    applyPlaybackRate();
+    await video.play().catch(() => {});
+  } finally {
+    S.video.recovering = false;
   }
 }
 
@@ -1154,12 +1766,21 @@ function clearVideoErrorRetry() {
   S.video.errorRetryCount = 0;
 }
 
-function stopVideo() {
+/* notifyServer=false は「直後に次のストリームを開く」場合に使う。
+   停止要求が新しいストリーム開始より後に届いて、開いたばかりの
+   変換を巻き添えで止めてしまうのを避けるため(新規要求側が
+   同一セッションの古い変換を停止する)。 */
+function stopVideo({ notifyServer = true } = {}) {
   if (S.video.item) saveVideoProgress();
-  if (S.video.hls && S.video.item) requestHlsStop(S.video.item.id);
+  if (notifyServer && (S.video.hls || S.video.transcode) && S.video.item) {
+    requestTranscodeStop(S.video.item.id);
+  }
   stopProgressTimer();
+  stopPlaybackWatchdog();
   clearVideoErrorRetry();
+  if (S.video.reloadTimer) { clearTimeout(S.video.reloadTimer); S.video.reloadTimer = null; }
   S.video.pendingSeekSeconds = null;
+  S.video.recovering = false;
   video.pause();
   video.removeAttribute("src");
   video.load();
@@ -1173,44 +1794,60 @@ function stopVideo() {
   }
 }
 
+/* 変換配信のシークは「start秒からの作り直し」になるため、連打すると
+   ffmpegが多重起動してサーバが飽和する。最後の位置だけを少し遅らせて
+   適用する(その間の表示位置は pendingSeekSeconds で先に反映する)。 */
+const TRANSCODE_SEEK_DEBOUNCE_MS = 320;
+
+function scheduleTranscodeReload(seconds) {
+  S.video.pendingSeekSeconds = seconds;
+  updateVideoUi();
+  if (S.video.reloadTimer) clearTimeout(S.video.reloadTimer);
+  S.video.reloadTimer = setTimeout(() => {
+    S.video.reloadTimer = null;
+    const item = S.video.item;
+    if (!item) return;
+    const wasPaused = video.paused;
+    S.video.offset = seconds;
+    S.video.pendingSeekSeconds = null;
+    clearVideoErrorRetry();
+    video.src = S.video.hls
+      ? hlsMasterUrl(item.id, S.video.hlsProfile || "720p", seconds)
+      : transcodeStreamUrl(item.id, seconds);
+    applyPlaybackRate();
+    $("video-spinner").classList.remove("hidden");
+    if (!wasPaused) video.play().catch(() => {});
+    startPlaybackWatchdog();
+  }, TRANSCODE_SEEK_DEBOUNCE_MS);
+}
+
 function videoSeekTo(seconds) {
   const duration = seekableDuration();
   seconds = Math.max(0, Math.min(seconds, duration || Infinity));
-  S.video.pendingSeekSeconds = seconds;
+  if (!S.video.item) return;
   if (S.video.transcode && !S.video.hls) {
-    const item = S.video.item;
-    if (!item) return;
-    S.video.offset = seconds;
-    S.video.pendingSeekSeconds = null;
-    const wasPaused = video.paused;
-    const quality = configuredVideoQuality();
-    video.src = `/api/videos/${item.id}/stream-transcode?start=${seconds.toFixed(2)}&max_height=${videoResolutionHeight(quality)}&max_width=${videoResolutionWidth(quality)}`;
-    video.playbackRate = Number($("sel-speed").value);
-    if (!wasPaused) video.play().catch(() => {});
+    scheduleTranscodeReload(seconds);
   } else if (S.video.hls) {
-    const item = S.video.item;
-    if (!item) return;
     const relative = seconds - S.video.offset;
     const ranges = video.seekable;
     const generatedEnd = ranges && ranges.length ? ranges.end(ranges.length - 1) : 0;
     if (relative >= 0 && relative <= Math.max(0, generatedEnd - 0.5)) {
       // 生成済み範囲内はネイティブシーク
+      S.video.pendingSeekSeconds = seconds;
       video.currentTime = relative;
     } else {
       // 未生成範囲へのシークは start 秒からの再生成として読み直す
       // (旧ジョブと未完成キャッシュはサーバ側で破棄される)
-      S.video.offset = seconds;
-      S.video.pendingSeekSeconds = null;
-      const wasPaused = video.paused;
-      video.src = hlsMasterUrl(item.id, S.video.hlsProfile || "720p", seconds);
-      video.playbackRate = Number($("sel-speed").value);
-      if (!wasPaused) video.play().catch(() => {});
+      scheduleTranscodeReload(seconds);
     }
   } else {
+    S.video.pendingSeekSeconds = seconds;
     video.currentTime = seconds;
   }
 }
-function videoSeekBy(delta) { videoSeekTo(currentPosition() + delta); }
+/* 連続シーク(ホイール・長押し・キー)は保留中の位置を基準に積み上げる。
+   変換配信は再読み込みを遅らせるため、実位置だけを見ると加算されない。 */
+function videoSeekBy(delta) { videoSeekTo(videoDisplayPosition() + delta); }
 
 function currentOrientationMode() {
   // CSSエンジンと同じ判定を使う。実機の回転直後は innerWidth/innerHeight が
@@ -1442,8 +2079,38 @@ video.addEventListener("canplay", () => {
 
 const VIDEO_ERROR_MAX_RETRIES = 4;
 const VIDEO_ERROR_RETRY_MS = 2500;
+/* 直接再生が失敗したときの保険。
+   ブラウザの canPlayType は "probably" でも実ファイルで失敗することがある
+   (MKVの一部など)。その場合だけ変換配信へ自動で切り替える。 */
+async function fallbackToTranscode() {
+  const item = S.video.item;
+  if (!item || S.video.transcode || S.video.hls || S.video.transcodeFallback) return false;
+  S.video.transcodeFallback = true;
+  const position = currentPosition();
+  S.video.transcode = true;
+  S.video.offset = position;
+  // 映像コーデック自体は再生できている可能性が高いので、まずremuxを試す
+  S.video.copyVideo = true;
+  S.video.copyAudio = false;
+  S.video.maxHeight = null;
+  S.video.maxWidth = null;
+  $("video-spinner").classList.remove("hidden");
+  $("video-badge").textContent = "直接再生できないため変換に切り替えました";
+  $("video-badge").classList.remove("hidden");
+  toast("直接再生できないため変換配信に切り替えます");
+  video.src = transcodeStreamUrl(item.id, position);
+  applyPlaybackRate();
+  await video.play().catch(() => {});
+  startPlaybackWatchdog();
+  return true;
+}
+
 video.addEventListener("error", () => {
   if (!S.video.item) return;
+  if (!S.video.transcode && !S.video.hls) {
+    fallbackToTranscode();
+    return;
+  }
   // 変換/HLSは初回アクセス時に圧縮動画が未生成でエラーになり得るため、
   // すぐエラー表示せず少し待ってから読み直す
   if ((S.video.hls || S.video.transcode) &&
@@ -1455,14 +2122,16 @@ video.addEventListener("error", () => {
     // 再要求で生成をやり直せるように)
     const src = S.video.hls
       ? hlsMasterUrl(S.video.item.id, S.video.hlsProfile || "720p", S.video.offset)
-      : (video.currentSrc || video.src);
+      : (S.video.transcode
+          ? transcodeStreamUrl(S.video.item.id, S.video.offset)
+          : (video.currentSrc || video.src));
     const wasPaused = video.paused;
     clearTimeout(S.video.errorRetryTimer);
     S.video.errorRetryTimer = setTimeout(() => {
       if (!S.video.item) return;
       video.src = src;
       video.load();
-      video.playbackRate = Number($("sel-speed").value);
+      applyPlaybackRate();
       if (!wasPaused) video.play().catch(() => {});
     }, VIDEO_ERROR_RETRY_MS);
     return;
@@ -1530,7 +2199,7 @@ $("video-volume").addEventListener("input", () => {
   updateVideoUi();
 });
 $("sel-speed").addEventListener("change", () => {
-  video.playbackRate = Number($("sel-speed").value);
+  applyPlaybackRate();
 });
 $("sel-video-quality")?.addEventListener("change", () => {
   changeVideoQuality($("sel-video-quality").value);
@@ -1557,7 +2226,7 @@ function clearVideoHold() {
   videoHoldState.timer = null;
   videoHoldState.interval = null;
   if (videoHoldState.active) {
-    video.playbackRate = videoHoldState.previousRate || Number($("sel-speed").value) || 1;
+    video.playbackRate = videoHoldState.previousRate || syncedRate(Number($("sel-speed").value) || 1);
   }
   videoHoldState.active = false;
   videoHoldState.speed = 1;
@@ -1572,13 +2241,13 @@ function startVideoHold(direction) {
     videoHoldState.active = true;
     videoHoldState.speed = 1.5;
     if (direction > 0) {
-      video.playbackRate = videoHoldState.speed;
+      video.playbackRate = syncedRate(videoHoldState.speed);
       video.play().catch(() => {});
     }
     videoHoldState.interval = setInterval(() => {
       videoHoldState.speed = Math.min(5, videoHoldState.speed + 0.5);
       if (direction > 0) {
-        video.playbackRate = videoHoldState.speed;
+        video.playbackRate = syncedRate(videoHoldState.speed);
       } else {
         videoSeekBy(-Math.max(5, 3 * videoHoldState.speed));
       }
@@ -1757,7 +2426,7 @@ document.addEventListener("keydown", (e) => {
       case "p": case "P": playAdjacentVideo(-1); return;
       case "[": changeSpeed(-1); return;
       case "]": changeSpeed(1); return;
-      case "0": $("sel-speed").value = "1"; video.playbackRate = 1; return;
+      case "0": $("sel-speed").value = "1"; applyPlaybackRate(); return;
     }
   }
 });
@@ -1775,13 +2444,20 @@ function changeSpeed(direction) {
   let index = options.indexOf(Number($("sel-speed").value)) + direction;
   index = Math.max(0, Math.min(options.length - 1, index));
   $("sel-speed").value = String(options[index]);
-  video.playbackRate = options[index];
+  applyPlaybackRate();
   toast(`再生速度 ${options[index]}x`);
 }
 
-/* マウス戻る/進むボタン: 前後のメディアへ */
+/* マウス戻る/進むボタン: 前後のメディアへ
+
+   Windows の Chrome/Firefox はサイドボタンを button=3/4 のマウスイベントとして
+   配送するが、Linux(Ubuntu)ではブラウザが履歴移動として処理してしまい
+   ページにイベントが届かない。そのため
+     (a) マウスイベントが届く環境ではそれを使い(既定動作は抑止)、
+     (b) 届かない環境では履歴移動(popstate)を検知して同じ操作に割り当てる
+   の二段構えにする。 */
 const AUX_MOUSE_DEBOUNCE_MS = 300;
-let lastAuxMouse = { button: null, time: 0 };
+let lastMediaNavAt = 0;
 
 function normalizeAuxDirection(event) {
   if (event.button === 3) return -1;
@@ -1791,34 +2467,79 @@ function normalizeAuxDirection(event) {
   return 0;
 }
 
+function mediaNavigationTarget() {
+  if (!$("comic-viewer").classList.contains("hidden") && S.comic.state) return "comic";
+  if (!$("video-player").classList.contains("hidden") && S.video.item) return "video";
+  return null;
+}
+
+function navigateMedia(direction, source) {
+  const target = mediaNavigationTarget();
+  if (!target) return false;
+  const now = performance.now();
+  if (now - lastMediaNavAt < AUX_MOUSE_DEBOUNCE_MS) return true;
+  lastMediaNavAt = now;
+  if (S.settings.debug_aux_mouse) {
+    console.debug("[FrameDeck] media navigation", { source, direction, target });
+  }
+  if (target === "comic") navigateComicEntry(direction, source);
+  else playAdjacentVideo(direction);
+  return true;
+}
+
 function handleAuxMouseNavigation(event) {
+  if (S.settings.aux_mouse_navigation === false) return;
   const direction = normalizeAuxDirection(event);
   if (!direction) return;
+  // ブラウザの履歴移動を止める(戻る/進むで離脱しないように)
   event.preventDefault();
   event.stopPropagation();
   event.stopImmediatePropagation?.();
-  const now = performance.now();
-  if (lastAuxMouse.button === direction && now - lastAuxMouse.time < AUX_MOUSE_DEBOUNCE_MS) {
-    return;
-  }
-  lastAuxMouse = { button: direction, time: now };
-  if (S.settings.debug_aux_mouse) {
-    console.debug("[FrameDeck] aux mouse", {
-      type: event.type,
-      button: event.button,
-      buttons: event.buttons,
-      direction,
-    });
-  }
-  if (!$("comic-viewer").classList.contains("hidden") && S.comic.state) {
-    navigateComicEntry(direction, "aux-mouse");
-  } else if (!$("video-player").classList.contains("hidden") && S.video.item) {
-    playAdjacentVideo(direction);
-  }
+  navigateMedia(direction, "aux-mouse");
 }
 window.addEventListener("mousedown", handleAuxMouseNavigation, { capture: true, passive: false });
 window.addEventListener("auxclick", handleAuxMouseNavigation, { capture: true, passive: false });
 window.addEventListener("mouseup", handleAuxMouseNavigation, { capture: true, passive: false });
+
+/* 履歴を使ったフォールバック(Ubuntu等でサイドボタンがイベント化されない場合)。
+   [前] [現在] [次] の3件を積んで常に中央に居座り、戻る/進むが発生したら
+   メディア移動として処理してから中央へ戻す。 */
+const HISTORY_NAV_CENTER = 1;
+let historyNavSuppress = 0;
+let historyNavReady = false;
+
+function setupHistoryNavigation() {
+  if (!window.history?.pushState) return;
+  const base = location.href;
+  history.replaceState({ fdNav: 0 }, "", base);
+  history.pushState({ fdNav: 1 }, "", base);
+  history.pushState({ fdNav: 2 }, "", base);
+  historyNavSuppress += 1;
+  history.go(-1);          // 中央(fdNav=1)へ
+  historyNavReady = true;
+}
+
+function restoreHistoryCenter(from) {
+  const delta = HISTORY_NAV_CENTER - from;
+  if (!delta) return;
+  historyNavSuppress += 1;
+  history.go(delta);
+}
+
+window.addEventListener("popstate", (event) => {
+  const position = event.state?.fdNav;
+  if (!historyNavReady || typeof position !== "number") return;
+  if (historyNavSuppress > 0) {
+    historyNavSuppress -= 1;
+    return;
+  }
+  if (position === HISTORY_NAV_CENTER) return;
+  const direction = position < HISTORY_NAV_CENTER ? -1 : 1;
+  const handled = S.settings.aux_mouse_navigation !== false &&
+    navigateMedia(direction, "history");
+  // ビューアを開いていない時は普通の履歴移動として扱う(離脱できるように)
+  if (handled) restoreHistoryCenter(position);
+});
 
 /* ================= settings modal ================= */
 function settingRow(grid, label, control, hint) {
@@ -1879,6 +2600,9 @@ async function openSettings() {
   const grid = document.createElement("div");
   grid.className = "settings-grid";
 
+  settingRow(grid, "起動時の表示位置", makeSelect("library_start_folder", [
+    ["last", "前回のフォルダ"], ["root", "ライブラリのルート"],
+  ]), "漫画・動画とも、前回開いていたフォルダから再開します。");
   settingRow(grid, "漫画末尾の動作", makeSelect("comic_sequence_end_behavior", [
     ["stop", "停止"], ["wrap", "ループ"], ["prompt", "確認"],
   ]));
@@ -1903,6 +2627,9 @@ async function openSettings() {
   settingRow(grid, "動画上のホイール操作", makeSelect("video_wheel_action", [
     ["seek", "10秒シーク"], ["volume", "音量"],
   ]));
+  settingRow(grid, "マウスの戻る/進むボタン", makeSelect("aux_mouse_navigation", [
+    ["true", "前後のファイルへ移動"], ["false", "使わない"],
+  ]), "Ubuntu等ではブラウザの履歴移動として届くため、その場合も同じ動作にします。");
   settingRow(grid, "続きから再生", makeSelect("resume_playback", [
     ["true", "有効"], ["false", "無効"],
   ]));
@@ -1967,13 +2694,20 @@ async function openSettings() {
     ["original", "無効"], ["auto", "自動"], ["transcode", "常に有効"],
   ]));
   const videoQualityOptions = [
-    ["auto", "自動"], ["original", "原寸"], ["2160p", "4K"], ["1440p", "1440p"],
+    ["auto", "自動 (回線で判定)"], ["original", "原寸"], ["2160p", "4K"], ["1440p", "1440p"],
     ["1080p", "1080p"], ["720p", "720p"], ["480p", "480p"], ["360p", "360p"],
   ];
   settingRow(grid, "最大解像度", makeSelect("video_max_resolution", videoQualityOptions),
     "4K変換は通信量・CPU/GPU負荷・キャッシュ容量が大きくなります。");
-  settingRow(grid, "PC 動画品質", makeSelect("video_profile_desktop", videoQualityOptions));
+  settingRow(grid, "PC 動画品質", makeSelect("video_profile_desktop", videoQualityOptions),
+    "自動: Wi-Fi/有線(同一LAN)なら原寸、モバイル回線なら下の上限で配信します。");
   settingRow(grid, "モバイル動画品質", makeSelect("video_profile_mobile", videoQualityOptions));
+  settingRow(grid, "モバイル回線の上限",
+    makeSelect("video_cellular_max_resolution", videoQualityOptions.filter(([v]) => v !== "auto")),
+    "モバイル回線と判定された時だけ適用される上限です。");
+  settingRow(grid, "表示同期", makeSelect("video_display_sync", [
+    ["auto", "自動 (画面に合わせて微調整)"], ["off", "無効"],
+  ]), buildDisplaySyncHint());
   settingRow(grid, "動画コーデック", makeSelect("video_codec", [
     ["h264", "H.264"], ["hevc", "HEVC"], ["vp9", "VP9"],
     ["av1", "AV1"], ["copy", "コピー可能ならコピー"],
@@ -2182,7 +2916,14 @@ bindLibrarySearch("library-search", "library-search-mobile");
 bindLibrarySearch("library-search-mobile", "library-search");
 $("sel-library-root").onchange = (e) => switchLibraryRoot(e.target.value);
 $("sel-library-root-mobile").onchange = (e) => switchLibraryRoot(e.target.value);
-$("btn-delete").onclick = requestDelete;
+
+/* 削除ボタン: 複数選択中なら一括削除、それ以外は選択中の1件 */
+function requestDeleteDispatch() {
+  if (S.selectMode && S.checked.size) requestBulkDelete();
+  else requestDelete();
+}
+$("btn-delete").onclick = requestDeleteDispatch;
+$("btn-delete-mobile").onclick = requestDeleteDispatch;
 
 function syncMobileSelectValue(fromId, toId) {
   const from = $(fromId);
@@ -2201,6 +2942,88 @@ function setupMobileSelects() {
   copySelectOptions("sel-filter", "sel-filter-mobile");
 }
 
+/* ================= ライブラリペインの幅 / 最小化 (PC) ================= */
+const LIBRARY_WIDTH_KEY = "framedeck.libraryWidth";
+const LIBRARY_COLLAPSED_KEY = "framedeck.libraryCollapsed";
+const LIBRARY_DEFAULT_WIDTH = 340;
+const LIBRARY_MIN_WIDTH = 200;
+
+function libraryMaxWidth() {
+  return Math.max(LIBRARY_MIN_WIDTH, Math.round(window.innerWidth * 0.8));
+}
+
+function applyLibraryWidth(width, { persist = true } = {}) {
+  const value = Math.round(
+    Math.min(libraryMaxWidth(), Math.max(LIBRARY_MIN_WIDTH, width || LIBRARY_DEFAULT_WIDTH))
+  );
+  document.documentElement.style.setProperty("--library-width", `${value}px`);
+  if (persist) localStorage.setItem(LIBRARY_WIDTH_KEY, String(value));
+  layoutComicSpread();
+  return value;
+}
+
+function setLibraryCollapsed(collapsed, { persist = true } = {}) {
+  document.body.classList.toggle("library-collapsed", collapsed);
+  $("library-expand")?.classList.toggle("hidden", !collapsed);
+  $("btn-library-collapse")?.setAttribute("aria-expanded", String(!collapsed));
+  if (persist) localStorage.setItem(LIBRARY_COLLAPSED_KEY, collapsed ? "1" : "0");
+  layoutComicSpread();
+}
+
+function toggleLibraryCollapsed() {
+  setLibraryCollapsed(!document.body.classList.contains("library-collapsed"));
+}
+
+function setupLibraryResizer() {
+  applyLibraryWidth(Number(localStorage.getItem(LIBRARY_WIDTH_KEY)) || LIBRARY_DEFAULT_WIDTH,
+                    { persist: false });
+  setLibraryCollapsed(localStorage.getItem(LIBRARY_COLLAPSED_KEY) === "1",
+                      { persist: false });
+
+  const resizer = $("library-resizer");
+  if (!resizer) return;
+  let drag = null;
+  resizer.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    drag = { x: e.clientX, width: $("library-pane").getBoundingClientRect().width };
+    resizer.setPointerCapture?.(e.pointerId);
+    document.body.classList.add("library-resizing");
+  });
+  resizer.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    e.preventDefault();
+    applyLibraryWidth(drag.width + (e.clientX - drag.x), { persist: false });
+  });
+  const endDrag = (e) => {
+    if (!drag) return;
+    applyLibraryWidth(drag.width + (e.clientX - drag.x));
+    drag = null;
+    document.body.classList.remove("library-resizing");
+  };
+  resizer.addEventListener("pointerup", endDrag);
+  resizer.addEventListener("pointercancel", () => {
+    drag = null;
+    document.body.classList.remove("library-resizing");
+  });
+  resizer.addEventListener("dblclick", () => {
+    applyLibraryWidth(LIBRARY_DEFAULT_WIDTH);
+    toast("一覧の幅を既定に戻しました");
+  });
+  resizer.addEventListener("keydown", (e) => {
+    const step = e.shiftKey ? 60 : 20;
+    const current = $("library-pane").getBoundingClientRect().width;
+    if (e.key === "ArrowLeft") { e.preventDefault(); applyLibraryWidth(current - step); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); applyLibraryWidth(current + step); }
+  });
+}
+$("btn-library-collapse").onclick = toggleLibraryCollapsed;
+$("library-expand").onclick = toggleLibraryCollapsed;
+$("btn-library-reset").onclick = () => {
+  applyLibraryWidth(LIBRARY_DEFAULT_WIDTH);
+  setLibraryCollapsed(false);
+  toast("一覧の表示を既定に戻しました");
+};
+
 /* mobile drawer */
 function openMobileDrawer() {
   $("library-pane").classList.add("open");
@@ -2218,6 +3041,16 @@ $("library-backdrop").onclick = closeMobileDrawer;
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && $("library-pane").classList.contains("open")) {
     closeMobileDrawer();
+    return;
+  }
+  if (e.key === "Escape" && S.selectMode &&
+      $("modal-backdrop").classList.contains("hidden")) {
+    setSelectMode(false);
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === "b" || e.key === "B")) {
+    e.preventDefault();
+    toggleLibraryCollapsed();
   }
 });
 
@@ -2241,7 +3074,9 @@ function connectWs() {
 /* ================= save on unload ================= */
 window.addEventListener("pagehide", () => {
   if (S.video.item) saveVideoProgress();
-  if (S.video.hls && S.video.item) requestHlsStop(S.video.item.id);
+  if ((S.video.hls || S.video.transcode) && S.video.item) {
+    requestTranscodeStop(S.video.item.id);
+  }
 });
 
 /* ================= init ================= */
@@ -2249,6 +3084,9 @@ async function init() {
   applyUiProfile();
   buildStarBar();
   updateModeButtons();
+  restoreListPreferences();
+  setupLibraryResizer();
+  setupHistoryNavigation();
   try {
     S.settings = await api("/api/settings");
     await loadRoots();
@@ -2257,7 +3095,7 @@ async function init() {
     return;
   }
   setupMobileSelects();
-  await switchToActiveRoot();
+  await switchToActiveRoot({ announceResume: true });
   connectWs();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});

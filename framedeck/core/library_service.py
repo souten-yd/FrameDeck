@@ -182,6 +182,23 @@ class LibraryService:
         self._storage.delete_media_item(item_id)
         return {"deleted": item.display_name, "method": method}
 
+    def delete_items(self, item_ids: list[str],
+                     use_trash: bool | None = None) -> dict:
+        """複数項目をまとめて削除する。失敗した項目は理由付きで返す。"""
+        deleted: list[str] = []
+        failed: list[dict] = []
+        method = "trash"
+        for item_id in item_ids:
+            try:
+                result = self.delete_item(item_id, use_trash)
+                deleted.append(result["deleted"])
+                method = result["method"]
+            except KeyError:
+                failed.append({"id": item_id, "error": "項目が見つかりません"})
+            except OSError as exc:
+                failed.append({"id": item_id, "error": str(exc)})
+        return {"deleted": deleted, "failed": failed, "method": method}
+
     def mark_opened(self, item: MediaItem) -> None:
         self._storage.add_recent(item.id, item.path, item.media_type)
 
