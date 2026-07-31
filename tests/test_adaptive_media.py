@@ -185,8 +185,9 @@ def test_default_video_quality_is_network_adaptive(tmp_path):
     settings = Settings(paths)
     assert settings.get("video_max_resolution") == "auto"
     assert settings.get("video_profile_desktop") == "auto"
-    assert settings.get("video_profile_mobile") == "auto"
     assert settings.get("video_cellular_max_resolution") == "1080p"
+    # モバイルは回線によらず1080p(iOSで原寸の直接再生が安定しないため)
+    assert settings.get("video_profile_mobile") == "1080p"
 
 
 def test_settings_migrate_old_video_defaults_to_auto(tmp_path):
@@ -205,7 +206,7 @@ def test_settings_migrate_old_video_defaults_to_auto(tmp_path):
     }), "utf-8")
     settings = Settings(paths)
     assert settings.get("video_profile_desktop") == "auto"
-    assert settings.get("video_profile_mobile") == "auto"
+    assert settings.get("video_profile_mobile") == "1080p"
     assert settings.get("video_stream_mode") == "auto"
     assert settings.get("comic_cache_max_mb") == 250  # 他の設定は保持する
     # 明示的に選んだ値は移行後も維持される
@@ -629,3 +630,30 @@ def test_hls_stop_does_not_kill_other_sessions_or_fresh_jobs(tmp_path, monkeypat
     remaining = [j for j in service._jobs.values() if not j.cancelled]
     assert [j.owner for j in remaining] == ["tabB"]
     service.shutdown()
+
+
+def test_mobile_uses_1080p_regardless_of_network():
+    """モバイルは回線によらず1080p。iOSでは原寸の直接再生が安定しないため。"""
+    settings = {"video_stream_mode": "auto", "video_profile_mobile": "1080p"}
+    hints = VideoClientHints(
+        connection_type="wifi", local_network=True,
+        video_codecs=("h264", "hevc"), audio_codecs=("aac",), containers=("mp4",),
+    )
+    # 4K素材 → 1080pへ
+    high = select_video_profile(settings, _video_info(width=3840, height=2160),
+                                hints, ui_profile="mobile")
+    assert high.name == "1080p" and high.transcode is True
+
+    # 1080p素材でも直接再生に落とさず、セグメント配信できる形で返す
+    same = select_video_profile(settings, _video_info(), hints, ui_profile="mobile")
+    assert same.name == "1080p" and same.transcode is True
+
+    # PCは従来どおり(LANなら原寸・直接再生)
+    desktop = select_video_profile({"video_stream_mode": "auto"}, _video_info(),
+                                   hints, ui_profile="desktop")
+    assert desktop.name == "original" and desktop.transcode is False
+
+    # モバイルでも手動で原寸を選べば尊重する
+    manual = select_video_profile({**settings, "video_profile_mobile": "original"},
+                                  _video_info(), hints, ui_profile="mobile")
+    assert manual.name == "original" and manual.transcode is False

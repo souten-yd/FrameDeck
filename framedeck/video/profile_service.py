@@ -301,8 +301,10 @@ def select_video_profile(
         # 端末が映像コーデックを再生できない → 実際に再エンコードが要る。
         # 4K60などを原寸で実時間変換するのは不可能なので上限を掛ける
         return _fallback_encode_profile(info, reason)
-    if direct.direct_play and _fits_within(target, info):
-        # 上限内の動画をわざわざ再変換しない(直接再生が最も軽く高画質)
+    if direct.direct_play and _fits_within(target, info) and ui_profile != "mobile":
+        # 上限内の動画をわざわざ再変換しない(直接再生が最も軽く高画質)。
+        # モバイルは除く: 原寸の直接再生がiOSで安定しないため、上限を
+        # 設定している間はセグメント配信(HLS)経路に寄せる
         return original_profile(False, f"direct-play-fits/{reason}")
     profile = resolve_video_profile(target, info.height, info.width)
     return ResolvedVideoProfile(**{**profile.to_dict(), "reason": reason})
