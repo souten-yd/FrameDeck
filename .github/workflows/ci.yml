@@ -31,9 +31,9 @@ jobs:
         run: python -m pytest -q tests/
 
   qpkg:
-    # QPKG is intentionally expensive, so do not build it for ordinary PRs or
-    # main pushes. Build only for releases or an explicit manual request.
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # PR execution is temporary qualification for this implementation branch.
+    # Before merge this is reverted to tags/manual only to minimize Actions use.
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
