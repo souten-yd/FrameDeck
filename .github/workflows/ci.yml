@@ -1,18 +1,49 @@
-name: FrameDeck One-shot QPKG Build
+name: FrameDeck Manual Validation
 
-# Temporary one-shot build used to produce a QPKG artifact on demand.
-# This commit intentionally runs only on feat/qnap-qpkg and is immediately
-# followed by a commit restoring the normal manual-only workflow.
+# GitHub Actions is intentionally manual-only to avoid unnecessary billing.
+# Normal pushes, pull requests, tags, and releases do not start CI.
 on:
-  push:
-    branches:
-      - feat/qnap-qpkg
+  workflow_dispatch:
+    inputs:
+      build_qpkg:
+        description: 'Also build the self-contained TS-253Be QPKG'
+        required: false
+        default: false
+        type: boolean
+      publish_release:
+        description: 'Upload the QPKG to an existing GitHub Release matching the ref name'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            packaging/qnap/requirements-qnap.txt
+            requirements-test.txt
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Run tests
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q tests/
+
   qpkg:
+    if: inputs.build_qpkg
+    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -32,3 +63,8 @@ jobs:
           path: dist/*.qpkg
           if-no-files-found: error
           retention-days: 3
+      - name: Publish QPKG to existing GitHub Release
+        if: inputs.publish_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.qpkg --clobber
