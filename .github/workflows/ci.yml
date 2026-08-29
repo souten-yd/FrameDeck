@@ -20,6 +20,7 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
+          cache-dependency-path: packaging/qnap/requirements-qnap.txt
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
