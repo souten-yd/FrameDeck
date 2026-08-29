@@ -13,7 +13,7 @@ NASや自宅サーバに置いたアーカイブをブラウザから開くだ�
 ![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.139-009688?logo=fastapi&logoColor=white)
 ![PWA](https://img.shields.io/badge/PWA-ready-5A0FC8?logo=pwa&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-171%20passed-brightgreen)
+![Tests](https://img.shields.io/badge/tests-179%20passed-brightgreen)
 ![Local First](https://img.shields.io/badge/cloud-not%20required-1a1b26)
 
 </div>
@@ -85,6 +85,25 @@ WEB_HOST = "0.0.0.0"      # LAN内の他端末からアクセス可能
 WEB_PORT = 9000
 ```
 
+### QNAP TS-253Be / QPKG
+
+TS-253Be (Intel J3455 / x86_64) 向けの自己完結型QPKGを生成できます。
+QPKGには portable CPython、Python依存、ffmpeg/ffprobe、7-Zipを含めるため、
+NAS側へPython・pip・Entwareなどを追加する必要はありません。
+
+UbuntuとQNAPは同じ `framedeck/` を実行し、QNAP固有処理は `packaging/qnap/` に限定しています。
+そのため通常の機能追加は共通コードだけを変更すれば両方へ反映できます。
+
+```bash
+# Ubuntu上でQPKGをローカル生成（GitHub Actions費用なし）
+sudo apt install curl git xz-utils
+bash packaging/qnap/build.sh
+```
+
+生成物は `dist/FrameDeck_<version>_TS-253Be_x86_64.qpkg` です。
+GitHub Actionsは費用抑制のため**手動実行専用**で、push / PR / tag / releaseでは自動起動しません。
+インストール、永続データ、ログ、更新方法の詳細は [QNAP TS-253Be ガイド](docs/QNAP_TS253BE.md) を参照してください。
+
 ## 📖 漫画リーダーの中身
 
 スキャン品質がまちまちな実世界のアーカイブを、そのまま読みやすくするための処理が入っています。
@@ -122,8 +141,9 @@ WEB_PORT = 9000
 ## 🏗 構成
 
 ```
-FrameDeck.py              ランチャー(venv自動構築 + 起動設定)
+FrameDeck.py              Ubuntu/デスクトップ向けランチャー(venv自動構築 + 起動設定)
 framedeck/
+├── __main__.py           共通の環境変数/CLIランチャー (`python -m framedeck`)
 ├── bootstrap.py          起動シーケンス
 ├── config.py             設定・パス管理(settings.json)
 ├── core/                 ライブラリ / 評価 / SQLite / セキュリティ
@@ -131,11 +151,13 @@ framedeck/
 ├── video/                ffprobe / Range配信 / トランスコード / HLS
 ├── web/                  FastAPI + Web UI(PWA)
 └── desktop/              Tkinter UI(mpv連携)
-tests/                    pytest(171件)
+packaging/qnap/            TS-253Be向けQPKGの薄いパッケージ層
+tests/                    pytest(179件)
 ```
 
-データはすべて `FrameDeck_venv/` 配下に保存されます(設定・DB・キャッシュ・ログ)。
-リポジトリ本体はステートレスなので、消してもライブラリの実ファイルには影響しません。
+Ubuntuの従来起動ではデータを `FrameDeck_venv/` 配下へ保存します。
+QNAP QPKGでは更新で消えないよう `/share/<volume>/.framedeck/` を `FRAMEDECK_HOME` にします。
+いずれもライブラリの実ファイルとは分離され、FrameDeck本体を更新しても漫画・動画ファイルには影響しません。
 
 ## 🔒 セキュリティについて
 
@@ -150,6 +172,7 @@ FrameDeck_venv/bin/python -m pytest tests/
 ```
 
 実装の設計判断や検証記録は [IMPLEMENTATION_NOTES.md](IMPLEMENTATION_NOTES.md) にまとめています。
+QNAP固有のパッケージ設計と運用手順は [docs/QNAP_TS253BE.md](docs/QNAP_TS253BE.md) にまとめています。
 
 ---
 
