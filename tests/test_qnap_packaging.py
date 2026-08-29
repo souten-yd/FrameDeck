@@ -32,7 +32,10 @@ def test_qnap_service_uses_bundled_runtime_and_external_persistent_home():
 def test_builder_bundles_required_native_tools_and_validates_qpkg():
     script = (QNAP / "build.sh").read_text("utf-8")
     assert "python-build-standalone" in script
-    assert "ffmpeg-release-amd64-static" in script
+    assert "binmgr/ffmpeg/releases/download" in script
+    assert 'FFMPEG_VERSION="8.1.2"' in script
+    assert 'FFMPEG_SHA256=' in script
+    assert 'sha256sum -c -' in script
     assert 'env/x86_64/app' in script
     assert 'env/x86_64/runtime' in script
     assert 'manylinux2014_x86_64' in script

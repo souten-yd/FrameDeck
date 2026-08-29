@@ -9,12 +9,15 @@ PYTHON_SERIES="${PYTHON_SERIES:-3.12}"
 SEVENZIP_VERSION="${SEVENZIP_VERSION:-2501}"
 TARGET_PLATFORM="${TARGET_PLATFORM:-manylinux2014_x86_64}"
 TARGET_ABI="${TARGET_ABI:-cp312}"
+FFMPEG_VERSION="8.1.2"
+FFMPEG_SHA256="64aa66461c80a29c1c7b8d7c4ae1af48e4b5a73c5b8e1fa5358e66044d4c94ca"
+FFMPEG_URL="https://github.com/binmgr/ffmpeg/releases/download/v${FFMPEG_VERSION}/ffmpeg-linux-amd64.tar.gz"
 
-# QDK must be installed from its official package.  In particular, qpkg_encrypt
+# QDK must be installed from its official package. In particular, qpkg_encrypt
 # is required when cross-building off-NAS so QDK can write the checksum in the
-# QPKG tail.  Treat its absence as a hard failure instead of producing a QPKG
+# QPKG tail. Treat its absence as a hard failure instead of producing a QPKG
 # that QTS later rejects as a file-format error.
-for cmd in curl tar xz python3 qbuild qpkg_encrypt; do
+for cmd in curl tar xz python3 sha256sum qbuild qpkg_encrypt; do
     command -v "$cmd" >/dev/null || { echo "missing build dependency: $cmd" >&2; exit 1; }
 done
 
@@ -56,7 +59,7 @@ else:
     raise SystemExit('no matching portable CPython release asset found')
 PY
 )"
-curl -fL --retry 3 "$PY_URL" -o "$WORK_DIR/python.tar.gz"
+curl -fL --retry 3 --retry-all-errors "$PY_URL" -o "$WORK_DIR/python.tar.gz"
 tar -xzf "$WORK_DIR/python.tar.gz" -C "$WORK_DIR/env/x86_64/runtime"
 PYTHON="$WORK_DIR/env/x86_64/runtime/python/bin/python3"
 
@@ -93,19 +96,23 @@ import framedeck
 print('FrameDeck runtime imports: OK')
 PY
 
-# Static ffmpeg/ffprobe keeps video probing/transcoding independent of QTS apps.
-curl -fL --retry 3 \
-    "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" \
-    -o "$WORK_DIR/ffmpeg.tar.xz"
+# Use a pinned, fully static musl ffmpeg/ffprobe release. A rolling third-party
+# URL previously returned an HTML response with HTTP 200, which only failed at
+# extraction time. Pinning both the release and SHA-256 makes the QPKG build
+# deterministic and rejects any unexpected download before packaging.
+curl -fL --retry 3 --retry-all-errors "$FFMPEG_URL" -o "$WORK_DIR/ffmpeg.tar.gz"
+echo "$FFMPEG_SHA256  $WORK_DIR/ffmpeg.tar.gz" | sha256sum -c -
 rm -rf "$WORK_DIR/ffmpeg"
 mkdir -p "$WORK_DIR/ffmpeg"
-tar -xJf "$WORK_DIR/ffmpeg.tar.xz" -C "$WORK_DIR/ffmpeg" --strip-components=1
+tar -xzf "$WORK_DIR/ffmpeg.tar.gz" -C "$WORK_DIR/ffmpeg"
 install -m 755 "$WORK_DIR/ffmpeg/ffmpeg" "$WORK_DIR/env/x86_64/bin/ffmpeg"
 install -m 755 "$WORK_DIR/ffmpeg/ffprobe" "$WORK_DIR/env/x86_64/bin/ffprobe"
+"$WORK_DIR/env/x86_64/bin/ffmpeg" -version >/dev/null
+"$WORK_DIR/env/x86_64/bin/ffprobe" -version >/dev/null
 
 # 7zz provides RAR/CBR extraction without requiring proprietary unrar. FrameDeck
 # currently discovers the command as `7z`, so provide both names.
-curl -fL --retry 3 \
+curl -fL --retry 3 --retry-all-errors \
     "https://www.7-zip.org/a/7z${SEVENZIP_VERSION}-linux-x64.tar.xz" \
     -o "$WORK_DIR/7zip.tar.xz"
 rm -rf "$WORK_DIR/7zip"
