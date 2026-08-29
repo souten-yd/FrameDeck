@@ -1,0 +1,89 @@
+/* Settings > application update */
+.update-settings-card {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.update-settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.update-settings-head h4 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  color: var(--text);
+}
+.update-settings-head p {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.update-settings-meta {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+.update-settings-meta > div {
+  display: grid;
+  grid-template-columns: minmax(90px, 128px) minmax(0, 1fr);
+  gap: 10px;
+}
+.update-settings-meta dt {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.update-settings-meta dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 12px;
+}
+.update-settings-message {
+  min-height: 1.5em;
+  margin: 8px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.update-settings-message[data-kind="ok"] { color: var(--ok); }
+.update-settings-message[data-kind="warn"] { color: var(--star); }
+.update-settings-message[data-kind="error"] { color: var(--danger); }
+.update-settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.update-release-link {
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+.update-release-link:hover,
+.update-release-link:focus-visible { text-decoration: underline; }
+.update-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface);
+}
+.update-progress > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width .2s ease;
+}
+
+@media (max-width: 560px) {
+  .update-settings-head { flex-direction: column; }
+  .update-settings-head > button { width: 100%; min-height: 42px; }
+  .update-settings-meta > div { grid-template-columns: 92px minmax(0, 1fr); }
+  .update-settings-actions > button { min-height: 42px; }
+}

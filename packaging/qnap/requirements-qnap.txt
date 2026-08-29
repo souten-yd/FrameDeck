@@ -1,0 +1,11 @@
+# Runtime-only dependencies bundled into the QPKG.
+# Keep this list architecture-neutral and prefer older manylinux baselines for
+# compatibility with QTS on the TS-253Be. Pin the web stack to the tested
+# FrameDeck series so future dependency changes do not alter released QPKGs.
+Pillow>=10.4,<11
+rarfile>=4,<5
+fastapi>=0.139,<0.140
+uvicorn>=0.40,<0.53
+aiofiles>=24,<26
+pydantic>=2.8,<3
+send2trash>=1.8,<2
