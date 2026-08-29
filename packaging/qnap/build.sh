@@ -5,11 +5,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PACKAGING_DIR="$ROOT_DIR/packaging/qnap"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 WORK_DIR="${WORK_DIR:-${RUNNER_TEMP:-/tmp}/framedeck-qpkg}"
-QDK_PATH="${QDK_PATH:-$WORK_DIR/QDK}"
+QDK_REPO="${QDK_REPO:-$WORK_DIR/QDK}"
 PYTHON_SERIES="${PYTHON_SERIES:-3.12}"
 SEVENZIP_VERSION="${SEVENZIP_VERSION:-2501}"
 
-for cmd in curl tar xz git; do
+for cmd in curl tar xz git python3; do
     command -v "$cmd" >/dev/null || { echo "missing build dependency: $cmd" >&2; exit 1; }
 done
 
@@ -21,8 +21,9 @@ fi
 QPKG_VERSION="${VERSION//-/_}"
 
 rm -rf "$WORK_DIR/env"
-mkdir -p "$WORK_DIR/env/shared" "$WORK_DIR/env/x86_64/app" \
-    "$WORK_DIR/env/x86_64/bin" "$WORK_DIR/env/x86_64/runtime" "$DIST_DIR"
+mkdir -p "$WORK_DIR/env/shared" "$WORK_DIR/env/icons" \
+    "$WORK_DIR/env/x86_64/app" "$WORK_DIR/env/x86_64/bin" \
+    "$WORK_DIR/env/x86_64/runtime" "$DIST_DIR"
 
 cp "$PACKAGING_DIR/qpkg.cfg" "$WORK_DIR/env/qpkg.cfg"
 sed -i "s/^QPKG_VER=.*/QPKG_VER=\"$QPKG_VERSION\"/" "$WORK_DIR/env/qpkg.cfg"
@@ -74,15 +75,26 @@ install -m 755 "$WORK_DIR/7zip/7zz" "$WORK_DIR/env/x86_64/bin/7zz"
 ln -s 7zz "$WORK_DIR/env/x86_64/bin/7z"
 
 # QDK is only a build dependency and is never installed on the target NAS.
-if [[ ! -x "$QDK_PATH/shared/bin/qbuild" ]]; then
-    rm -rf "$QDK_PATH"
-    git clone --depth 1 https://github.com/qnap-dev/QDK.git "$QDK_PATH"
+if [[ ! -x "$QDK_REPO/shared/bin/qbuild" ]]; then
+    rm -rf "$QDK_REPO"
+    git clone --depth 1 https://github.com/qnap-dev/QDK.git "$QDK_REPO"
 fi
-cp "$QDK_PATH/shared/template/package_routines" "$WORK_DIR/env/package_routines"
+QDK_SHARED="$(cd "$QDK_REPO/shared" && pwd)"
+
+# QDK 2.5.x ships a qdk.conf that recomputes QDK_PATH from the current working
+# directory. That breaks out-of-tree CI builds. Patch only this disposable clone
+# so qbuild consistently resolves scripts/template from its absolute directory.
+cat >"$QDK_SHARED/qdk.conf" <<EOF
+QDK_VERSION=2.5.3
+QDK_PATH="$QDK_SHARED"
+EOF
+
+cp "$QDK_SHARED/template/package_routines" "$WORK_DIR/env/package_routines"
 chmod 755 "$WORK_DIR/env/package_routines"
 
 pushd "$WORK_DIR/env" >/dev/null
-QDK_PATH="$QDK_PATH/shared" "$QDK_PATH/shared/bin/qbuild"
+unset QDK_PATH QDK_SCRIPTS_DIR QDK_TEMPLATE_DIR QDK_INSTALL_SCRIPT
+"$QDK_SHARED/bin/qbuild"
 popd >/dev/null
 
 QPKG_FILE="$(find "$WORK_DIR/env/build" -maxdepth 1 -type f -name '*.qpkg' -print -quit)"
