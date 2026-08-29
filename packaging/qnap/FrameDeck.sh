@@ -94,7 +94,7 @@ start_service() {
     rm -f "$PID_FILE"
 
     cd "$APP_DIR" || return 1
-    nohup "$PYTHON" -m framedeck \
+    "$PYTHON" -m framedeck \
         --mode web \
         --host "$FRAMEDECK_HOST" \
         --port "$FRAMEDECK_PORT" \

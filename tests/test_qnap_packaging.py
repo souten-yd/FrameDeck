@@ -27,6 +27,7 @@ def test_qnap_service_uses_bundled_runtime_and_external_persistent_home():
     assert 'export PATH="$QPKG_ROOT/bin:' in script
     assert 'export QNAP_QPKG="$QPKG_NAME"' in script
     assert ' -m framedeck ' in script
+    assert 'nohup' not in script
     # Persistent state must not default to a directory that QPKG upgrades replace.
     assert 'VAR_DIR="$QPKG_ROOT/var"' not in script
 
