@@ -14,18 +14,34 @@ def test_qpkg_targets_x86_64_web_service():
     assert 'QTS_MINI_VERSION="5.0.0"' in cfg
 
 
-def test_qnap_service_uses_bundled_runtime_and_persistent_home():
+def test_qnap_service_uses_bundled_runtime_and_external_persistent_home():
     script = (QNAP / "FrameDeck.sh").read_text("utf-8")
     assert 'runtime/python/bin/python3' in script
+    assert '$VOLUME_ROOT/.framedeck' in script
     assert 'export FRAMEDECK_HOME="$VAR_DIR"' in script
     assert 'export FRAMEDECK_MODE="web"' in script
     assert 'export PATH="$QPKG_ROOT/bin:' in script
+    assert 'export QNAP_QPKG="$QPKG_NAME"' in script
     assert ' -m framedeck ' in script
+    # Persistent state must not default to a directory that QPKG upgrades replace.
+    assert 'VAR_DIR="$QPKG_ROOT/var"' not in script
 
 
-def test_builder_bundles_required_native_tools():
+def test_builder_bundles_required_native_tools_and_qdk_layout():
     script = (QNAP / "build.sh").read_text("utf-8")
     assert "python-build-standalone" in script
     assert "ffmpeg-release-amd64-static" in script
-    assert "7zip/7zz" in script
+    assert 'env/x86_64/app' in script
+    assert 'env/x86_64/runtime' in script
+    assert 'manylinux2014_x86_64' in script
+    assert 'ln -s 7zz' in script
     assert "qnap-dev/QDK" in script
+
+
+def test_github_actions_is_manual_only_to_control_cost():
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text("utf-8")
+    assert "workflow_dispatch:" in workflow
+    assert "pull_request:" not in workflow
+    assert "branches:" not in workflow
+    assert "tags:" not in workflow
+    assert "build_qpkg:" in workflow
