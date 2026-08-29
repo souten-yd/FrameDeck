@@ -1,0 +1,3 @@
+#!/bin/sh
+# FrameDeck currently needs no custom install/remove hooks.
+# Keep this file present because QDK expects package_routines in the build root.

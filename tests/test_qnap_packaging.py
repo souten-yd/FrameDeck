@@ -8,8 +8,10 @@ QNAP = ROOT / "packaging" / "qnap"
 def test_qpkg_targets_x86_64_web_service():
     cfg = (QNAP / "qpkg.cfg").read_text("utf-8")
     assert 'QPKG_NAME="FrameDeck"' in cfg
+    assert 'QPKG_ARCH="x86_64"' in cfg
     assert 'QPKG_SERVICE_PROGRAM="FrameDeck.sh"' in cfg
     assert 'QPKG_SERVICE_PORT="9000"' in cfg
+    assert 'QPKG_DISTRIBUTION_TYPE="1"' in cfg
     assert 'QDK_DATA_DIR_X86_64="x86_64"' in cfg
     assert 'QTS_MINI_VERSION="5.0.0"' in cfg
 
@@ -27,7 +29,7 @@ def test_qnap_service_uses_bundled_runtime_and_external_persistent_home():
     assert 'VAR_DIR="$QPKG_ROOT/var"' not in script
 
 
-def test_builder_bundles_required_native_tools_and_qdk_layout():
+def test_builder_bundles_required_native_tools_and_validates_qpkg():
     script = (QNAP / "build.sh").read_text("utf-8")
     assert "python-build-standalone" in script
     assert "ffmpeg-release-amd64-static" in script
@@ -35,7 +37,10 @@ def test_builder_bundles_required_native_tools_and_qdk_layout():
     assert 'env/x86_64/runtime' in script
     assert 'manylinux2014_x86_64' in script
     assert 'ln -s 7zz' in script
-    assert "qnap-dev/QDK" in script
+    assert 'qpkg_encrypt' in script
+    assert 'cp "$PACKAGING_DIR/package_routines"' in script
+    assert 'qbuild --strict --build-arch x86_64' in script
+    assert 'qbuild --query info "$QPKG_FILE"' in script
 
 
 def test_github_actions_is_manual_only_to_control_cost():
@@ -45,3 +50,5 @@ def test_github_actions_is_manual_only_to_control_cost():
     assert "branches:" not in workflow
     assert "tags:" not in workflow
     assert "build_qpkg:" in workflow
+    assert "qdk_2.5.3_amd64.deb" in workflow
+    assert "command -v qpkg_encrypt" in workflow
