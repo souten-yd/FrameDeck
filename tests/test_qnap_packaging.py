@@ -14,6 +14,8 @@ def test_qpkg_targets_x86_64_web_service():
     assert 'QPKG_DISTRIBUTION_TYPE="1"' in cfg
     assert 'QDK_DATA_DIR_X86_64="x86_64"' in cfg
     assert 'QTS_MINI_VERSION="5.0.0"' in cfg
+    assert 'QDK_COMPRESS_METHOD="gzip"' in cfg
+    assert 'QDK_COMPRESS_METHOD="xz"' not in cfg
 
 
 def test_qnap_service_uses_bundled_runtime_and_external_persistent_home():
