@@ -14,30 +14,42 @@ implemented under `framedeck/` apply to both platforms without a fork.
 
 The QPKG is self-contained. The NAS does **not** need Python, pip, Entware,
 ffmpeg, ffprobe, 7-Zip, or a compiler. The package bundles portable CPython,
-Python dependencies, static ffmpeg/ffprobe, and 7zz.
+Python dependencies, static ffmpeg/ffprobe, and 7zz (also exposed as `7z` for
+FrameDeck's archive backend).
 
-## Build policy
+The portable Python target is baseline `x86_64-unknown-linux-gnu`; compiled
+Python dependencies are explicitly downloaded as `manylinux2014_x86_64`
+wheels. This avoids accidentally packaging binaries linked against the newer
+glibc version of the Ubuntu build host.
 
-Normal pushes and pull requests run only the Python test suite. QPKG creation
-is deliberately limited to either:
+## GitHub Actions / cost policy
 
-1. a manual **Run workflow** invocation of `FrameDeck CI`, or
-2. pushing a release tag such as `v2.1.1`.
+GitHub Actions is **manual-only**. A push, pull request, tag, or GitHub Release
+does not automatically start CI and therefore does not incur an Actions build
+for ordinary development.
 
-This avoids repeatedly downloading/building the large portable runtime and
-keeps GitHub Actions usage low.
+When validation is genuinely needed, open **Actions -> FrameDeck Manual
+Validation -> Run workflow**. The workflow has two optional switches:
 
-A tag build publishes:
+- `build_qpkg=false` (default): run the Python tests only.
+- `build_qpkg=true`: after tests pass, also create the self-contained TS-253Be
+  QPKG.
+- `publish_release=true`: when building a QPKG, upload it to an already-created
+  GitHub Release for the selected ref.
+
+The QPKG build is intentionally opt-in because it downloads portable Python,
+ffmpeg, 7-Zip, and QDK and is much heavier than ordinary tests.
+
+The output package name is:
 
 ```text
 FrameDeck_<version>_TS-253Be_x86_64.qpkg
 ```
 
-as both a short-lived Actions artifact and a GitHub Release asset.
-
 ## Install
 
-1. Download the `.qpkg` produced by GitHub Actions or a GitHub Release.
+1. Build the `.qpkg` locally on Ubuntu, or explicitly run the manual Actions
+   workflow with `build_qpkg=true`.
 2. Open QTS **App Center**.
 3. Choose **Install Manually**.
 4. Select the FrameDeck QPKG and accept the third-party/manual package warning.
@@ -49,13 +61,13 @@ as both a short-lived Actions artifact and a GitHub Release asset.
 QTS may require allowing installation of unsigned/manual applications. The
 package is currently not QNAP code-signed.
 
-## Runtime layout
+## Runtime and persistent-data layout
 
-QDK installs the package under the volume's `.qpkg/FrameDeck` directory. The
-important directories are:
+QDK installs replaceable application files under the volume's
+`.qpkg/FrameDeck` directory:
 
 ```text
-FrameDeck/
+/share/<volume>/.qpkg/FrameDeck/
 ├── app/                  shared FrameDeck Python application
 ├── runtime/python/       bundled portable CPython + site-packages
 ├── bin/
@@ -63,16 +75,29 @@ FrameDeck/
 │   ├── ffprobe
 │   ├── 7zz
 │   └── 7z -> 7zz
-└── var/                  persistent writable application state
-    ├── config/
-    ├── data/
-    ├── cache/
-    ├── logs/
-    └── runtime/
+└── FrameDeck.sh          App Center service controller
 ```
 
-The service exports `FRAMEDECK_HOME=<QPKG>/var`, so application code never has
-to know QNAP-specific storage paths.
+Mutable FrameDeck state deliberately lives **outside** the QPKG installation
+directory:
+
+```text
+/share/<volume>/.framedeck/
+├── config/               settings.json
+├── data/                 framedeck.db and session/index data
+├── cache/                comic/video generated caches
+├── logs/                 framedeck.log and qpkg-service.log
+└── runtime/              pid/temp/locks
+```
+
+The service first asks QTS for the default data-volume mount point and falls
+back to deriving the containing volume from the QPKG path. It then exports
+`FRAMEDECK_HOME=/share/<volume>/.framedeck`.
+
+This separation is important: updating the QPKG can replace `app/`, `runtime/`
+and `bin/` without replacing the user's settings, database, logs, or caches.
+A legacy `<QPKG>/var` directory is migrated on first start when no external
+FrameDeck data exists yet.
 
 ## Start / stop / diagnostics
 
@@ -85,19 +110,28 @@ FrameDeck.sh restart
 FrameDeck.sh status
 ```
 
-Application logs are stored under:
-
-```text
-<FrameDeck QPKG install path>/var/logs/
-```
-
-`service.log` contains launcher/stdout/stderr output and `framedeck.log` is the
-normal rotating FrameDeck application log.
-
 To resolve the actual install path over SSH:
 
 ```sh
 /sbin/getcfg FrameDeck Install_Path -f /etc/config/qpkg.conf
+```
+
+To resolve the default data volume:
+
+```sh
+/sbin/getcfg SHARE_DEF defVolMP -f /etc/config/def_share.info
+```
+
+The service launcher log is normally:
+
+```text
+/share/<volume>/.framedeck/logs/qpkg-service.log
+```
+
+and the normal rotating application log is:
+
+```text
+/share/<volume>/.framedeck/logs/framedeck.log
 ```
 
 ## Ubuntu and QNAP feature parity
@@ -110,7 +144,7 @@ launchers use these variables:
 | `FRAMEDECK_MODE` | `web` | `web` |
 | `FRAMEDECK_HOST` | `0.0.0.0` | `0.0.0.0` |
 | `FRAMEDECK_PORT` | `9000` | `9000` |
-| `FRAMEDECK_HOME` | auto | `<QPKG>/var` |
+| `FRAMEDECK_HOME` | auto | `/share/<volume>/.framedeck` |
 | `FRAMEDECK_OPEN_BROWSER` | `false` | `false` |
 
 The portable entry point is:
@@ -124,25 +158,41 @@ the same environment-driven module entry point as QNAP.
 
 ## Local QPKG build on Ubuntu
 
-The same builder used by Actions can be run on Ubuntu:
+Local building is preferred while developing because it does not consume
+GitHub Actions minutes:
 
 ```sh
-sudo apt install curl git xz-utils libxml2-utils xmlstarlet pv dos2unix
+sudo apt install curl git xz-utils
 bash packaging/qnap/build.sh
 ```
 
 Output is written to `dist/`. The build machine needs internet access because
-portable CPython, ffmpeg, 7-Zip, and QDK are downloaded at build time. These are
-build-time downloads only; the target NAS does not download them.
+portable CPython, Python wheels, ffmpeg, 7-Zip, and QDK are downloaded at build
+time. These are build-time downloads only; the target NAS does not download
+them.
+
+QDK source layout is generated as:
+
+```text
+qpkg.cfg
+shared/                 # service script
+x86_64/                 # app + Python + native tools
+```
+
+so QDK produces an x86_64-only package suitable for the TS-253Be.
 
 ## Updating dependencies
 
 - Python series: `PYTHON_SERIES` in `packaging/qnap/build.sh` (default `3.12`)
+- Python binary target: baseline `x86_64-unknown-linux-gnu`
+- Python wheel target: `TARGET_PLATFORM` (default `manylinux2014_x86_64`)
 - 7-Zip: `SEVENZIP_VERSION` in `packaging/qnap/build.sh`
 - Python libraries: `packaging/qnap/requirements-qnap.txt`
 - FrameDeck version: `framedeck/__init__.py`
 
-For releases, prefer a tag matching the application version, e.g. `v2.1.1`.
+Dependency changes should be validated locally first. Use the manual GitHub
+Actions workflow only when an independent Actions environment build is worth
+the cost.
 
 ## Design rule
 
