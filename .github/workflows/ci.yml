@@ -1,56 +1,22 @@
-name: FrameDeck Manual Validation
+name: FrameDeck One-shot QPKG 2.2.1 r2
 
-# GitHub Actions is intentionally manual-only to avoid unnecessary billing.
-# Normal pushes, pull requests, tags, and releases do not start CI.
 on:
-  workflow_dispatch:
-    inputs:
-      build_qpkg:
-        description: 'Also build the self-contained TS-253Be QPKG'
-        required: false
-        default: false
-        type: boolean
-      publish_release:
-        description: 'Upload the QPKG to an existing GitHub Release matching the ref name'
-        required: false
-        default: false
-        type: boolean
+  push:
+    branches:
+      - ci/qpkg-2.2.1-r2
 
 permissions:
   contents: write
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: pip
-          cache-dependency-path: |
-            packaging/qnap/requirements-qnap.txt
-            requirements-test.txt
-      - name: Install test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
-      - name: Run tests
-        env:
-          IMAGEIO_FFMPEG_EXE: /bin/true
-        run: python -m pytest -q tests/
-
   qpkg:
-    if: inputs.build_qpkg
-    needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
-      - name: Install QDK build dependencies
+      - name: Install official QDK 2.5.3
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -61,15 +27,33 @@ jobs:
           command -v qbuild
           command -v qpkg_encrypt
       - name: Build and validate TS-253Be QPKG
-        run: bash packaging/qnap/build.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: FrameDeck-QPKG
-          path: dist/*.qpkg
-          if-no-files-found: error
-          retention-days: 3
-      - name: Publish QPKG to existing GitHub Release
-        if: inputs.publish_release
+        run: |
+          bash packaging/qnap/build.sh
+          sha256sum dist/*.qpkg
+      - name: Publish FrameDeck v2.2.1
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/*.qpkg --clobber
+        run: |
+          QPKG="$(find dist -maxdepth 1 -type f -name '*.qpkg' -print -quit)"
+          SHA="$(sha256sum "$QPKG" | awk '{print $1}')"
+          cat > /tmp/release-notes.md <<EOF
+          ## FrameDeck 2.2.1
+
+          ### QNAP QPKG format fix
+          - Fixes the QTS App Center \`file format error\` affecting the v2.2.0 QPKG.
+          - Uses the complete official QDK 2.5.3 toolchain when cross-building.
+          - Requires \`qpkg_encrypt\` so the QPKG tail checksum is written correctly.
+          - Builds with \`qbuild --strict --build-arch x86_64\` and validates the finished package with \`qbuild --query info\`.
+          - Uses a pinned, SHA-256-verified fully static FFmpeg/ffprobe bundle.
+
+          ### Upgrade note
+          The v2.2.0 QNAP package should not be used. Install this v2.2.1 QPKG manually from QTS App Center. After 2.2.1 is installed, future compatible stable releases can be applied from FrameDeck's in-app updater.
+
+          QPKG SHA-256: \`$SHA\`
+          EOF
+          gh release view v2.2.1 >/dev/null 2>&1 || \
+            gh release create v2.2.1 \
+              --target 23418036136079251fb5f78d4f83fad45b5b92b5 \
+              --title "FrameDeck v2.2.1 — QNAP QPKG format fix" \
+              --notes-file /tmp/release-notes.md
+          gh release upload v2.2.1 "$QPKG" --clobber
