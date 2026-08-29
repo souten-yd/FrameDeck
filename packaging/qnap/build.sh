@@ -5,13 +5,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PACKAGING_DIR="$ROOT_DIR/packaging/qnap"
 DIST_DIR="${DIST_DIR:-$ROOT_DIR/dist}"
 WORK_DIR="${WORK_DIR:-${RUNNER_TEMP:-/tmp}/framedeck-qpkg}"
-QDK_REPO="${QDK_REPO:-$WORK_DIR/QDK}"
 PYTHON_SERIES="${PYTHON_SERIES:-3.12}"
 SEVENZIP_VERSION="${SEVENZIP_VERSION:-2501}"
 TARGET_PLATFORM="${TARGET_PLATFORM:-manylinux2014_x86_64}"
 TARGET_ABI="${TARGET_ABI:-cp312}"
 
-for cmd in curl tar xz git python3; do
+# QDK must be installed from its official package.  In particular, qpkg_encrypt
+# is required when cross-building off-NAS so QDK can write the checksum in the
+# QPKG tail.  Treat its absence as a hard failure instead of producing a QPKG
+# that QTS later rejects as a file-format error.
+for cmd in curl tar xz python3 qbuild qpkg_encrypt; do
     command -v "$cmd" >/dev/null || { echo "missing build dependency: $cmd" >&2; exit 1; }
 done
 
@@ -29,6 +32,8 @@ mkdir -p "$WORK_DIR/env/shared" "$WORK_DIR/env/icons" \
 
 cp "$PACKAGING_DIR/qpkg.cfg" "$WORK_DIR/env/qpkg.cfg"
 sed -i "s/^QPKG_VER=.*/QPKG_VER=\"$QPKG_VERSION\"/" "$WORK_DIR/env/qpkg.cfg"
+cp "$PACKAGING_DIR/package_routines" "$WORK_DIR/env/package_routines"
+chmod 755 "$WORK_DIR/env/package_routines"
 cp "$PACKAGING_DIR/FrameDeck.sh" "$WORK_DIR/env/shared/FrameDeck.sh"
 chmod 755 "$WORK_DIR/env/shared/FrameDeck.sh"
 cp -a "$ROOT_DIR/framedeck" "$WORK_DIR/env/x86_64/app/"
@@ -75,7 +80,7 @@ PYTHON="$WORK_DIR/env/x86_64/runtime/python/bin/python3"
     -r "$PACKAGING_DIR/requirements-qnap.txt"
 
 # Verify the packaged Python can import every compiled/runtime dependency before
-# QDK packaging. This is cheap and catches a broken wheel set immediately.
+# QDK packaging. This catches an unusable wheel set before producing a QPKG.
 PYTHONPATH="$WORK_DIR/env/x86_64/app" "$PYTHON" - <<'PY'
 import PIL
 import fastapi
@@ -109,27 +114,11 @@ tar -xJf "$WORK_DIR/7zip.tar.xz" -C "$WORK_DIR/7zip"
 install -m 755 "$WORK_DIR/7zip/7zz" "$WORK_DIR/env/x86_64/bin/7zz"
 ln -s 7zz "$WORK_DIR/env/x86_64/bin/7z"
 
-# QDK is a build-only dependency. The source layout follows QDK's native
-# qpkg.cfg + shared/ + x86_64/ convention, so QDK emits an x86_64-only QPKG.
-if [[ ! -x "$QDK_REPO/shared/bin/qbuild" ]]; then
-    rm -rf "$QDK_REPO"
-    git clone --depth 1 https://github.com/qnap-dev/QDK.git "$QDK_REPO"
-fi
-QDK_SHARED="$(cd "$QDK_REPO/shared" && pwd)"
-
-# QDK 2.5.x qdk.conf derives paths from its installation layout. For this
-# disposable out-of-tree builder, point it explicitly at the cloned shared dir.
-cat >"$QDK_SHARED/qdk.conf" <<EOF
-QDK_VERSION=2.5.3
-QDK_PATH="$QDK_SHARED"
-EOF
-
-cp "$QDK_SHARED/template/package_routines" "$WORK_DIR/env/package_routines"
-chmod 755 "$WORK_DIR/env/package_routines"
-
+# Use the officially installed QDK so its helper programs and template assets
+# are available. Strict mode turns QDK warnings into build failures, and the
+# query step validates the finished package structure before publishing it.
 pushd "$WORK_DIR/env" >/dev/null
-unset QDK_PATH QDK_SCRIPTS_DIR QDK_TEMPLATE_DIR QDK_INSTALL_SCRIPT
-"$QDK_SHARED/bin/qbuild"
+qbuild --strict --build-arch x86_64
 popd >/dev/null
 
 QPKG_FILE="$(find "$WORK_DIR/env/build" -maxdepth 1 -type f -name '*.qpkg' -print -quit)"
@@ -137,6 +126,9 @@ if [[ -z "$QPKG_FILE" ]]; then
     echo "qbuild completed but no .qpkg was produced" >&2
     exit 1
 fi
+
+qbuild --query info "$QPKG_FILE"
+
 OUT="$DIST_DIR/FrameDeck_${QPKG_VERSION}_TS-253Be_x86_64.qpkg"
 cp "$QPKG_FILE" "$OUT"
 echo "QPKG: $OUT"
