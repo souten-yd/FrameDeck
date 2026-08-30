@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..core.services import Services
-from .routers import comic, library, system, video
+from .routers import comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -67,6 +67,7 @@ def create_app(services: Services) -> FastAPI:
 
     app.include_router(system.router)
     app.include_router(library.router)
+    app.include_router(volume_view.router)
     app.include_router(comic.router)
     app.include_router(video.router)
 
