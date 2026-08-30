@@ -34,7 +34,7 @@ SUBPROCESS_TIMEOUT_LIST = 60
 SUBPROCESS_TIMEOUT_READ = 300
 
 #: settings.json のスキーマ版。上げると Settings._migrate が走る。
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 4
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_version": SETTINGS_VERSION,
@@ -106,7 +106,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "video_bitrate_kbps": 1800,
     "video_audio_bitrate_kbps": 96,
     "video_fps_limit": 30,
-    "video_segment_duration": 4,
+    "video_segment_duration": 2,
     "video_hardware_encoder": "auto",
     "video_ffmpeg_auto_download": True,
     "video_variant_cache_mb": 300,
@@ -393,6 +393,11 @@ class Settings:
             # 安定せず、1080p(HLS)なら問題なく再生できるため。
             if self._values.get("video_profile_mobile") == "auto":
                 self._values["video_profile_mobile"] = "1080p"
+        if version < 4:
+            # v4: HLSの初回セグメント確定を早め、変換開始から再生までの
+            # 待ち時間を従来の体感(1〜2秒程度)へ戻す。
+            if self._values.get("video_segment_duration") == 4:
+                self._values["video_segment_duration"] = 2
         self._values["settings_version"] = SETTINGS_VERSION
         try:
             self.save()

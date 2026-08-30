@@ -26,7 +26,7 @@ from .ffmpeg import resolve_ffmpeg
 from .profile_service import VIDEO_PROFILES, canonical_video_profile, resolve_video_profile, scale_filter_for_box
 from .transcode import TranscodeError
 
-HLS_VERSION = "hls-v2"
+HLS_VERSION = "hls-v3"
 HLS_PROFILES = ("360p", "480p", "720p", "1080p")
 COMPLETE_MARKER = "complete"
 _KEY_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -105,7 +105,7 @@ def _dir_size(path: Path) -> int:
 
 
 class HlsService:
-    def __init__(self, cache_root: Path, segment_duration: int = 4,
+    def __init__(self, cache_root: Path, segment_duration: int = 2,
                  auto_download_ffmpeg: bool = False,
                  max_cache_bytes: int = 0):
         self.cache_root = Path(cache_root)
@@ -451,6 +451,10 @@ class HlsService:
             "-profile:v", "baseline", "-level", "4.0",
             "-pix_fmt", "yuv420p", "-tag:v", "avc1", "-bf", "0",
             "-b:v", video_bitrate,
+            # -hls_time はキーフレームでしか分割できない。境界を明示しないと
+            # 2秒設定でも素材やエンコーダ都合で初回送信が数秒遅れる。
+            "-force_key_frames",
+            f"expr:gte(t,n_forced*{self.segment_duration})",
             "-vf", ",".join(filters),
             "-c:a", "aac", "-b:a", audio_bitrate, "-ac", "2",
             "-f", "hls",
