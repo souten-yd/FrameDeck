@@ -19,6 +19,14 @@ def test_volume_range_is_one_physical_archive():
     assert item.end == 3
 
 
+def test_compact_range_with_suffixes_is_recognized():
+    item = parse_volume_descriptor("BLACK_LAGOON_01b-03b.zip")
+    assert item.kind == "volume_range"
+    assert item.label == "01–03"
+    assert item.start == 1
+    assert item.end == 3
+
+
 def test_volume_range_can_be_confirmed_from_archive_directories(tmp_path: Path):
     archive = tmp_path / "作品 第01-03巻.zip"
     with zipfile.ZipFile(archive, "w") as zf:
