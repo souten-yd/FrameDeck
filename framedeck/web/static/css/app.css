@@ -292,6 +292,35 @@ body.ui-mobile .item-check { width: 22px; height: 22px; }
 #item-list li.checked { background: rgba(122, 162, 247, .18); }
 #item-list li.checked:nth-child(even) { background: rgba(122, 162, 247, .22); }
 
+/* 巻表示では空いた横幅を読書進捗に使う。通常のファイル表示には影響しない。 */
+#item-list li.volume-row .item-name { min-width: 2.5em; }
+.volume-progress {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.volume-progress-status {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.volume-progress-status.reading { color: var(--accent); }
+.volume-progress-status.completed { color: var(--ok); border-color: var(--ok); }
+.volume-progress-status.unread { color: var(--text-dim); }
+body.ui-mobile .volume-last-read { display: none; }
+
+@media (max-width: 760px) {
+  .volume-last-read { display: none; }
+  .volume-progress { gap: 5px; font-size: 10px; }
+  .volume-progress-status { padding: 2px 5px; }
+}
+
 #viewer-pane { flex: 1; min-width: 0; position: relative; display: flex; }
 .pane-placeholder {
   flex: 1;

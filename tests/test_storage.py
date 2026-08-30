@@ -15,6 +15,19 @@ def test_reading_progress_roundtrip(tmp_path):
     storage.close()
 
 
+def test_reading_progress_batch_lookup(tmp_path):
+    storage = Storage(tmp_path / "test.db")
+    storage.save_reading_progress("entry1", 4, 20)
+    storage.save_reading_progress("entry2", 9, 10, completed=True)
+
+    progress = storage.get_reading_progress_many(["entry2", "missing", "entry1", "entry1"])
+    assert set(progress) == {"entry1", "entry2"}
+    assert progress["entry1"]["page_count"] == 20
+    assert progress["entry2"]["completed"] == 1
+    assert storage.get_reading_progress_many([]) == {}
+    storage.close()
+
+
 def test_video_progress_roundtrip(tmp_path):
     storage = Storage(tmp_path / "test.db")
     storage.save_video_progress("vid1", 120.5, 3600.0, speed=1.5,
