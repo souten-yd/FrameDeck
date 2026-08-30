@@ -116,7 +116,11 @@
       window.setTimeout(() => location.reload(), 600);
       return false;
     }
-    if (job.target_version && job.current_version === job.target_version) {
+    // A normal release check also records target_version. Only treat a matching
+    // version as a completed restart when an update was actually restarting;
+    // otherwise opening Settings would reload the whole page after 600 ms.
+    if (job.status === "restarting" && job.target_version &&
+        job.current_version === job.target_version) {
       setMessage(panel, `v${job.current_version} へ更新されました。`, "ok");
       window.setTimeout(() => location.reload(), 600);
       return false;
@@ -196,13 +200,12 @@
     section.innerHTML = `
       <div class="update-settings-head">
         <div>
-          <h4>アプリ更新</h4>
+          <h4>FrameDeck <span class="update-current-version" data-current-version>v-</span></h4>
           <p>GitHub Releases の安定版を確認し、この端末に合う更新を適用します。</p>
         </div>
         <button type="button" class="chip-btn" data-update-check>更新を確認</button>
       </div>
       <dl class="update-settings-meta">
-        <div><dt>現在</dt><dd data-current-version>-</dd></div>
         <div><dt>プラットフォーム</dt><dd data-platform>判定中</dd></div>
         <div><dt>最新</dt><dd data-latest-version>-</dd></div>
         <div><dt>更新ファイル</dt><dd data-update-asset>-</dd></div>
@@ -231,7 +234,9 @@
     if (container.querySelector?.("[data-update-panel]")) return;
 
     const panel = buildPanel();
-    container.appendChild(panel);
+    // バージョンと更新状態は、長い設定項目をスクロールしなくても
+    // 設定画面を開いた直後に確認できる位置へ置く。
+    container.prepend(panel);
     try {
       const job = await request("/api/update/status");
       renderJob(panel, job);

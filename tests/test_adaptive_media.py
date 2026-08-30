@@ -186,6 +186,7 @@ def test_default_video_quality_is_network_adaptive(tmp_path):
     assert settings.get("video_max_resolution") == "auto"
     assert settings.get("video_profile_desktop") == "auto"
     assert settings.get("video_cellular_max_resolution") == "1080p"
+    assert settings.get("video_segment_duration") == 2
     # モバイルは回線によらず1080p(iOSで原寸の直接再生が安定しないため)
     assert settings.get("video_profile_mobile") == "1080p"
 
@@ -214,6 +215,27 @@ def test_settings_migrate_old_video_defaults_to_auto(tmp_path):
         "settings_version": 2, "video_profile_desktop": "720p",
     }), "utf-8")
     assert Settings(paths).get("video_profile_desktop") == "720p"
+
+
+def test_settings_migrate_default_hls_segment_duration_to_two_seconds(tmp_path):
+    import json
+
+    from framedeck.config import Settings, ensure_runtime_directories, resolve_app_paths
+
+    paths = resolve_app_paths(tmp_path / "home")
+    ensure_runtime_directories(paths)
+    paths.settings_file.write_text(json.dumps({
+        "settings_version": 3,
+        "video_segment_duration": 4,
+    }), "utf-8")
+    assert Settings(paths).get("video_segment_duration") == 2
+
+    # 旧既定値以外を明示していた場合は、その選択を維持する。
+    paths.settings_file.write_text(json.dumps({
+        "settings_version": 3,
+        "video_segment_duration": 6,
+    }), "utf-8")
+    assert Settings(paths).get("video_segment_duration") == 6
 
 
 def test_lan_client_gets_original_and_cellular_is_capped():
@@ -583,6 +605,20 @@ def test_hls_start_is_serialized_per_source(tmp_path, monkeypatch):
         alive = [job for job in service._jobs.values() if not job.cancelled]
     assert len(alive) <= 1   # 停止要求されていない生成は常に1本以下
     service.shutdown()
+
+
+def test_hls_command_forces_keyframes_at_segment_boundaries(tmp_path):
+    """設定秒どおりに初回セグメントを確定できること。"""
+    from framedeck.video.hls_service import HlsService
+
+    service = HlsService(tmp_path / "cache", segment_duration=2)
+    cmd = service._ffmpeg_cmd(
+        "/tmp/movie.mkv", tmp_path / "out", 1920, 1080,
+        "1800k", "96k", 30,
+    )
+    assert cmd[cmd.index("-hls_time") + 1] == "2"
+    assert cmd[cmd.index("-force_key_frames") + 1] == \
+        "expr:gte(t,n_forced*2)"
 
 
 def test_smooth_motion_adds_blend_framerate_filter():
