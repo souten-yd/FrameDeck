@@ -24,6 +24,63 @@
     return selected === "auto" ? state.meta.recommended_mode : selected;
   }
 
+  function formatLastRead(timestamp) {
+    if (!timestamp) return "";
+    const date = new Date(Number(timestamp) * 1000);
+    if (Number.isNaN(date.getTime())) return "";
+    return new Intl.DateTimeFormat("ja-JP", {
+      year: "numeric", month: "numeric", day: "numeric",
+    }).format(date);
+  }
+
+  function progressLabel(reading) {
+    if (!reading || reading.status === "unread") return "未読";
+    const parts = [reading.completed ? "読了" : "読書中"];
+    if (reading.progress_percent !== null && reading.progress_percent !== undefined) {
+      parts.push(`${reading.progress_percent}%`);
+    }
+    if (reading.page_count) {
+      parts.push(`${reading.page_count}p${reading.page_count_complete ? "" : "+"}`);
+    }
+    const lastRead = formatLastRead(reading.updated_at);
+    if (lastRead) parts.push(lastRead);
+    return parts.join(" · ");
+  }
+
+  function buildProgressMeta(reading) {
+    const meta = document.createElement("span");
+    meta.className = "volume-progress";
+    const status = document.createElement("span");
+    const completed = reading?.status === "completed";
+    status.className = `volume-progress-status ${completed ? "completed" : reading?.status || "unread"}`;
+    status.textContent = completed ? "読了" : reading?.status === "reading" ? "読書中" : "未読";
+    meta.appendChild(status);
+
+    if (reading?.progress_percent !== null && reading?.progress_percent !== undefined) {
+      const percent = document.createElement("span");
+      percent.className = "volume-progress-percent";
+      percent.textContent = `${reading.progress_percent}%`;
+      meta.appendChild(percent);
+    }
+    if (reading?.page_count) {
+      const pages = document.createElement("span");
+      pages.className = "volume-page-count";
+      pages.textContent = `${reading.page_count}p${reading.page_count_complete ? "" : "+"}`;
+      meta.appendChild(pages);
+    }
+    const lastRead = formatLastRead(reading?.updated_at);
+    if (lastRead) {
+      const date = document.createElement("time");
+      date.className = "volume-last-read";
+      date.dateTime = new Date(Number(reading.updated_at) * 1000).toISOString();
+      date.textContent = lastRead;
+      meta.appendChild(date);
+    }
+    meta.title = progressLabel(reading);
+    meta.setAttribute("aria-label", progressLabel(reading));
+    return meta;
+  }
+
   function ensureSelector() {
     let select = document.getElementById("sel-volume-view");
     if (select) return select;
@@ -98,6 +155,7 @@
           ? `${item._volumeEntry.kind} · confidence ${Math.round((item._volumeEntry.confidence || 0) * 100)}%`
           : item.display_name;
       }
+      li.appendChild(buildProgressMeta(item._volumeEntry?.reading));
     }
   }
 

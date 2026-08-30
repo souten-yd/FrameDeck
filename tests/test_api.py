@@ -45,6 +45,43 @@ def test_list_items(client_env):
         assert not (item.get("relative_path") or "").startswith("/")
 
 
+def test_volume_view_includes_saved_reading_progress(client_env, monkeypatch):
+    client, services, root_id, comic_root = client_env
+    items = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic"
+    ).json()["items"]
+    item_data = next(item for item in items if item["display_name"] == "C.cbz")
+    item = services.library.get_item(item_data["id"])
+    assert item is not None
+    entry = services.comic_engine.entries_for_item(item.path)[0]
+    services.storage.save_reading_progress(entry.id, 1, 5)
+    services.library.mark_opened(item)
+    monkeypatch.setattr(
+        services.comic_engine,
+        "entries_for_item",
+        lambda _path: pytest.fail("direct progress must not rescan the archive"),
+    )
+
+    response = client.get(f"/api/library/volume-view?folder_id={root_id}")
+    assert response.status_code == 200
+    volume = next(
+        value for value in response.json()["entries"]
+        if value["item_id"] == item_data["id"]
+    )
+    assert volume["reading"]["status"] == "reading"
+    assert volume["reading"]["progress_percent"] == 40
+    assert volume["reading"]["page_count"] == 5
+    assert volume["reading"]["updated_at"] > 0
+
+    services.storage.save_reading_progress(entry.id, 4, 5, completed=True)
+    completed = client.get(
+        f"/api/library/volume-view?folder_id={root_id}"
+    ).json()["entries"]
+    volume = next(value for value in completed if value["item_id"] == item_data["id"])
+    assert volume["reading"]["status"] == "completed"
+    assert volume["reading"]["progress_percent"] == 100
+
+
 def test_list_items_searches_files_and_folders(client_env):
     client, services, root_id, comic_root = client_env
     (comic_root / "FindFolder").mkdir()

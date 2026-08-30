@@ -259,6 +259,25 @@ class Storage:
         )
         return dict(rows[0]) if rows else None
 
+    def get_reading_progress_many(self, entry_ids: list[str]) -> dict[str, dict]:
+        """Return saved reading state keyed by entry id.
+
+        SQLite commonly limits bound parameters to 999, so large library
+        folders are queried in bounded chunks rather than issuing one query per
+        comic or relying on a platform-specific variable limit.
+        """
+        unique_ids = list(dict.fromkeys(entry_ids))
+        result: dict[str, dict] = {}
+        for offset in range(0, len(unique_ids), 500):
+            chunk = unique_ids[offset:offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self._query(
+                f"SELECT * FROM reading_progress WHERE entry_id IN ({placeholders})",
+                tuple(chunk),
+            )
+            result.update((row["entry_id"], dict(row)) for row in rows)
+        return result
+
     # ---------------- video progress ----------------
 
     def save_video_progress(self, media_id: str, position: float,
