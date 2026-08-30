@@ -30,3 +30,10 @@ def test_settings_shows_installed_version_at_the_top():
     assert 'FrameDeck <span class="update-current-version" data-current-version>v-</span>' in js
     assert 'container.prepend(panel)' in js
     assert '.update-current-version' in css
+
+
+def test_checked_current_release_does_not_reload_settings():
+    js = (ROOT / "framedeck/web/static/js/updater.js").read_text(encoding="utf-8")
+
+    assert 'job.status === "restarting" && job.target_version' in js
+    assert 'if (job.target_version && job.current_version === job.target_version)' not in js

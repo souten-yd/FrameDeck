@@ -116,7 +116,11 @@
       window.setTimeout(() => location.reload(), 600);
       return false;
     }
-    if (job.target_version && job.current_version === job.target_version) {
+    // A normal release check also records target_version. Only treat a matching
+    // version as a completed restart when an update was actually restarting;
+    // otherwise opening Settings would reload the whole page after 600 ms.
+    if (job.status === "restarting" && job.target_version &&
+        job.current_version === job.target_version) {
       setMessage(panel, `v${job.current_version} へ更新されました。`, "ok");
       window.setTimeout(() => location.reload(), 600);
       return false;
