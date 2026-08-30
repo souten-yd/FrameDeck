@@ -18,10 +18,13 @@ _SPECIAL_WORDS = (
 )
 _SORT_LAST = 1_000_000_000
 
-# 第01-03巻 / 第1巻～第3巻 / Vol.01-03 / volume 1-3
+# 第01-03巻 / 第1巻～第3巻 / Vol.01-03 / BLACK_LAGOON_01b-03b
 _VOLUME_RANGE_PATTERNS = (
     re.compile(r"第\s*(\d{1,4})\s*(?:巻\s*)?[\-–—〜～~]\s*(?:第\s*)?(\d{1,4})\s*巻", re.I),
     re.compile(r"\bvol(?:ume)?[.\s_-]*(\d{1,4})\s*[\-–—〜～~]\s*(\d{1,4})\b", re.I),
+    # 「第」「巻」が無い compact range は、誤って作品名中の年などを拾わないよう
+    # stem末尾の区切られた数字範囲だけを対象にする。01b-03b のような品質suffixも許容。
+    re.compile(r"(?:^|[_\s])(?P<start>\d{1,3})[a-z]?\s*[\-–—〜～~]\s*(?P<end>\d{1,3})[a-z]?$", re.I),
 )
 _VOLUME_PATTERN = re.compile(r"第\s*(\d{1,4})\s*巻", re.I)
 _VOL_PATTERN = re.compile(r"\bvol(?:ume)?[.\s_-]*(\d{1,4})\b", re.I)
@@ -99,7 +102,11 @@ def parse_volume_descriptor(name: str, *, path: str | None = None) -> VolumeDesc
     for pattern in _VOLUME_RANGE_PATTERNS:
         match = pattern.search(text)
         if match:
-            start, end = int(match.group(1)), int(match.group(2))
+            groups = match.groupdict()
+            if groups.get("start") is not None:
+                start, end = int(groups["start"]), int(groups["end"])
+            else:
+                start, end = int(match.group(1)), int(match.group(2))
             if end < start:
                 start, end = end, start
             internal = _archive_volume_dirs(path) if path else []
