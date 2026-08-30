@@ -21,3 +21,12 @@ def test_update_ui_uses_explicit_user_actions():
     assert '更新を確認' in js
     # Opening Settings reads only local status; GitHub release lookup is behind the button.
     assert 'checkForUpdates(panel)' in js
+
+
+def test_settings_shows_installed_version_at_the_top():
+    js = (ROOT / "framedeck/web/static/js/updater.js").read_text(encoding="utf-8")
+    css = (ROOT / "framedeck/web/static/css/updater.css").read_text(encoding="utf-8")
+
+    assert 'FrameDeck <span class="update-current-version" data-current-version>v-</span>' in js
+    assert 'container.prepend(panel)' in js
+    assert '.update-current-version' in css

@@ -15,6 +15,12 @@
   font-size: 14px;
   color: var(--text);
 }
+.update-current-version {
+  display: inline-block;
+  margin-left: 0.35em;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
 .update-settings-head p {
   margin: 0;
   color: var(--text-dim);
