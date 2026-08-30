@@ -16,8 +16,8 @@ Date: 2026-08-30
 
 - Volume rows show `未読`, `読書中`, or `読了`.
 - Saved progress shows a percentage, known page count, and last-read date.
-- The last-read date is hidden for the mobile UI profile and at widths up to
-  760 px; status, percentage, and page count remain visible.
+- The last-read date remains visible on the mobile UI profile and at widths up
+  to 760 px, together with status, percentage, and page count.
 - A physical item containing multiple nested comics reports an overall
   percentage only when all nested page counts are known.
 - Unopened comics remain honest: their page count is unknown until FrameDeck
@@ -45,7 +45,7 @@ Date: 2026-08-30
   timestamps matched existing saved progress.
 - Headless Chrome desktop at 1280 x 800: PASS; no horizontal row overflow.
 - Headless Chrome mobile at 390 x 844: PASS; no horizontal drawer overflow and
-  the last-read date computed to `display: none`.
+  the last-read date remains visible.
 
 The pytest run reported 2,718 existing Pillow deprecation warnings from
 `Image.Image.getdata`; no test failed.
