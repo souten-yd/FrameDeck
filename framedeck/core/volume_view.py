@@ -22,8 +22,8 @@ _SORT_LAST = 1_000_000_000
 _VOLUME_RANGE_PATTERNS = (
     re.compile(r"第\s*(\d{1,4})\s*(?:巻\s*)?[\-–—〜～~]\s*(?:第\s*)?(\d{1,4})\s*巻", re.I),
     re.compile(r"\bvol(?:ume)?[.\s_-]*(\d{1,4})\s*[\-–—〜～~]\s*(\d{1,4})\b", re.I),
-    # 「第」「巻」が無い compact range はstem末尾だけに限定する。
-    re.compile(r"(?:^|[_\s])(?P<start>\d{1,3})[a-z]?\s*[\-–—〜～~]\s*(?P<end>\d{1,3})[a-z]?$", re.I),
+    # 「第」が無い compact range はstem末尾だけに限定する。
+    re.compile(r"(?:^|[_\s])(?P<start>\d{1,3})[a-z]?\s*[\-–—〜～~]\s*(?P<end>\d{1,3})[a-z]?\s*(?:巻)?$", re.I),
 )
 _VOLUME_SET_PATTERN = re.compile(
     r"第?\s*(\d{1,4})\s*(?:巻)?\s*[・,+＋＆&]\s*第?\s*(\d{1,4})\s*巻",
