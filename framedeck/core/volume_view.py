@@ -16,6 +16,7 @@ _ARCHIVE_EXTENSIONS = {".zip", ".cbz", ".rar", ".cbr", ".7z"}
 _SPECIAL_WORDS = (
     "異聞", "外伝", "番外編", "特別編", "短編集", "特典", "おまけ", "extra", "special",
 )
+_SORT_LAST = 1_000_000_000
 
 # 第01-03巻 / 第1巻～第3巻 / Vol.01-03 / volume 1-3
 _VOLUME_RANGE_PATTERNS = (
@@ -102,8 +103,6 @@ def parse_volume_descriptor(name: str, *, path: str | None = None) -> VolumeDesc
             if end < start:
                 start, end = end, start
             internal = _archive_volume_dirs(path) if path else []
-            # 内部ディレクトリが範囲と一致する場合も、UI上は一つの物理アーカイブ
-            # として扱い、境界確定情報だけ confidence に反映する。
             confirmed = internal == list(range(start, end + 1))
             label = f"{_number_label(start)}–{_number_label(end)}"
             if special:
@@ -138,12 +137,12 @@ def parse_volume_descriptor(name: str, *, path: str | None = None) -> VolumeDesc
 
     if special:
         return VolumeDescriptor(
-            "special", special, (3, float("inf"), float("inf"), text.casefold()), True,
+            "special", special, (3, _SORT_LAST, _SORT_LAST, text.casefold()), True,
             special=special, confidence=0.75,
         )
 
     return VolumeDescriptor(
-        "unknown", os.path.basename(name), (9, float("inf"), float("inf"), text.casefold()), False,
+        "unknown", os.path.basename(name), (9, _SORT_LAST, _SORT_LAST, text.casefold()), False,
     )
 
 
