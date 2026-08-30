@@ -83,13 +83,14 @@ def test_index_loads_volume_layer_after_main_app():
     assert html.index('/static/js/app.js') < html.index('/static/js/volume_view.js')
 
 
-def test_volume_progress_ui_hides_last_read_date_on_mobile():
+def test_volume_progress_ui_keeps_last_read_date_on_mobile():
     js = Path("framedeck/web/static/js/volume_view.js").read_text("utf-8")
     css = Path("framedeck/web/static/css/app.css").read_text("utf-8")
 
     assert 'className = "volume-progress"' in js
     assert 'className = "volume-last-read"' in js
-    assert 'body.ui-mobile .volume-last-read { display: none; }' in css
+    assert 'body.ui-mobile .volume-last-read { display: none; }' not in css
+    assert '.volume-last-read { display: none; }' not in css
     assert '@media (max-width: 760px)' in css
 
 

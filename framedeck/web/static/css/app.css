@@ -313,10 +313,7 @@ body.ui-mobile .item-check { width: 22px; height: 22px; }
 .volume-progress-status.reading { color: var(--accent); }
 .volume-progress-status.completed { color: var(--ok); border-color: var(--ok); }
 .volume-progress-status.unread { color: var(--text-dim); }
-body.ui-mobile .volume-last-read { display: none; }
-
 @media (max-width: 760px) {
-  .volume-last-read { display: none; }
   .volume-progress { gap: 5px; font-size: 10px; }
   .volume-progress-status { padding: 2px 5px; }
 }
