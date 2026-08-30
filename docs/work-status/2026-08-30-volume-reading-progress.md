@@ -8,7 +8,9 @@ Date: 2026-08-30
 - Remote: `origin/feat/volume-reading-progress`
 - Base: `f390044` (`v2.3.0`)
 - Feature commit: `a09f046 Show reading progress in comic volume lists`
-- Status: pushed for review; not merged
+- Pull request: `#26`
+- Merge commit: `082848c`
+- Status: merged to `main` on 2026-08-30
 
 ## Behavior
 
@@ -37,6 +39,7 @@ Date: 2026-08-30
 - `node --check framedeck/web/static/js/volume_view.js`: PASS
 - Focused storage, volume, and API tests: PASS, 46 tests
 - Full pytest suite: PASS, 210 tests
+- Combined post-merge `main` pytest suite: PASS, 214 tests
 - `git diff --check`: PASS
 - Real library API: PASS; reading, completed, percentages, page counts, and
   timestamps matched existing saved progress.

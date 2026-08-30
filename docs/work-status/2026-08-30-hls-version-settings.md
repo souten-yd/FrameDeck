@@ -7,7 +7,9 @@ Date: 2026-08-30
 - Branch: `fix/hls-startup-version-settings`
 - Remote: `origin/fix/hls-startup-version-settings`
 - Base: `f390044` (`v2.3.0`)
-- Status: pushed for review; not merged
+- Pull request: `#25`
+- Merge commit: `7e972da`
+- Status: merged to `main` on 2026-08-30
 
 ## Changes
 
@@ -30,6 +32,7 @@ Date: 2026-08-30
 - Focused pytest selection: PASS, 54 tests
 - Updater regression selection: PASS, 16 tests
 - Full pytest suite: PASS, 207 tests
+- Combined post-merge `main` pytest suite: PASS, 214 tests
 - `git diff --check`: PASS
 - Headless Chrome at `http://127.0.0.1:9000`: PASS; Settings remained open
   after 1.2 seconds and displayed `v2.3.0`.
