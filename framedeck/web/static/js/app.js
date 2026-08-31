@@ -1555,7 +1555,8 @@ function transcodeStreamUrl(itemId, seconds) {
 
 async function openVideo(item) {
   const token = ++S.video.loadToken;
-  stopVideo({ notifyServer: false });
+  // 旧動画の変換停止を先に通知する。サーバ側のowner置換も最終保証になる。
+  stopVideo();
   showViewer("video");
   $("video-msg").classList.add("hidden");
   $("video-badge").classList.add("hidden");
@@ -1770,7 +1771,11 @@ function requestTranscodeStop(itemId) {
   // 生成中の変換ジョブ(HLS/fMP4)を止めて、CPUとキャッシュを解放する
   const url = `/api/videos/${itemId}/hls/stop?session=${encodeURIComponent(CLIENT_SESSION_ID)}`;
   if (!navigator.sendBeacon?.(url, "")) {
-    api(url, { method: "POST" }).catch(() => {});
+    fetch(url, {
+      method: "POST",
+      keepalive: true,
+      credentials: "same-origin",
+    }).catch(() => {});
   }
 }
 
@@ -1848,13 +1853,9 @@ function clearVideoErrorRetry() {
   S.video.errorRetryCount = 0;
 }
 
-/* notifyServer=false は「直後に次のストリームを開く」場合に使う。
-   停止要求が新しいストリーム開始より後に届いて、開いたばかりの
-   変換を巻き添えで止めてしまうのを避けるため(新規要求側が
-   同一セッションの古い変換を停止する)。 */
-function stopVideo({ notifyServer = true } = {}) {
+function stopVideo() {
   if (S.video.item) saveVideoProgress();
-  if (notifyServer && (S.video.hls || S.video.transcode) && S.video.item) {
+  if ((S.video.hls || S.video.transcode) && S.video.item) {
     requestTranscodeStop(S.video.item.id);
   }
   stopProgressTimer();
@@ -2258,6 +2259,9 @@ video.addEventListener("error", () => {
 });
 video.addEventListener("ended", () => {
   saveVideoProgress();
+  if ((S.video.hls || S.video.transcode) && S.video.item) {
+    requestTranscodeStop(S.video.item.id);
+  }
   playAdjacentVideo(1);
 });
 video.addEventListener("click", (e) => {
@@ -2874,6 +2878,8 @@ async function openSettings() {
   settingRow(grid, "映像ビットレートkbps", makeNumberInput("video_bitrate_kbps", { min: 0, max: 100000, step: 50 }));
   settingRow(grid, "音声ビットレートkbps", makeNumberInput("video_audio_bitrate_kbps", { min: 0, max: 2000, step: 8 }));
   settingRow(grid, "HLSセグメント秒", makeNumberInput("video_segment_duration", { min: 1, max: 30, step: 1 }));
+  settingRow(grid, "同時HLS変換数", makeNumberInput("video_hls_max_concurrent", { min: 1, max: 16, step: 1 }),
+    "サーバ全体で同時に実行するHLS変換の上限。待機中も各タブの最新要求だけを残します。");
   settingRow(grid, "動画キャッシュMB", makeNumberInput("video_variant_cache_mb", { min: 0, max: 10000000, step: 50 }),
     "HLS変換キャッシュの合計上限。超過分は古い順に自動削除(0で無制限)。");
 

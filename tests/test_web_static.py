@@ -158,6 +158,19 @@ def test_hls_seek_restarts_generation_and_stops_on_close():
     assert '/hls/stop' in js
     assert "generatedEnd" in js
     assert 'window.addEventListener("pagehide"' in js
+    assert "keepalive: true" in js
+
+    open_video = js[js.index("async function openVideo"):js.index("function currentPosition")]
+    assert "stopVideo();" in open_video
+    assert "notifyServer: false" not in open_video
+
+    ended = js[js.index('video.addEventListener("ended"'):js.index(
+        'video.addEventListener("click"')]
+    assert "requestTranscodeStop(S.video.item.id)" in ended
+
+    pagehide = js[js.index('window.addEventListener("pagehide"'):js.index(
+        "/* ================= init ================= */")]
+    assert "requestTranscodeStop(S.video.item.id)" in pagehide
 
 
 def test_library_sort_offers_both_directions():

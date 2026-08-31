@@ -206,6 +206,7 @@ class TranscodeService:
                 process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 process.kill()
+                process.wait()
 
     def shutdown(self) -> None:
         with self._lock:

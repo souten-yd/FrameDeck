@@ -187,6 +187,7 @@ def test_default_video_quality_is_network_adaptive(tmp_path):
     assert settings.get("video_profile_desktop") == "auto"
     assert settings.get("video_cellular_max_resolution") == "1080p"
     assert settings.get("video_segment_duration") == 2
+    assert settings.get("video_hls_max_concurrent") == 2
     # モバイルは回線によらず1080p(iOSで原寸の直接再生が安定しないため)
     assert settings.get("video_profile_mobile") == "1080p"
 
@@ -666,6 +667,307 @@ def test_hls_stop_does_not_kill_other_sessions_or_fresh_jobs(tmp_path, monkeypat
     remaining = [j for j in service._jobs.values() if not j.cancelled]
     assert [j.owner for j in remaining] == ["tabB"]
     service.shutdown()
+
+
+def test_hls_new_source_replaces_previous_job_for_same_owner(tmp_path, monkeypatch):
+    """A生成中に同じタブがBを開いたら、sourceに関係なくAを止める。"""
+    import threading
+    import time
+
+    from framedeck.video.hls_service import HlsService, _HlsCancelled
+
+    sources = []
+    for name in ("a.mp4", "b.mp4"):
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        sources.append(path)
+    service = HlsService(tmp_path / "cache", max_concurrent_jobs=2)
+    monkeypatch.setattr(service, "available", lambda: True)
+    started = []
+
+    def generate(source_path, manifest, job, start_seconds):
+        started.append(source_path)
+        while not job.cancelled:
+            time.sleep(0.01)
+        raise _HlsCancelled()
+
+    monkeypatch.setattr(service, "_generate", generate)
+    first = service.ensure_async(str(sources[0]), owner="tab1")
+    assert _wait_until(lambda: str(sources[0]) in started)
+    service.ensure_async(str(sources[1]), owner="tab1")
+    assert _wait_until(lambda: str(sources[1]) in started)
+    assert _wait_until(lambda: not first.cache_dir.exists())
+    with service._lock:
+        active = [job.source_path for job in service._jobs.values()
+                  if not job.cancelled]
+    assert active == [str(sources[1].resolve())]
+    service.shutdown()
+
+
+def test_hls_owner_keeps_only_latest_of_three_requests(tmp_path, monkeypatch):
+    """A→B→Cを連続要求しても同じownerのactive jobはCだけになる。"""
+    import threading
+    import time
+
+    from framedeck.video.hls_service import HlsService, _HlsCancelled
+
+    sources = []
+    for name in ("a.mp4", "b.mp4", "c.mp4"):
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        sources.append(path)
+    service = HlsService(tmp_path / "cache", max_concurrent_jobs=2)
+    monkeypatch.setattr(service, "available", lambda: True)
+
+    def generate(source_path, manifest, job, start_seconds):
+        while not job.cancelled:
+            time.sleep(0.01)
+        raise _HlsCancelled()
+
+    monkeypatch.setattr(service, "_generate", generate)
+    for source in sources:
+        service.ensure_async(str(source), owner="tab1")
+    assert _wait_until(lambda: len([
+        job for job in service._jobs.values() if not job.cancelled
+    ]) == 1)
+    with service._lock:
+        active = [job for job in service._jobs.values() if not job.cancelled]
+    assert active[0].source_path == str(sources[-1].resolve())
+    assert active[0].owner == "tab1"
+    service.shutdown()
+
+
+def test_hls_different_owner_is_not_cancelled(tmp_path, monkeypatch):
+    import time
+
+    from framedeck.video.hls_service import HlsService, _HlsCancelled
+
+    sources = []
+    for name in ("a.mp4", "b.mp4", "c.mp4"):
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        sources.append(path)
+    service = HlsService(tmp_path / "cache", max_concurrent_jobs=2)
+    monkeypatch.setattr(service, "available", lambda: True)
+
+    def generate(source_path, manifest, job, start_seconds):
+        while not job.cancelled:
+            time.sleep(0.01)
+        raise _HlsCancelled()
+
+    monkeypatch.setattr(service, "_generate", generate)
+    service.ensure_async(str(sources[0]), owner="tabA")
+    service.ensure_async(str(sources[1]), owner="tabB")
+    service.ensure_async(str(sources[2]), owner="tabA")
+    assert _wait_until(lambda: len([
+        job for job in service._jobs.values() if not job.cancelled
+    ]) == 2)
+    with service._lock:
+        active = {(job.owner, job.source_path) for job in service._jobs.values()
+                  if not job.cancelled}
+    assert ("tabB", str(sources[1].resolve())) in active
+    assert ("tabA", str(sources[2].resolve())) in active
+    service.shutdown()
+
+
+def test_hls_same_key_request_reuses_running_generation(tmp_path, monkeypatch):
+    import time
+
+    from framedeck.video.hls_service import HlsService, _HlsCancelled
+
+    source = tmp_path / "movie.mp4"
+    source.write_bytes(b"video")
+    service = HlsService(tmp_path / "cache")
+    monkeypatch.setattr(service, "available", lambda: True)
+    calls = []
+
+    def generate(source_path, manifest, job, start_seconds):
+        calls.append(manifest.key)
+        while not job.cancelled:
+            time.sleep(0.01)
+        raise _HlsCancelled()
+
+    monkeypatch.setattr(service, "_generate", generate)
+    first = service.ensure_async(str(source), owner="tab1")
+    assert _wait_until(lambda: len(calls) == 1)
+    second = service.ensure_async(str(source), owner="tab1")
+    assert first.key == second.key
+    assert calls == [first.key]
+    service.shutdown()
+
+
+def test_hls_same_key_is_shared_without_other_owner_cancellation(tmp_path, monkeypatch):
+    import time
+
+    from framedeck.video.hls_service import HlsService, _HlsCancelled
+
+    source = tmp_path / "movie.mp4"
+    source.write_bytes(b"video")
+    service = HlsService(tmp_path / "cache")
+    monkeypatch.setattr(service, "available", lambda: True)
+
+    def generate(source_path, manifest, job, start_seconds):
+        while not job.cancelled:
+            time.sleep(0.01)
+        raise _HlsCancelled()
+
+    monkeypatch.setattr(service, "_generate", generate)
+    manifest = service.ensure_async(str(source), owner="tabA")
+    service.ensure_async(str(source), owner="tabB")
+    assert service.cancel_owner("tabA") == 1
+    with service._lock:
+        job = service._jobs[manifest.key]
+        assert job.cancelled is False
+        assert job.owners == {"tabB"}
+    service.shutdown()
+
+
+def test_hls_same_key_can_restart_after_cancellation_cleanup(tmp_path, monkeypatch):
+    import time
+
+    from framedeck.video.hls_service import HlsService, _HlsCancelled
+
+    source = tmp_path / "movie.mp4"
+    source.write_bytes(b"video")
+    service = HlsService(tmp_path / "cache")
+    monkeypatch.setattr(service, "available", lambda: True)
+    calls = []
+
+    def generate(source_path, manifest, job, start_seconds):
+        calls.append(job)
+        while not job.cancelled:
+            time.sleep(0.005)
+        time.sleep(0.02)  # 旧cache cleanupとの競合窓を再現する
+        raise _HlsCancelled()
+
+    monkeypatch.setattr(service, "_generate", generate)
+    first = service.ensure_async(str(source), owner="tab1")
+    assert _wait_until(lambda: len(calls) == 1)
+    assert service.cancel_owner("tab1") == 1
+    second = service.ensure_async(str(source), owner="tab1")
+    assert first.key == second.key
+    assert _wait_until(lambda: len(calls) == 2)
+    assert calls[0] is not calls[1]
+    service.shutdown()
+
+
+def test_hls_cancel_reaps_process_after_forced_kill():
+    import subprocess
+
+    from framedeck.video.hls_service import _HlsJob
+
+    class HungProcess:
+        def __init__(self):
+            self.waits = []
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            self.waits.append(timeout)
+            if len(self.waits) == 1:
+                raise subprocess.TimeoutExpired("ffmpeg", timeout)
+            return -9
+
+        def kill(self):
+            self.killed = True
+
+    process = HungProcess()
+    job = _HlsJob("key", "/movie.mp4", owners={"tab"}, process=process)
+    job.cancel()
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.waits == [3, None]
+
+
+def test_hls_cancel_preserves_completed_cache(tmp_path, monkeypatch):
+    import time
+
+    from framedeck.video.hls_service import COMPLETE_MARKER, HlsService, _HlsCancelled
+
+    source = tmp_path / "movie.mp4"
+    source.write_bytes(b"video")
+    service = HlsService(tmp_path / "cache")
+    monkeypatch.setattr(service, "available", lambda: True)
+
+    def generate(source_path, manifest, job, start_seconds):
+        (manifest.cache_dir / COMPLETE_MARKER).write_text("{}", "utf-8")
+        while not job.cancelled:
+            time.sleep(0.01)
+        raise _HlsCancelled()
+
+    monkeypatch.setattr(service, "_generate", generate)
+    manifest = service.ensure_async(str(source), owner="tab1")
+    assert _wait_until(lambda: (manifest.cache_dir / COMPLETE_MARKER).exists())
+    assert service.cancel_owner("tab1") == 1
+    assert _wait_until(lambda: not service.is_generating(manifest.key))
+    assert manifest.cache_dir.exists()
+
+
+def test_hls_concurrency_limit_and_waiting_owner_replacement(tmp_path, monkeypatch):
+    """上限1の待機列でも、同じownerの旧要求Bは捨てて最新Cだけを開始する。"""
+    import threading
+    import time
+
+    from framedeck.video.hls_service import HlsService, _HlsCancelled
+
+    sources = []
+    for name in ("a.mp4", "b.mp4", "c.mp4"):
+        path = tmp_path / name
+        path.write_bytes(name.encode())
+        sources.append(path)
+    service = HlsService(tmp_path / "cache", max_concurrent_jobs=1)
+    monkeypatch.setattr(service, "available", lambda: True)
+    release_a = threading.Event()
+    started = []
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def generate(source_path, manifest, job, start_seconds):
+        nonlocal active, peak
+        with lock:
+            started.append(source_path)
+            active += 1
+            peak = max(peak, active)
+        try:
+            if source_path == str(sources[0]):
+                release_a.wait(2)
+            else:
+                while not job.cancelled:
+                    time.sleep(0.01)
+            if job.cancelled:
+                raise _HlsCancelled()
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(service, "_generate", generate)
+    service.ensure_async(str(sources[0]), owner="tabA")
+    assert _wait_until(lambda: str(sources[0]) in started)
+    service.ensure_async(str(sources[1]), owner="tabB")
+    service.ensure_async(str(sources[2]), owner="tabB")
+    release_a.set()
+    assert _wait_until(lambda: str(sources[2]) in started)
+    assert str(sources[1]) not in started
+    assert peak == 1
+    service.shutdown()
+
+
+def _wait_until(predicate, timeout=2.0):
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
 
 
 def test_mobile_uses_1080p_regardless_of_network():

@@ -107,6 +107,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "video_audio_bitrate_kbps": 96,
     "video_fps_limit": 30,
     "video_segment_duration": 2,
+    "video_hls_max_concurrent": 2,
     "video_hardware_encoder": "auto",
     "video_ffmpeg_auto_download": True,
     "video_variant_cache_mb": 300,
@@ -183,6 +184,7 @@ _NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
     "video_audio_bitrate_kbps": (0, 2000),
     "video_fps_limit": (0, 240),
     "video_segment_duration": (1, 30),
+    "video_hls_max_concurrent": (1, 16),
     "video_variant_cache_mb": (0, 10000000),
     "video_variant_expire_days": (0, 3650),
 }

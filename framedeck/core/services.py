@@ -70,6 +70,7 @@ class Services:
             segment_duration=int(settings.get("video_segment_duration", 2)),
             auto_download_ffmpeg=auto_download_ffmpeg,
             max_cache_bytes=int(settings.get("video_variant_cache_mb", 300)) * 1024**2,
+            max_concurrent_jobs=int(settings.get("video_hls_max_concurrent", 2)),
         )
         self.transcode_jobs = TranscodeJobManager()
         self.encoder_capabilities = EncoderCapabilityService()
@@ -91,6 +92,7 @@ class Services:
         self.hls.configure(
             auto_download_ffmpeg=auto_download_ffmpeg,
             max_cache_bytes=int(values.get("video_variant_cache_mb", 300)) * 1024**2,
+            max_concurrent_jobs=int(values.get("video_hls_max_concurrent", 2)),
         )
         self.hls.update_segment_duration(int(values.get("video_segment_duration", 2)))
         # 上限を下げた場合に即反映されるよう、バックグラウンドで掃除する

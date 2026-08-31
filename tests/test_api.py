@@ -492,6 +492,42 @@ def test_hls_cached_playlist_and_segment_delivery(client_env, tmp_path):
     assert response.json() == {"stopped": 0}
 
 
+def test_hls_stop_cancels_owner_hls_and_fmp4(client_env, tmp_path, monkeypatch):
+    """stop APIは同じownerのHLSと既存fMP4停止を両方維持する。"""
+    from framedeck.core.library_service import item_id_for
+
+    client, services, root_id, comic_root = client_env
+    video_root = tmp_path / "stop_videos"
+    video_root.mkdir()
+    video_path = video_root / "sample.mp4"
+    video_path.write_bytes(b"video")
+    services.library.add_root(str(video_root), "video")
+    media_id = item_id_for(str(video_path))
+    stat = video_path.stat()
+    services.storage.upsert_media_item(
+        media_id, str(video_path), "video", None, stat.st_mtime, stat.st_size
+    )
+    calls = []
+    monkeypatch.setattr(
+        services.hls, "cancel_source",
+        lambda source, **kwargs: calls.append(("hls", source, kwargs)) or 1,
+    )
+    monkeypatch.setattr(
+        services.transcode, "cancel_owner",
+        lambda owner: calls.append(("fmp4", owner)) or True,
+    )
+
+    response = client.post(
+        f"/api/videos/{media_id}/hls/stop?session=tab-one"
+    )
+    assert response.status_code == 200
+    assert response.json() == {"stopped": 2}
+    assert calls[0][0:2] == ("hls", str(video_path))
+    assert calls[0][2]["owner"] == "tab-one"
+    assert calls[0][2]["min_age"] == 0.0
+    assert calls[1] == ("fmp4", "tab-one")
+
+
 def test_video_playback_profile_requested_resolution_wins(client_env, tmp_path):
     from framedeck.core.library_service import item_id_for
 
