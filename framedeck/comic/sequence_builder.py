@@ -19,6 +19,7 @@ import threading
 
 from ..config import COMIC_EXTENSIONS, IMAGE_EXTENSIONS, MAX_FOLDER_NEST_DEPTH
 from ..core.library_service import canonical_path, item_id_for
+from ..core.path_filters import is_internal_directory_name
 from ..core.rating_service import natural_key
 from ..models import ComicEntry, comic_entry_id
 from .archive_backend import ArchiveError, ArchiveReader
@@ -157,6 +158,10 @@ class SequenceBuilder:
         entries: list[ComicEntry] = []
         root_depth = folder.rstrip(os.sep).count(os.sep)
         for current, dirs, files in os.walk(folder):
+            dirs[:] = [
+                name for name in dirs
+                if not is_internal_directory_name(name)
+            ]
             depth = current.rstrip(os.sep).count(os.sep) - root_depth
             if depth >= MAX_FOLDER_NEST_DEPTH:
                 dirs[:] = []
@@ -236,7 +241,10 @@ class SequenceBuilder:
             for name in sorted(os.listdir(root_folder), key=natural_key):
                 full = os.path.join(root_folder, name)
                 ext = os.path.splitext(name)[1].lower()
-                if os.path.isdir(full) or ext in COMIC_EXTENSIONS:
+                is_dir = os.path.isdir(full)
+                if is_dir and is_internal_directory_name(name):
+                    continue
+                if is_dir or ext in COMIC_EXTENSIONS:
                     tops.append(full)
         except OSError:
             pass
