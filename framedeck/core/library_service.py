@@ -15,6 +15,7 @@ from pathlib import Path
 from ..config import COMIC_EXTENSIONS, VIDEO_EXTENSIONS, Settings
 from ..models import MediaItem, media_id_for_path
 from . import rating_service as rs
+from .path_filters import is_internal_directory_name
 from .security import PathValidationError, resolve_within_roots
 from .storage import Storage
 
@@ -132,6 +133,8 @@ class LibraryService:
             full = os.path.join(folder, name)
             ext = os.path.splitext(name)[1].lower()
             is_dir = os.path.isdir(full)
+            if is_dir and is_internal_directory_name(name):
+                continue
             if mode == "video" and not (is_dir or ext in VIDEO_EXTENSIONS):
                 continue
             if mode == "comic" and not (is_dir or ext in COMIC_EXTENSIONS):
