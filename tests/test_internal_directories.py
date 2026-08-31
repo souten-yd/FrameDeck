@@ -1,4 +1,5 @@
 """外部ツールの内部管理ディレクトリを表示・読書対象から除外するテスト。"""
+import os
 
 from framedeck.comic.sequence_builder import SequenceBuilder
 from framedeck.core.path_filters import is_internal_directory_name
@@ -48,7 +49,7 @@ def test_sequence_prunes_doc_extractor_directories_recursively(comic_root):
     assert labels == [
         "A.zip::A1.cbz",
         "A.zip::A2.cbz",
-        "B/B1.cbz",
-        "B/B2.cbz",
+        os.path.join("B", "B1.cbz"),
+        os.path.join("B", "B2.cbz"),
         "C.cbz",
     ]
