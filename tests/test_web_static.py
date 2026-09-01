@@ -173,6 +173,15 @@ def test_hls_seek_restarts_generation_and_stops_on_close():
     assert "requestTranscodeStop(S.video.item.id)" in pagehide
 
 
+def test_paused_conversion_stops_after_idle_grace_and_resumes():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "PAUSE_CONVERSION_IDLE_MS = 60000" in js
+    assert "function schedulePauseConversionStop" in js
+    assert "S.video.pausedConversionStopped = true" in js
+    assert "function resumePausedConversion" in js
+    assert "clearPauseConversionStop()" in js
+
+
 def test_library_sort_offers_both_directions():
     html = (ROOT / "framedeck/web/templates/index.html").read_text()
     sort = html[html.index('id="sel-sort"'):html.index('id="library-search"')]
@@ -428,6 +437,16 @@ def test_ios_original_uses_same_size_hls_for_stable_delivery():
     assert "Math.max(width, height) <= 1920" in js
     assert 'reason: "ios-original-hls-stability"' in js
     assert "原寸安定配信 HLS" in js
+
+
+def test_desktop_original_uses_lossless_continuous_remux():
+    """PCの明示的な原寸はRangeではなく無劣化連続配信にする。"""
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function shouldStabilizeDesktopOriginal" in js
+    assert 'reason: "desktop-original-remux-stability"' in js
+    assert "S.video.copyVideo = true" in js
+    assert "S.video.copyAudio = true" in js
+    assert "原寸安定配信 (無劣化・連続配信)" in js
 
 
 def test_quality_steps_down_when_network_starves():

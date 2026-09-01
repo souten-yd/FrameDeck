@@ -637,6 +637,42 @@ def test_smooth_motion_adds_blend_framerate_filter():
     assert ["-c:v", "copy"] == copied[copied.index("-c:v"):copied.index("-c:v") + 2]
 
 
+def test_hls_generation_bursts_then_tracks_playback_rate(tmp_path):
+    from framedeck.video.hls_service import HlsService
+
+    service = HlsService(tmp_path / "cache")
+    cmd = service._ffmpeg_cmd(
+        "/tmp/movie.mp4", tmp_path / "out", 1920, 1080,
+        "5000k", "160k", None,
+    )
+    assert cmd[cmd.index("-readrate") + 1] == "1.0"
+    assert cmd[cmd.index("-readrate_initial_burst") + 1] == "12"
+    assert cmd.index("-readrate") < cmd.index("-i")
+
+
+def test_hls_idle_job_is_cancelled_without_client_access(tmp_path, monkeypatch):
+    import time
+
+    from framedeck.video.hls_service import HlsService, _HlsCancelled
+
+    source = tmp_path / "movie.mp4"
+    source.write_bytes(b"movie")
+    service = HlsService(
+        tmp_path / "cache", idle_timeout_seconds=0.05)
+    monkeypatch.setattr(service, "available", lambda: True)
+
+    def generate(_source, _manifest, job, _start):
+        while not job.cancelled:
+            time.sleep(0.005)
+        raise _HlsCancelled()
+
+    monkeypatch.setattr(service, "_generate", generate)
+    manifest = service.ensure_async(str(source), owner="idle-tab")
+    assert _wait_until(lambda: not service.is_generating(manifest.key))
+    assert not manifest.cache_dir.exists()
+    service.shutdown()
+
+
 def test_hls_stop_does_not_kill_other_sessions_or_fresh_jobs(tmp_path, monkeypatch):
     """停止要求で他タブ・開始直後の生成まで止めない。
 
