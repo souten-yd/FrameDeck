@@ -49,11 +49,6 @@ router = APIRouter(prefix="/api/videos", tags=["video"])
 #: ストリーム送出や生成待ちが他のAPI(一覧・設定・漫画ページ)を待たせる。
 _STREAM_LIMITER = anyio.CapacityLimiter(24)
 
-#: 停止要求が新しい再生の開始より後に届くことがあるため、始めたばかりの
-#: 生成は止めない。これが無いと再生開始直後に自分の生成を殺してしまう。
-HLS_STOP_GRACE_SECONDS = 3.0
-
-
 def _hls_profiles(profile: str | None) -> list[str]:
     if profile and profile in HLS_PROFILES:
         return [profile]
@@ -282,9 +277,11 @@ def hls_stop(media_id: str, session: str = Query(default=""),
     """
     item = _resolve_video(services, media_id)
     owner = session.strip()[:64]
-    # 自分の生成だけを、かつ開始直後のものは残して止める
+    # URLが示す旧sourceを即時停止する。動画切替時にこの要求が遅れて届いても、
+    # 新sourceの生成を巻き添えにしない。owner全体の旧要求回収は、新しい
+    # ensure_async() が _start_lock 内で必ず行う。
     stopped = services.hls.cancel_source(
-        item.path, owner=owner or None, min_age=HLS_STOP_GRACE_SECONDS)
+        item.path, owner=owner or None, min_age=0.0)
     if owner and services.transcode.cancel_owner(owner):
         stopped += 1
     return {"stopped": stopped}

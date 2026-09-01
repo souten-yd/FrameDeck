@@ -4,9 +4,9 @@
 バックグラウンドで行う。生成完了時に `complete` マーカーを書き、マーカーの
 無いディレクトリは再利用しない(クラッシュ残骸は削除して作り直す)。
 
-シークは `start` 秒からの再生成として扱い、同一ソースに対する古い生成
-ジョブは停止して未完成キャッシュを削除する。完成済みキャッシュは
-`max_cache_bytes` を上限に古い順で prune する。
+シークは `start` 秒からの再生成として扱い、同一クライアント(owner)の古い
+生成ジョブはソースに関係なく停止して未完成キャッシュを削除する。完成済み
+キャッシュは `max_cache_bytes` を上限に古い順で prune する。
 """
 from __future__ import annotations
 
@@ -63,12 +63,17 @@ class _HlsCancelled(Exception):
 class _HlsJob:
     key: str
     source_path: str
-    #: 生成を要求したクライアント(タブ)。他人の再生を巻き添えで止めないため
-    owner: str | None = None
+    #: この生成を利用しているクライアント(タブ)。同一keyは共有できる。
+    owners: set[str] = field(default_factory=set)
     started_at: float = field(default_factory=time.monotonic)
     process: subprocess.Popen | None = None
     cancelled: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    @property
+    def owner(self) -> str | None:
+        """単独ownerだった旧実装との互換用。"""
+        return next(iter(self.owners), None)
 
     def cancel(self) -> None:
         with self.lock:
@@ -80,6 +85,7 @@ class _HlsJob:
                 process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 process.kill()
+                process.wait()
 
 
 def _bitrate_kbps(value: str | None) -> int:
@@ -107,24 +113,33 @@ def _dir_size(path: Path) -> int:
 class HlsService:
     def __init__(self, cache_root: Path, segment_duration: int = 2,
                  auto_download_ffmpeg: bool = False,
-                 max_cache_bytes: int = 0):
+                 max_cache_bytes: int = 0,
+                 max_concurrent_jobs: int = 2):
         self.cache_root = Path(cache_root)
         self.segment_duration = int(segment_duration)
         self.auto_download_ffmpeg = bool(auto_download_ffmpeg)
         self.max_cache_bytes = int(max_cache_bytes)
+        self.max_concurrent_jobs = max(1, int(max_concurrent_jobs))
         self._lock = threading.Lock()
+        self._job_condition = threading.Condition(self._lock)
         # 「古いジョブの停止 → 新ジョブ登録」を直列化する。並行に走ると
         # 全要求が互いを取り逃がし、シーク連打の分だけffmpegが同時起動して
         # CPUを食い潰す(再生が止まる原因)
         self._start_lock = threading.Lock()
         self._jobs: dict[str, _HlsJob] = {}
+        self._running_jobs: set[str] = set()
 
     def configure(self, *, auto_download_ffmpeg: bool | None = None,
-                  max_cache_bytes: int | None = None) -> None:
+                  max_cache_bytes: int | None = None,
+                  max_concurrent_jobs: int | None = None) -> None:
         if auto_download_ffmpeg is not None:
             self.auto_download_ffmpeg = bool(auto_download_ffmpeg)
         if max_cache_bytes is not None:
             self.max_cache_bytes = int(max_cache_bytes)
+        if max_concurrent_jobs is not None:
+            with self._job_condition:
+                self.max_concurrent_jobs = max(1, int(max_concurrent_jobs))
+                self._job_condition.notify_all()
 
     def available(self) -> bool:
         return resolve_ffmpeg(self.auto_download_ffmpeg).available
@@ -187,9 +202,14 @@ class HlsService:
         job = self._register_job(manifest, source_path)
         if job is None:
             raise TranscodeError("HLS生成中です。しばらくしてから再試行してください。")
+        acquired = False
         try:
+            self._acquire_slot(job)
+            acquired = True
             self._generate(source_path, manifest, job, start_seconds)
         finally:
+            if acquired:
+                self._release_slot(job)
             self._unregister_job(job)
         return self.manifest_for(
             source_path, [v.name for v in manifest.variants],
@@ -202,17 +222,21 @@ class HlsService:
                      owner: str | None = None) -> HlsManifest:
         """バックグラウンド生成を開始してマスタープレイリストを即返す。
 
-        同一ソースの他ジョブ(別start/プロファイル)は停止し、未完成
-        キャッシュを削除する。
+        ownerがある場合は、そのownerの他ジョブ(別ソースを含む)を停止する。
+        同一keyを別ownerが生成中なら、その生成を共有して他ownerは止めない。
         """
         manifest = self.manifest_for(source_path, profiles, source_height, start_seconds)
-        if manifest.ready:
-            return manifest
-        if not self.available():
-            raise TranscodeError("ffmpeg が見つかりません。HLSを生成できません。")
         with self._start_lock:
-            # 自分(同じタブ)の古い生成だけを止める
-            self.cancel_source(source_path, except_key=manifest.key, owner=owner)
+            # 「旧要求の停止 → 最新要求の登録」をowner単位で原子的に行う。
+            # 完成済みcacheを使う場合も、別keyの旧変換は不要なので停止する。
+            if owner:
+                self.cancel_owner(owner, except_key=manifest.key)
+            else:
+                self.cancel_source(source_path, except_key=manifest.key)
+            if manifest.ready:
+                return manifest
+            if not self.available():
+                raise TranscodeError("ffmpeg が見つかりません。HLSを生成できません。")
             job = self._register_job(manifest, source_path, owner=owner)
         if job is None:
             # 同一keyの生成が進行中
@@ -221,13 +245,20 @@ class HlsService:
         self._write_master(manifest)
 
         def worker() -> None:
+            acquired = False
             try:
+                self._acquire_slot(job)
+                acquired = True
                 self._generate(source_path, manifest, job, start_seconds)
+                if job.cancelled:
+                    raise _HlsCancelled()
             except _HlsCancelled:
-                shutil.rmtree(manifest.cache_dir, ignore_errors=True)
+                self._remove_incomplete_cache(manifest.cache_dir)
             except TranscodeError as e:
                 logger.warning("HLS生成に失敗しました: %s", e)
             finally:
+                if acquired:
+                    self._release_slot(job)
                 self._unregister_job(job)
                 try:
                     self.prune()
@@ -241,11 +272,24 @@ class HlsService:
     def _register_job(self, manifest: HlsManifest, source_path: str,
                       owner: str | None = None) -> _HlsJob | None:
         key = manifest.key
-        with self._lock:
-            if key in self._jobs:
-                return None
+        deadline = time.monotonic() + 4.0
+        with self._job_condition:
+            while True:
+                existing = self._jobs.get(key)
+                if existing is None:
+                    break
+                if not existing.cancelled:
+                    if owner:
+                        existing.owners.add(owner)
+                    return None
+                # stop直後に同じkeyを再要求した場合、旧workerのcache削除完了を
+                # 待ってから登録する。先に置換すると旧workerが新cacheを消す。
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TranscodeError("以前のHLS生成を停止中です。再試行してください。")
+                self._job_condition.wait(timeout=remaining)
             job = _HlsJob(key=key, source_path=os.path.abspath(source_path),
-                          owner=owner)
+                          owners={owner} if owner else set())
             self._jobs[key] = job
         # 未完成の残骸(クラッシュ等)は作り直す
         if manifest.cache_dir.exists() and not self._is_complete(manifest.cache_dir):
@@ -253,8 +297,51 @@ class HlsService:
         return job
 
     def _unregister_job(self, job: _HlsJob) -> None:
-        with self._lock:
-            self._jobs.pop(job.key, None)
+        with self._job_condition:
+            if self._jobs.get(job.key) is job:
+                self._jobs.pop(job.key, None)
+            self._job_condition.notify_all()
+
+    def _acquire_slot(self, job: _HlsJob) -> None:
+        """全体上限に空きが出るまで待つ。cancel済みの待機要求は起動しない。"""
+        with self._job_condition:
+            while (len(self._running_jobs) >= self.max_concurrent_jobs
+                   and not job.cancelled):
+                self._job_condition.wait()
+            if job.cancelled:
+                raise _HlsCancelled()
+            self._running_jobs.add(job.key)
+
+    def _release_slot(self, job: _HlsJob) -> None:
+        with self._job_condition:
+            self._running_jobs.discard(job.key)
+            self._job_condition.notify_all()
+
+    def _remove_incomplete_cache(self, cache_dir: Path) -> None:
+        if not self._is_complete(cache_dir):
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
+    def cancel_owner(self, owner: str, except_key: str | None = None,
+                     min_age: float = 0.0) -> int:
+        """ownerの未完了要求を停止する。共有jobはownerだけを切り離す。"""
+        now = time.monotonic()
+        to_cancel: list[_HlsJob] = []
+        matched = 0
+        with self._job_condition:
+            for job in self._jobs.values():
+                if (owner not in job.owners or job.key == except_key
+                        or (now - job.started_at) < min_age):
+                    continue
+                matched += 1
+                job.owners.discard(owner)
+                if not job.owners:
+                    to_cancel.append(job)
+            self._job_condition.notify_all()
+        for job in to_cancel:
+            job.cancel()
+        with self._job_condition:
+            self._job_condition.notify_all()
+        return matched
 
     def cancel_source(self, source_path: str, except_key: str | None = None,
                       owner: str | None = None, min_age: float = 0.0) -> int:
@@ -262,27 +349,40 @@ class HlsService:
 
         `owner` を渡すとそのクライアントの生成だけを止める。指定しないと
         同じファイルを見ている別の端末・タブの再生まで巻き添えで止まる。
-        `min_age` は「開始直後のジョブは止めない」猶予。停止要求(beacon)が
-        新しい再生の開始より後に届いても、始めたばかりの生成を殺さないため。
+        `min_age` を指定すると、開始直後のジョブを停止対象から除外できる。
 
         停止されたジョブの未完成キャッシュはworker側で削除される。
         """
         abspath = os.path.abspath(source_path)
         now = time.monotonic()
-        with self._lock:
-            jobs = [job for job in self._jobs.values()
-                    if job.source_path == abspath and job.key != except_key
-                    and (owner is None or job.owner == owner)
-                    and (now - job.started_at) >= min_age]
-        for job in jobs:
+        to_cancel: list[_HlsJob] = []
+        matched = 0
+        with self._job_condition:
+            for job in self._jobs.values():
+                if (job.source_path != abspath or job.key == except_key
+                        or (now - job.started_at) < min_age
+                        or (owner is not None and owner not in job.owners)):
+                    continue
+                matched += 1
+                if owner is not None:
+                    job.owners.discard(owner)
+                    if job.owners:
+                        continue
+                to_cancel.append(job)
+            self._job_condition.notify_all()
+        for job in to_cancel:
             job.cancel()
-        return len(jobs)
+        with self._job_condition:
+            self._job_condition.notify_all()
+        return matched
 
     def shutdown(self) -> None:
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
             job.cancel()
+        with self._job_condition:
+            self._job_condition.notify_all()
 
     def wait_for_file(self, key: str, relative_path: str,
                       timeout: float = 10.0) -> Path:
@@ -417,6 +517,8 @@ class HlsService:
                 if process.returncode != 0:
                     detail = stderr.decode("utf-8", "replace").strip()[:1200]
                     raise TranscodeError(f"HLS生成に失敗しました: {detail}")
+            if job.cancelled:
+                raise _HlsCancelled()
             (manifest.cache_dir / COMPLETE_MARKER).write_text(
                 json.dumps({"source": os.path.abspath(source_path),
                             "start": round(float(start_seconds), 2)}),

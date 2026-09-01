@@ -36,6 +36,34 @@ def test_library_hides_all_doc_extractor_directories(app_env, comic_root):
     assert not any(name.startswith(".docExtractor-") for name in names)
 
 
+def test_video_library_hides_doc_extractor_directories_recursively(app_env, tmp_path):
+    """動画モードでも各階層の内部フォルダを隠し、通常名は維持する。"""
+    services, _paths, _tmp_path = app_env
+    video_root = tmp_path / "video-library"
+    visible_folder = video_root / "Series"
+    hidden_top = video_root / ".docExtractor-state"
+    hidden_nested = visible_folder / ".docExtractor-duplicates"
+    similar_name = video_root / ".docExtractorish-state"
+    for directory in (visible_folder, hidden_top, hidden_nested, similar_name):
+        directory.mkdir(parents=True, exist_ok=True)
+    (video_root / "Visible.mp4").write_bytes(b"video")
+    (hidden_top / "HiddenTop.mp4").write_bytes(b"video")
+    (hidden_nested / "HiddenNested.mp4").write_bytes(b"video")
+
+    services.library.add_root(str(video_root), "video")
+    root_names = {
+        item.display_name
+        for item in services.library.list_folder(str(video_root), mode="video")
+    }
+    nested_names = {
+        item.display_name
+        for item in services.library.list_folder(str(visible_folder), mode="video")
+    }
+
+    assert root_names == {".docExtractorish-state", "Series", "Visible.mp4"}
+    assert ".docExtractor-duplicates" not in nested_names
+
+
 def test_sequence_prunes_doc_extractor_directories_recursively(comic_root):
     make_zip(comic_root / ".docExtractor-state" / "HiddenTop.cbz", pages=1)
     make_zip(

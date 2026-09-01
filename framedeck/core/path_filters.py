@@ -5,5 +5,5 @@ DOCEXTRACTOR_INTERNAL_PREFIX = ".docExtractor-"
 
 
 def is_internal_directory_name(name: str) -> bool:
-    """UIや読書シーケンスに出さない内部管理ディレクトリかを判定する。"""
+    """漫画・動画UIや読書シーケンスに出さない内部ディレクトリか判定する。"""
     return name.startswith(DOCEXTRACTOR_INTERNAL_PREFIX)
