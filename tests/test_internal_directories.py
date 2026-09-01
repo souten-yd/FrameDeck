@@ -8,6 +8,8 @@ from tests.conftest import make_zip
 
 def test_doc_extractor_prefix_is_generic():
     assert is_internal_directory_name(".docExtractor-name-1234567")
+    assert is_internal_directory_name(".docextractor-name-3855633329")
+    assert is_internal_directory_name(".DOCEXTRACTOR-state")
     assert is_internal_directory_name(".docExtractor-duplicates")
     assert is_internal_directory_name(".docExtractor-state")
     assert is_internal_directory_name(".docExtractor-future-cache")
@@ -41,8 +43,8 @@ def test_video_library_hides_doc_extractor_directories_recursively(app_env, tmp_
     services, _paths, _tmp_path = app_env
     video_root = tmp_path / "video-library"
     visible_folder = video_root / "Series"
-    hidden_top = video_root / ".docExtractor-state"
-    hidden_nested = visible_folder / ".docExtractor-duplicates"
+    hidden_top = video_root / ".docextractor-name-3855633329"
+    hidden_nested = visible_folder / ".docextractor-name-233096521"
     similar_name = video_root / ".docExtractorish-state"
     for directory in (visible_folder, hidden_top, hidden_nested, similar_name):
         directory.mkdir(parents=True, exist_ok=True)
@@ -61,7 +63,7 @@ def test_video_library_hides_doc_extractor_directories_recursively(app_env, tmp_
     }
 
     assert root_names == {".docExtractorish-state", "Series", "Visible.mp4"}
-    assert ".docExtractor-duplicates" not in nested_names
+    assert ".docextractor-name-233096521" not in nested_names
 
 
 def test_sequence_prunes_doc_extractor_directories_recursively(comic_root):
