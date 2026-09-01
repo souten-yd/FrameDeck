@@ -420,6 +420,16 @@ def test_mobile_conversion_uses_hls_not_progressive_fmp4():
     assert "S.video.hlsFallback = true;" in js
 
 
+def test_ios_original_uses_same_size_hls_for_stable_delivery():
+    """iOSの1080p以下原寸はRange直接配信を避ける。"""
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert "function shouldStabilizeMobileOriginal" in js
+    assert 'configuredVideoQuality() !== "original"' in js
+    assert "Math.max(width, height) <= 1920" in js
+    assert 'reason: "ios-original-hls-stability"' in js
+    assert "原寸安定配信 HLS" in js
+
+
 def test_quality_steps_down_when_network_starves():
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
     assert "function noteStarvation" in js

@@ -38,6 +38,7 @@ const S = {
     reloadTimer: null,
     maxHeight: null, maxWidth: null,
     copyVideo: false, copyAudio: false, transcodeFallback: false,
+    mobileStableOriginal: false,
     syncRate: 1, syncInfo: null,
     starveTimes: [], adapting: false, qualityIsManual: false, hlsFallback: false,
     watchdogTimer: null, watchdogPosition: 0, watchdogStrikes: 0,
@@ -108,6 +109,18 @@ function hlsProfileForSource(height) {
     if ((height || 1080) >= h) return name;
   }
   return "360p";
+}
+
+/* iOS Safariは再生可能なMP4でも、Wi-Fi越しの長時間Range配信で
+   短い再取得を繰り返し、瞬間ビットレートの高い素材だけバッファが
+   尽きることがある。1080p以下の「原寸」は寸法を変えず、Safariが
+   先行取得しやすい2秒HLSにして配信を平準化する。 */
+function shouldStabilizeMobileOriginal(info) {
+  if (!shouldUseNativeHls() || configuredVideoQuality() !== "original") return false;
+  const width = Number(info?.width) || 0;
+  const height = Number(info?.height) || 0;
+  if (!width || !height) return false;
+  return Math.max(width, height) <= 1920 && Math.min(width, height) <= 1088;
 }
 
 /* この端末が実際に再生できるコーデック/コンテナを調べてサーバへ申告する。
@@ -1602,6 +1615,7 @@ async function openVideo(item) {
   S.video.copyAudio = false;
   S.video.transcodeFallback = false;
   S.video.hlsFallback = false;
+  S.video.mobileStableOriginal = false;
   S.video.starveTimes = [];
   try {
     const hints = clientMediaHints();
@@ -1619,6 +1633,20 @@ async function openVideo(item) {
     playbackProfile = null;
   }
   if (token !== S.video.loadToken) return;
+  // iOSの原寸Direct Playはファイルの瞬間ビットレートによって
+  // Range取得が間に合わない。1080p以下なら同じ寸法のHLSへ寄せる。
+  if (!playbackProfile?.transcode && canDirectPlay &&
+      shouldStabilizeMobileOriginal(detail.info)) {
+    const stableProfile = hlsProfileForSource(detail.info.height);
+    playbackProfile = {
+      name: stableProfile,
+      transcode: true,
+      height: detail.info.height || null,
+      width: detail.info.width || null,
+      reason: "ios-original-hls-stability",
+    };
+    S.video.mobileStableOriginal = true;
+  }
   // 変換時の上限。原寸(null)ならスケーリングなしで配信する
   S.video.maxHeight = playbackProfile?.height || null;
   S.video.maxWidth = playbackProfile?.width || null;
@@ -1666,7 +1694,9 @@ async function openVideo(item) {
       S.video.offset = resume;
       video.src = hlsMasterUrl(item.id, profile, resume);
       if (resume > 0) toast(`続きから再生: ${fmtTime(resume)}`);
-      $("video-badge").textContent = `HLS軽量配信 ${profile}`;
+      $("video-badge").textContent = S.video.mobileStableOriginal
+        ? `原寸安定配信 HLS ${profile}`
+        : `HLS軽量配信 ${profile}`;
     } else {
       S.video.transcode = true;
       S.video.hls = false;
