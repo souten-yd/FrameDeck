@@ -51,7 +51,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "previous_entry_start": "first",         # first | last | saved
     "include_parent_direct_images": True,
     # 漫画パフォーマンス
-    "prefetch_ahead": 6,
+    "prefetch_ahead": 8,
     "prefetch_behind": 2,
     "memory_cache_mb": 512,
     "nested_cache_max_gb": 10,

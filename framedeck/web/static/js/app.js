@@ -671,6 +671,7 @@ async function activateItem(item) {
 
 function clearCurrentViewer() {
   clearComicBoundaryState();
+  resetComicPreloader();
   S.comic.state = null;
   stopVideo();
   $("comic-viewer").classList.add("hidden");
@@ -1252,30 +1253,152 @@ function renderComicPages() {
 
 function preloadComicPages() {
   const state = S.comic.state;
-  const preload = (index, side = "full") => {
-    const img = new Image();
-    img.fetchPriority = "low";
-    img.decoding = "async";
-    img.src = comicPageUrl(index, side);
+  if (!state) return;
+  const configuredAhead = Number(S.settings.prefetch_ahead);
+  const configuredBehind = Number(S.settings.prefetch_behind);
+  const ahead = Math.min(12, Math.max(
+    1, Number.isFinite(configuredAhead) ? configuredAhead : 8
+  ));
+  const behind = Math.min(4, Math.max(
+    0, Number.isFinite(configuredBehind) ? configuredBehind : 2
+  ));
+  const specs = [];
+  const add = (index, side = "full") => {
+    if (index >= 0 && index < state.page_count) specs.push({ index, side });
   };
   const splitActive = (state.visible_page_sides || []).some((s) => s !== "full");
   const last = state.visible_pages[state.visible_pages.length - 1];
   if (splitActive) {
     // 分割表示中: 現ページと次ページの両面を先読みする
     for (const side of ["right", "left"]) {
-      preload(last, side);
-      if (last + 1 < state.page_count) preload(last + 1, side);
+      add(last, side);
+      add(last + 1, side);
     }
   }
-  for (let i = 1; i <= 4; i++) {
-    const idx = last + i;
-    if (idx < state.page_count) preload(idx);
+  for (let i = 1; i <= ahead; i++) {
+    add(last + i);
   }
   const first = state.visible_pages[0];
-  for (let i = 1; i <= 2; i++) {
-    const idx = first - i;
-    if (idx >= 0) preload(idx);
+  for (let i = 1; i <= behind; i++) {
+    add(first - i);
   }
+  queueComicPreloads(state.session_id, specs);
+}
+
+/* iOSでは複数ページのWebP生成を同時に走らせると、先読み自体が表示中の
+ * デコードと競合する。近いページから1枚ずつ生成し、完了画像を参照保持して
+ * Safariのメモリキャッシュとデコード結果をページ送りまで維持する。 */
+const comicPreloader = {
+  sessionId: null,
+  epoch: 0,
+  queue: [],
+  keep: new Set(),
+  retained: new Map(),
+  active: null,
+  paused: true,
+};
+
+function stopComicPreloadActive() {
+  const active = comicPreloader.active;
+  if (!active) return;
+  active.image.onload = null;
+  active.image.onerror = null;
+  active.image.removeAttribute("src");
+  comicPreloader.active = null;
+}
+
+function resetComicPreloader() {
+  comicPreloader.epoch += 1;
+  comicPreloader.queue = [];
+  comicPreloader.keep.clear();
+  comicPreloader.paused = true;
+  stopComicPreloadActive();
+  for (const image of comicPreloader.retained.values()) image.removeAttribute("src");
+  comicPreloader.retained.clear();
+  comicPreloader.sessionId = null;
+}
+
+function pumpComicPreloads() {
+  if (comicPreloader.paused || comicPreloader.active) return;
+  const url = comicPreloader.queue.shift();
+  if (!url) return;
+  if (comicPreloader.retained.has(url)) {
+    pumpComicPreloads();
+    return;
+  }
+  const image = new Image();
+  comicPreloader.active = { image, url };
+  image.fetchPriority = "low";
+  image.decoding = "async";
+  const finish = () => {
+    if (comicPreloader.active?.image !== image) return;
+    comicPreloader.active = null;
+    if (comicPreloader.keep.has(url) && image.naturalWidth > 0) {
+      comicPreloader.retained.set(url, image);
+    }
+    pumpComicPreloads();
+  };
+  image.onerror = finish;
+  image.onload = () => {
+    const decoded = typeof image.decode === "function" ? image.decode() : null;
+    if (decoded?.then) decoded.catch(() => {}).finally(finish);
+    else finish();
+  };
+  image.src = url;
+}
+
+function queueComicPreloads(sessionId, specs) {
+  if (comicPreloader.sessionId !== sessionId) {
+    resetComicPreloader();
+    comicPreloader.sessionId = sessionId;
+  }
+  const epoch = ++comicPreloader.epoch;
+  comicPreloader.paused = true;
+
+  const visibleUrls = new Set(
+    comicVisiblePageSpecs(S.comic.state).map((page) => comicPageUrl(page.index, page.side))
+  );
+  const urls = [...new Set(specs.map((page) => comicPageUrl(page.index, page.side)))]
+    .filter((url) => !visibleUrls.has(url));
+  comicPreloader.keep = new Set(urls);
+
+  for (const [url, image] of comicPreloader.retained) {
+    if (comicPreloader.keep.has(url)) continue;
+    image.removeAttribute("src");
+    comicPreloader.retained.delete(url);
+  }
+  if (comicPreloader.active && !visibleUrls.has(comicPreloader.active.url)) {
+    stopComicPreloadActive();
+  }
+  const activeUrl = comicPreloader.active?.url;
+  comicPreloader.queue = urls.filter(
+    (url) => url !== activeUrl && !comicPreloader.retained.has(url)
+  );
+
+  const start = () => {
+    if (epoch !== comicPreloader.epoch || !S.comic.state) return;
+    comicPreloader.paused = false;
+    pumpComicPreloads();
+  };
+  const visibleImages = [...$("comic-pages").querySelectorAll("img")];
+  const pending = visibleImages.filter(
+    (image) => !image.complete || !image.naturalWidth
+  );
+  if (!pending.length) {
+    start();
+    return;
+  }
+  let remaining = pending.length;
+  const ready = () => {
+    remaining -= 1;
+    if (remaining === 0) start();
+  };
+  for (const image of pending) {
+    image.addEventListener("load", ready, { once: true });
+    image.addEventListener("error", ready, { once: true });
+  }
+  // 壊れた画像等でイベントが失われてもキューが永久停止しない安全弁。
+  window.setTimeout(start, 2000);
 }
 
 function updateComicControls() {
