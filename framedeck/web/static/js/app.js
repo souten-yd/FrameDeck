@@ -1209,6 +1209,7 @@ function renderComicPages() {
     img.alt = `page ${page.index + 1}`;
     img.draggable = false;
     img.decoding = "async";
+    img.fetchPriority = "high";
     img.onload = layoutComicSpread;
     img.onerror = () => {
       $("comic-msg").textContent = "画像を読み込めませんでした";
@@ -1223,23 +1224,29 @@ function renderComicPages() {
 
 function preloadComicPages() {
   const state = S.comic.state;
+  const preload = (index, side = "full") => {
+    const img = new Image();
+    img.fetchPriority = "low";
+    img.decoding = "async";
+    img.src = comicPageUrl(index, side);
+  };
   const splitActive = (state.visible_page_sides || []).some((s) => s !== "full");
   const last = state.visible_pages[state.visible_pages.length - 1];
   if (splitActive) {
     // 分割表示中: 現ページと次ページの両面を先読みする
     for (const side of ["right", "left"]) {
-      new Image().src = comicPageUrl(last, side);
-      if (last + 1 < state.page_count) new Image().src = comicPageUrl(last + 1, side);
+      preload(last, side);
+      if (last + 1 < state.page_count) preload(last + 1, side);
     }
   }
   for (let i = 1; i <= 4; i++) {
     const idx = last + i;
-    if (idx < state.page_count) new Image().src = comicPageUrl(idx);
+    if (idx < state.page_count) preload(idx);
   }
   const first = state.visible_pages[0];
   for (let i = 1; i <= 2; i++) {
     const idx = first - i;
-    if (idx >= 0) new Image().src = comicPageUrl(idx);
+    if (idx >= 0) preload(idx);
   }
 }
 

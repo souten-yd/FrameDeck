@@ -431,3 +431,9 @@ def test_quality_steps_down_when_network_starves():
 def test_hls_requests_carry_the_client_session():
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
     assert "session=${encodeURIComponent(CLIENT_SESSION_ID)}" in js
+
+
+def test_comic_visible_pages_have_priority_over_prefetch():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert 'img.fetchPriority = "high"' in js
+    assert 'img.fetchPriority = "low"' in js
