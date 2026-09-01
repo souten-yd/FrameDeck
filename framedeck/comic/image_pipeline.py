@@ -107,6 +107,8 @@ class ImagePipeline:
         self._size_lock = threading.Lock()
         self._analysis_inflight: set[str] = set()
         self._analysis_inflight_lock = threading.Lock()
+        self._prefetch_inflight: set[str] = set()
+        self._prefetch_inflight_lock = threading.Lock()
         self.variant_sharpen = True
         # ディスクキャッシュ(変換画像/ページ/サムネイル)の合計上限。
         # 超過時は古いものから削除する(解析JSONは小さいため対象外)。
@@ -196,11 +198,25 @@ class ImagePipeline:
             if 0 <= idx < len(pages):
                 targets.append(pages[idx])
         for page in targets:
-            if self._raw_cache.get(self._raw_key(entry, page)) is not None:
+            key = self._raw_key(entry, page)
+            if self._raw_cache.get(key) is not None:
                 continue
-            self.executor.submit(self._prefetch_one, source, entry, page)
+            # ページ移動が速いと同じ近傍ページが何度も候補になる。
+            # 未完了の先読みは1件にまとめ、重複した解析処理で表示用の
+            # executor とCPUを占有しないようにする。
+            with self._prefetch_inflight_lock:
+                if key in self._prefetch_inflight:
+                    continue
+                self._prefetch_inflight.add(key)
+            try:
+                self.executor.submit(
+                    self._prefetch_one, source, entry, page, key)
+            except RuntimeError:
+                with self._prefetch_inflight_lock:
+                    self._prefetch_inflight.discard(key)
 
-    def _prefetch_one(self, source, entry: ComicEntry, page: PageRef) -> None:
+    def _prefetch_one(self, source, entry: ComicEntry, page: PageRef,
+                      key: str) -> None:
         try:
             self.get_raw(source, entry, page)
             self.get_page_size(source, entry, page)
@@ -209,6 +225,9 @@ class ImagePipeline:
             self.analyze_page(source, entry, page)
         except Exception:
             pass
+        finally:
+            with self._prefetch_inflight_lock:
+                self._prefetch_inflight.discard(key)
 
     # ---------------- ディスクキャッシュの掃除 ----------------
 
