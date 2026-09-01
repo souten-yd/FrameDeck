@@ -38,11 +38,12 @@ const S = {
     reloadTimer: null,
     maxHeight: null, maxWidth: null,
     copyVideo: false, copyAudio: false, transcodeFallback: false,
-    mobileStableOriginal: false,
+    mobileStableOriginal: false, desktopStableOriginal: false,
     syncRate: 1, syncInfo: null,
     starveTimes: [], adapting: false, qualityIsManual: false, hlsFallback: false,
     watchdogTimer: null, watchdogPosition: 0, watchdogStrikes: 0,
     recovering: false,
+    pauseStopTimer: null, pausedConversionStopped: false,
   },
 };
 
@@ -121,6 +122,13 @@ function shouldStabilizeMobileOriginal(info) {
   const height = Number(info?.height) || 0;
   if (!width || !height) return false;
   return Math.max(width, height) <= 1920 && Math.min(width, height) <= 1088;
+}
+
+/* PCで明示的に「原寸」を選ぶ場合は、ビットストリームを無変換で
+   fMP4へ再多重化する。自動のDirect Playは維持しつつ、安定性を
+   明示した原寸再生ではブラウザの細かいRange再取得を避ける。 */
+function shouldStabilizeDesktopOriginal() {
+  return S.uiProfile !== "mobile" && configuredVideoQuality() === "original";
 }
 
 /* この端末が実際に再生できるコーデック/コンテナを調べてサーバへ申告する。
@@ -1616,6 +1624,7 @@ async function openVideo(item) {
   S.video.transcodeFallback = false;
   S.video.hlsFallback = false;
   S.video.mobileStableOriginal = false;
+  S.video.desktopStableOriginal = false;
   S.video.starveTimes = [];
   try {
     const hints = clientMediaHints();
@@ -1646,6 +1655,21 @@ async function openVideo(item) {
       reason: "ios-original-hls-stability",
     };
     S.video.mobileStableOriginal = true;
+  }
+  if (playbackProfile && !playbackProfile.transcode && canDirectPlay &&
+      shouldStabilizeDesktopOriginal()) {
+    playbackProfile = {
+      name: "original",
+      transcode: true,
+      height: null,
+      width: null,
+      reason: "desktop-original-remux-stability",
+    };
+    // direct_play=trueなら端末は映像・音声の両方を再生可能。
+    // エンコードせずコンテナだけ連続配信向けに作り直す。
+    S.video.copyVideo = true;
+    S.video.copyAudio = true;
+    S.video.desktopStableOriginal = true;
   }
   // 変換時の上限。原寸(null)ならスケーリングなしで配信する
   S.video.maxHeight = playbackProfile?.height || null;
@@ -1709,6 +1733,8 @@ async function openVideo(item) {
       } else if (S.video.smoothFps) {
         $("video-badge").textContent =
           `なめらか変換 ${S.video.smoothFps.toFixed(1)}fps (${detail.info.frame_rate.toFixed(2)}fps素材)`;
+      } else if (S.video.desktopStableOriginal) {
+        $("video-badge").textContent = "原寸安定配信 (無劣化・連続配信)";
       } else if (S.video.copyVideo) {
         // 映像は無変換。コンテナ(必要なら音声も)だけ入れ替えるので軽い
         $("video-badge").textContent =
@@ -1804,6 +1830,41 @@ function stopProgressTimer() {
   if (S.video.saveTimer) { clearInterval(S.video.saveTimer); S.video.saveTimer = null; }
 }
 
+const PAUSE_CONVERSION_IDLE_MS = 60000;
+
+function clearPauseConversionStop() {
+  if (S.video.pauseStopTimer) clearTimeout(S.video.pauseStopTimer);
+  S.video.pauseStopTimer = null;
+}
+
+function schedulePauseConversionStop() {
+  clearPauseConversionStop();
+  if ((!S.video.hls && !S.video.transcode) || !S.video.item) return;
+  const itemId = S.video.item.id;
+  S.video.pauseStopTimer = setTimeout(() => {
+    S.video.pauseStopTimer = null;
+    if (!S.video.item || S.video.item.id !== itemId || !video.paused) return;
+    saveVideoProgress();
+    requestTranscodeStop(itemId);
+    S.video.pausedConversionStopped = true;
+  }, PAUSE_CONVERSION_IDLE_MS);
+}
+
+function resumePausedConversion() {
+  if (!S.video.pausedConversionStopped || !S.video.item) return false;
+  const position = currentPosition();
+  S.video.pausedConversionStopped = false;
+  S.video.offset = position;
+  clearVideoErrorRetry();
+  video.src = S.video.hls
+    ? hlsMasterUrl(S.video.item.id, S.video.hlsProfile || "720p", position)
+    : transcodeStreamUrl(S.video.item.id, position);
+  applyPlaybackRate();
+  video.play().catch(() => {});
+  startPlaybackWatchdog();
+  return true;
+}
+
 function requestTranscodeStop(itemId) {
   // 生成中の変換ジョブ(HLS/fMP4)を止めて、CPUとキャッシュを解放する
   const url = `/api/videos/${itemId}/hls/stop?session=${encodeURIComponent(CLIENT_SESSION_ID)}`;
@@ -1897,6 +1958,7 @@ function stopVideo() {
   }
   stopProgressTimer();
   stopPlaybackWatchdog();
+  clearPauseConversionStop();
   clearVideoErrorRetry();
   if (S.video.reloadTimer) { clearTimeout(S.video.reloadTimer); S.video.reloadTimer = null; }
   S.video.pendingSeekSeconds = null;
@@ -1904,10 +1966,12 @@ function stopVideo() {
   video.pause();
   video.removeAttribute("src");
   video.load();
+  clearPauseConversionStop();
   S.video.item = null;
   S.video.transcode = false;
   S.video.hls = false;
   S.video.hlsProfile = null;
+  S.video.pausedConversionStopped = false;
   if (S.video.orientationLocked) {
     S.video.orientationLocked = false;
     clearVideoOrientationLock();
@@ -2189,8 +2253,16 @@ video.addEventListener("seeked", () => {
   S.video.pendingSeekSeconds = null;
   updateVideoUi();
 });
-video.addEventListener("play", updateVideoUi);
-video.addEventListener("pause", () => { updateVideoUi(); saveVideoProgress(); });
+video.addEventListener("play", () => {
+  clearPauseConversionStop();
+  updateVideoUi();
+  resumePausedConversion();
+});
+video.addEventListener("pause", () => {
+  updateVideoUi();
+  saveVideoProgress();
+  schedulePauseConversionStop();
+});
 video.addEventListener("waiting", () => {
   $("video-spinner").classList.remove("hidden");
   if (S.video.item && !video.seeking) {

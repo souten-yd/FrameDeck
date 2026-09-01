@@ -29,6 +29,9 @@ from .transcode import TranscodeError
 HLS_VERSION = "hls-v3"
 HLS_PROFILES = ("360p", "480p", "720p", "1080p")
 COMPLETE_MARKER = "complete"
+HLS_READ_RATE = 1.0
+HLS_INITIAL_BURST_SECONDS = 12
+HLS_IDLE_TIMEOUT_SECONDS = 90.0
 _KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 
 logger = logging.getLogger("framedeck")
@@ -68,6 +71,7 @@ class _HlsJob:
     started_at: float = field(default_factory=time.monotonic)
     process: subprocess.Popen | None = None
     cancelled: bool = False
+    last_access_at: float = field(default_factory=time.monotonic)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
@@ -114,12 +118,14 @@ class HlsService:
     def __init__(self, cache_root: Path, segment_duration: int = 2,
                  auto_download_ffmpeg: bool = False,
                  max_cache_bytes: int = 0,
-                 max_concurrent_jobs: int = 2):
+                 max_concurrent_jobs: int = 2,
+                 idle_timeout_seconds: float = HLS_IDLE_TIMEOUT_SECONDS):
         self.cache_root = Path(cache_root)
         self.segment_duration = int(segment_duration)
         self.auto_download_ffmpeg = bool(auto_download_ffmpeg)
         self.max_cache_bytes = int(max_cache_bytes)
         self.max_concurrent_jobs = max(1, int(max_concurrent_jobs))
+        self.idle_timeout_seconds = max(0.0, float(idle_timeout_seconds))
         self._lock = threading.Lock()
         self._job_condition = threading.Condition(self._lock)
         # 「古いジョブの停止 → 新ジョブ登録」を直列化する。並行に走ると
@@ -246,6 +252,14 @@ class HlsService:
 
         def worker() -> None:
             acquired = False
+            idle_stop = threading.Event()
+            idle_thread = threading.Thread(
+                target=self._watch_job_idle,
+                args=(job, idle_stop),
+                name=f"framedeck-hls-idle-{manifest.key[:8]}",
+                daemon=True,
+            )
+            idle_thread.start()
             try:
                 self._acquire_slot(job)
                 acquired = True
@@ -257,6 +271,7 @@ class HlsService:
             except TranscodeError as e:
                 logger.warning("HLS生成に失敗しました: %s", e)
             finally:
+                idle_stop.set()
                 if acquired:
                     self._release_slot(job)
                 self._unregister_job(job)
@@ -343,6 +358,41 @@ class HlsService:
             self._job_condition.notify_all()
         return matched
 
+    def _watch_job_idle(self, job: _HlsJob,
+                        stop: threading.Event) -> None:
+        """視聴要求が途絶えた生成をサーバー側で回収する。
+
+        pagehide/sendBeacon はiOSの強制終了や通信断では届かないことがある。
+        クライアント通知だけに依存せず、playlist/segmentへのアクセスが
+        一定時間無いジョブを停止して、動画末尾までの空変換を防ぐ。
+        """
+        timeout = self.idle_timeout_seconds
+        if timeout <= 0:
+            return
+        interval = max(0.05, min(5.0, timeout / 2))
+        while not stop.wait(interval):
+            with job.lock:
+                idle_for = time.monotonic() - job.last_access_at
+                cancelled = job.cancelled
+            if cancelled:
+                return
+            if idle_for < timeout:
+                continue
+            logger.info("視聴要求のないHLS変換を停止します: %.0f秒 (%s)",
+                        idle_for, os.path.basename(job.source_path))
+            job.cancel()
+            with self._job_condition:
+                self._job_condition.notify_all()
+            return
+
+    def touch(self, key: str) -> None:
+        """playlist/segment要求でジョブの最終利用時刻を更新する。"""
+        with self._lock:
+            job = self._jobs.get(key)
+        if job is not None:
+            with job.lock:
+                job.last_access_at = time.monotonic()
+
     def cancel_source(self, source_path: str, except_key: str | None = None,
                       owner: str | None = None, min_age: float = 0.0) -> int:
         """指定ソースの生成ジョブを停止する。停止したジョブ数を返す。
@@ -391,6 +441,7 @@ class HlsService:
         生成ジョブが無く未完成なら即 FileNotFoundError、タイムアウトは
         TimeoutError を送出する。
         """
+        self.touch(key)
         cache_dir = self.dir_for_key(key)
         root = cache_dir.resolve()
         target = (cache_dir / relative_path).resolve()
@@ -547,6 +598,10 @@ class HlsService:
         if start_seconds > 0:
             cmd += ["-ss", f"{start_seconds:.3f}"]
         cmd += [
+            # 最初の数秒は即生成して再生開始を待たせず、その後は再生速度に
+            # 合わせる。視聴位置より何十分も先を全CPUで変換しない。
+            "-readrate", str(HLS_READ_RATE),
+            "-readrate_initial_burst", str(HLS_INITIAL_BURST_SECONDS),
             "-i", source_path,
             "-map", "0:v:0", "-map", "0:a:0?",
             "-c:v", "libx264", "-preset", "veryfast",
