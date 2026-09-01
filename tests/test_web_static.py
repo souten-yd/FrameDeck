@@ -473,4 +473,17 @@ def test_hls_requests_carry_the_client_session():
 def test_comic_visible_pages_have_priority_over_prefetch():
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
     assert 'img.fetchPriority = "high"' in js
-    assert 'img.fetchPriority = "low"' in js
+    assert 'image.fetchPriority = "low"' in js
+
+
+def test_comic_prefetch_uses_larger_serial_retained_window():
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    config = (ROOT / "framedeck/config.py").read_text()
+
+    assert '"prefetch_ahead": 8' in config
+    assert "Number.isFinite(configuredAhead) ? configuredAhead : 8" in js
+    assert "const comicPreloader = {" in js
+    assert "retained: new Map()" in js
+    assert "if (comicPreloader.paused || comicPreloader.active) return" in js
+    assert "queueComicPreloads(state.session_id, specs)" in js
+    assert "window.setTimeout(start, 2000)" in js
