@@ -109,6 +109,7 @@ def volume_view(folder_id: str = Query(...),
             "end": descriptor.end,
             "special": descriptor.special,
             "confidence": descriptor.confidence,
+            "color_edition": descriptor.color_edition,
             "sort_key": list(descriptor.sort_key),
             "reading": _reading_summary(
                 [

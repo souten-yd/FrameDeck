@@ -627,6 +627,50 @@ def test_duplicate_detection_selects_older_entries(client_env):
     assert len(data["select_ids"]) == len(selected)
 
 
+def test_color_and_normal_comic_editions_coexist_with_marker_metadata(client_env):
+    client, services, root_id, comic_root = client_env
+    from tests.conftest import make_zip
+
+    make_zip(comic_root / "作品 第07巻.zip", pages=1)
+    make_zip(comic_root / "作品 第07巻 カラー版.zip", pages=1)
+
+    listed = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic&sort=name_asc"
+    )
+    assert listed.status_code == 200
+    editions = {
+        item["display_name"]: item["color_edition"]
+        for item in listed.json()["items"] if "第07巻" in item["display_name"]
+    }
+    assert editions == {
+        "作品 第07巻.zip": False,
+        "作品 第07巻 カラー版.zip": True,
+    }
+
+    volume = client.get(f"/api/library/volume-view?folder_id={root_id}")
+    assert volume.status_code == 200
+    entries = [
+        entry for entry in volume.json()["entries"]
+        if entry["start"] == 7
+    ]
+    assert [(entry["label"], entry["color_edition"]) for entry in entries] == [
+        ("07", False),
+        ("🌈 07", True),
+    ]
+
+    duplicates = client.get(
+        f"/api/library/duplicates?folder_id={root_id}&mode=comic&max_distance=5"
+    )
+    assert duplicates.status_code == 200
+    duplicate_ids = {
+        item["id"] for group in duplicates.json()["groups"] for item in group["items"]
+    }
+    edition_ids = {
+        item["id"] for item in listed.json()["items"] if "第07巻" in item["display_name"]
+    }
+    assert duplicate_ids.isdisjoint(edition_ids)
+
+
 def test_bulk_delete_requires_matching_token(client_env):
     client, services, root_id, comic_root = client_env
     services.settings.set("delete_to_trash", False)

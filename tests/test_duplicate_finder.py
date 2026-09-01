@@ -101,3 +101,21 @@ def test_extension_length_does_not_count_toward_the_difference():
         _c("2", "Movie 1.mpeg", 200, "video"),
     ])
     assert len(groups[0]) == 2
+
+
+def test_normal_and_color_comic_editions_are_not_duplicates():
+    groups = find_duplicate_groups([
+        _c("normal", "作品 第07巻.zip", 100),
+        _c("color", "作品 第07巻 カラー版.zip", 200),
+    ], max_distance=8)
+
+    assert groups == []
+
+
+def test_two_color_comic_copies_can_still_be_duplicates():
+    groups = find_duplicate_groups([
+        _c("old", "作品 第07巻 カラー版.zip", 100),
+        _c("new", "作品 第07巻 カラー版w.zip", 200),
+    ])
+
+    assert [[candidate.id for candidate in group] for group in groups] == [["new", "old"]]

@@ -583,6 +583,13 @@ function itemIcon(item) {
   return "📦";
 }
 
+function comicItemDisplayName(item) {
+  if (S.mode === "comic" && item.color_edition && !item.display_name.includes("🌈")) {
+    return `🌈 ${item.display_name}`;
+  }
+  return item.display_name;
+}
+
 function renderList() {
   const list = $("item-list");
   list.innerHTML = "";
@@ -599,7 +606,7 @@ function renderList() {
       check.type = "checkbox";
       check.className = "item-check";
       check.checked = S.checked.has(item.id);
-      check.setAttribute("aria-label", `${item.display_name} を選択`);
+      check.setAttribute("aria-label", `${comicItemDisplayName(item)} を選択`);
       check.onclick = (e) => {
         e.stopPropagation();
         toggleChecked(item.id, check.checked);
@@ -612,8 +619,8 @@ function renderList() {
     icon.textContent = itemIcon(item);
     const name = document.createElement("span");
     name.className = "item-name";
-    name.textContent = item.display_name;
-    name.title = item.display_name;
+    name.textContent = comicItemDisplayName(item);
+    name.title = comicItemDisplayName(item);
     const stars = document.createElement("span");
     stars.className = "item-stars" + (item.rating ? "" : " none");
     stars.textContent = item.stars;
@@ -798,7 +805,7 @@ function openRatingSheet(item) {
   wrap.className = "rating-sheet";
   const name = document.createElement("div");
   name.className = "sheet-name";
-  name.textContent = item.display_name;
+  name.textContent = comicItemDisplayName(item);
   const bar = document.createElement("div");
   bar.className = "star-bar";
   const apply = async (rating) => {
