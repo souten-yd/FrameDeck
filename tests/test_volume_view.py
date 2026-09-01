@@ -2,14 +2,39 @@ from pathlib import Path
 import zipfile
 
 from framedeck.core.volume_view import parse_volume_descriptor, recommend_display_mode
+from framedeck.comic.reader_engine import display_label
 from framedeck.web.routers.volume_view import _reading_summary
 
 
 def test_single_volume_ignores_suffix_noise():
     item = parse_volume_descriptor("[橋本悠] 2.5次元の誘惑 第21巻 セミカラー版w.zip")
     assert item.kind == "volume"
-    assert item.label == "21"
+    assert item.label == "🌈 21"
     assert item.start == 21
+    assert item.color_edition is True
+
+
+def test_normal_and_color_versions_have_distinct_labels_and_adjacent_order():
+    normal = parse_volume_descriptor("青の祓魔師 第07巻.zip")
+    color = parse_volume_descriptor("青の祓魔師 カラー版 第07巻.zip")
+
+    assert normal.label == "07"
+    assert normal.color_edition is False
+    assert color.label == "🌈 07"
+    assert color.color_edition is True
+    assert sorted([color, normal], key=lambda item: item.sort_key) == [normal, color]
+
+
+def test_color_edition_detection_supports_actual_and_english_names():
+    assert parse_volume_descriptor("作品 第01巻 フルカラー版.zip").label == "🌈 01"
+    assert parse_volume_descriptor("Work Vol.2 Full Color.cbz").label == "🌈 02"
+    assert parse_volume_descriptor("Color Study Vol.2.cbz").label == "02"
+    assert parse_volume_descriptor("カラーマン 第02巻.cbz").label == "02"
+
+
+def test_reader_title_marks_color_edition_once_and_hides_rating_tag():
+    assert display_label("作品 カラー版{zpi$r=4}.zip") == "🌈 作品 カラー版.zip"
+    assert display_label("🌈 作品 カラー版.zip") == "🌈 作品 カラー版.zip"
 
 
 def test_volume_range_is_one_physical_archive():

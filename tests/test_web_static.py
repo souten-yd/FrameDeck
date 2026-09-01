@@ -220,6 +220,14 @@ def test_bulk_selection_and_duplicate_tools_exist():
     assert "古い方を選択する" in js
 
 
+def test_comic_color_edition_marker_is_rendered_without_changing_item_name():
+    js = Path("framedeck/web/static/js/app.js").read_text("utf-8")
+
+    assert "function comicItemDisplayName(item)" in js
+    assert 'item.color_edition && !item.display_name.includes("🌈")' in js
+    assert 'return `🌈 ${item.display_name}`' in js
+
+
 def test_mobile_rating_bar_is_available_in_drawer():
     html = (ROOT / "framedeck/web/templates/index.html").read_text()
     css = (ROOT / "framedeck/web/static/css/app.css").read_text()

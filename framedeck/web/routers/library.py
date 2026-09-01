@@ -6,6 +6,7 @@ import os
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from ...core import rating_service as rs
+from ...core.comic_edition import is_color_edition
 from ...core.duplicate_finder import (
     DEFAULT_MAX_DISTANCE,
     DuplicateCandidate,
@@ -61,6 +62,10 @@ def _item_dict(item: MediaItem, root_path: str | None = None) -> dict:
         "modified_at": item.modified_at,
         "size": item.size,
         "relative_path": rel,
+        "color_edition": (
+            item.media_type in ("comic", "folder")
+            and is_color_edition(item.display_name)
+        ),
     }
 
 

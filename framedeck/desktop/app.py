@@ -11,6 +11,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from ..core.comic_edition import mark_color_edition
 from ..core.services import Services
 from ..models import MediaItem
 from ..video.mpv_controller import MPVController
@@ -448,8 +449,12 @@ class DesktopApp(tk.Tk):
             if item.rating:
                 tags.append("rated")
             prefix = "📁 " if item.media_type == "folder" else ""
+            display_name = (
+                mark_color_edition(item.display_name)
+                if self.media_mode.get() == MODE_COMIC else item.display_name
+            )
             self.tree.insert("", "end", iid=str(idx),
-                             text=prefix + item.display_name,
+                             text=prefix + display_name,
                              values=(item.stars,), tags=tuple(tags))
 
         rated = sum(1 for it in self.items if it.rating)
@@ -473,8 +478,12 @@ class DesktopApp(tk.Tk):
             item = items[0]
             self.current_item = item
             rating = str(item.rating) if item.rating else "-"
+            display_name = (
+                mark_color_edition(item.display_name)
+                if self.media_mode.get() == MODE_COMIC else item.display_name
+            )
             self.selected_label.config(
-                text=f"{item.display_name}  (現在の評価: {rating})")
+                text=f"{display_name}  (現在の評価: {rating})")
             self.star_bar.set_current(item.rating)
         else:
             self.current_item = None
@@ -562,7 +571,7 @@ class DesktopApp(tk.Tk):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         for entry in entries:
             prefix = "📁 " if entry.source_type == "image_folder" else "📦 "
-            listbox.insert(tk.END, prefix + entry.label)
+            listbox.insert(tk.END, prefix + mark_color_edition(entry.label))
         if entries:
             listbox.selection_set(0)
 

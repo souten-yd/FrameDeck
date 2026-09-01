@@ -19,6 +19,7 @@ import uuid
 
 from ..config import Settings
 from ..core.storage import Storage
+from ..core.comic_edition import mark_color_edition
 from ..models import ComicEntry, ComicViewState, PageRef, ReaderOptions
 from .archive_backend import ArchiveError
 from .image_pipeline import ImagePipeline
@@ -33,7 +34,8 @@ _RATING_TAG = re.compile(r"\{zpi\$r=[1-5]\}")
 
 def display_label(label: str) -> str:
     """表示用ラベル。ファイル名末尾の評価タグ `{zpi$r=N}` は見せない。"""
-    return _RATING_TAG.sub("", label)
+    clean = _RATING_TAG.sub("", label)
+    return mark_color_edition(clean, source_name=label)
 
 
 class ComicEngineError(Exception):

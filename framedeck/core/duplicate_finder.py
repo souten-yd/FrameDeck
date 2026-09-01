@@ -26,6 +26,8 @@ import re
 import unicodedata
 from dataclasses import dataclass
 
+from .comic_edition import is_color_edition
+
 _DIGITS = re.compile(r"[0-9]+")
 _RATING_TAG = re.compile(r"\{zpi\$r=[1-5]\}")
 
@@ -124,7 +126,13 @@ def find_duplicate_groups(
     for candidate in candidates:
         name = normalized_name(candidate.display_name,
                                candidate.media_type == "folder")
-        key = (candidate.media_type, digit_signature(name))
+        # 通常版とカラー版は同じ巻数・近い名前でも別商品として共存させる。
+        # 動画のタイトルに ``color`` が含まれるケースには影響させない。
+        color_edition = (
+            is_color_edition(candidate.display_name)
+            if candidate.media_type in ("comic", "folder") else False
+        )
+        key = (candidate.media_type, digit_signature(name), color_edition)
         buckets.setdefault(key, []).append((candidate, name))
 
     groups: list[list[DuplicateCandidate]] = []

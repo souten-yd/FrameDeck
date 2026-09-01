@@ -11,6 +11,8 @@ import re
 import zipfile
 from typing import Iterable
 
+from .comic_edition import is_color_edition, mark_color_edition
+
 
 _ARCHIVE_EXTENSIONS = {".zip", ".cbz", ".rar", ".cbr", ".7z"}
 _SPECIAL_WORDS = (
@@ -44,6 +46,7 @@ class VolumeDescriptor:
     end: int | float | None = None
     special: str | None = None
     confidence: float = 0.0
+    color_edition: bool = False
 
 
 def _stem(name: str) -> str:
@@ -107,11 +110,13 @@ def _descriptor_from_internal(name: str, volumes: list[int]) -> VolumeDescriptor
     if not volumes:
         return None
     text = _stem(name)
+    color_edition = is_color_edition(text)
     if len(volumes) == 1:
         number = volumes[0]
         return VolumeDescriptor(
-            "volume", _number_label(number), (1, number, number, text.casefold()), True,
-            number, number, confidence=0.90,
+            "volume", mark_color_edition(_number_label(number), source_name=text),
+            (1, number, number, int(color_edition), text.casefold()), True,
+            number, number, confidence=0.90, color_edition=color_edition,
         )
     start, end = volumes[0], volumes[-1]
     contiguous = volumes == list(range(start, end + 1))
@@ -121,17 +126,19 @@ def _descriptor_from_internal(name: str, volumes: list[int]) -> VolumeDescriptor
     )
     return VolumeDescriptor(
         "volume_range" if contiguous else "volume_set",
-        label,
-        (1, start, end, text.casefold()),
+        mark_color_edition(label, source_name=text),
+        (1, start, end, int(color_edition), text.casefold()),
         True,
         start,
         end,
         confidence=1.0,
+        color_edition=color_edition,
     )
 
 
 def parse_volume_descriptor(name: str, *, path: str | None = None) -> VolumeDescriptor:
     text = _stem(name)
+    color_edition = is_color_edition(text)
     special = _special_label(text)
     internal = _archive_volume_dirs(path) if path else []
 
@@ -149,10 +156,12 @@ def parse_volume_descriptor(name: str, *, path: str | None = None) -> VolumeDesc
             label = f"{_number_label(start)}–{_number_label(end)}"
             if special:
                 label = f"{special} {label}"
+            label = mark_color_edition(label, source_name=text)
             group = _volume_sort_group(special)
             return VolumeDescriptor(
-                "volume_range", label, (group, start, end, text.casefold()), True,
-                start, end, special, 1.0 if confirmed else 0.95,
+                "volume_range", label,
+                (group, start, end, int(color_edition), text.casefold()), True,
+                start, end, special, 1.0 if confirmed else 0.95, color_edition,
             )
 
     match = _VOLUME_SET_PATTERN.search(text)
@@ -161,11 +170,13 @@ def parse_volume_descriptor(name: str, *, path: str | None = None) -> VolumeDesc
         label = "・".join(_number_label(number) for number in numbers)
         if special:
             label = f"{special} {label}"
+        label = mark_color_edition(label, source_name=text)
         group = _volume_sort_group(special)
         return VolumeDescriptor(
-            "volume_set", label, (group, numbers[0], numbers[-1], text.casefold()), True,
+            "volume_set", label,
+            (group, numbers[0], numbers[-1], int(color_edition), text.casefold()), True,
             numbers[0], numbers[-1], special,
-            1.0 if internal == numbers else 0.93,
+            1.0 if internal == numbers else 0.93, color_edition,
         )
 
     match = _VOLUME_PATTERN.search(text) or _VOL_PATTERN.search(text)
@@ -174,10 +185,12 @@ def parse_volume_descriptor(name: str, *, path: str | None = None) -> VolumeDesc
         label = _number_label(number)
         if special:
             label = f"{special} {label}"
+        label = mark_color_edition(label, source_name=text)
         group = _volume_sort_group(special)
         return VolumeDescriptor(
-            "volume", label, (group, number, number, text.casefold()), True,
-            number, number, special, 0.98,
+            "volume", label,
+            (group, number, number, int(color_edition), text.casefold()), True,
+            number, number, special, 0.98, color_edition,
         )
 
     match = _CHAPTER_PATTERN.search(text)
@@ -187,16 +200,20 @@ def parse_volume_descriptor(name: str, *, path: str | None = None) -> VolumeDesc
         label = f"Ch. {_number_label(number)}"
         if special:
             label = f"{special} {label}"
+        label = mark_color_edition(label, source_name=text)
         group = 5 if special else 2
         return VolumeDescriptor(
-            "chapter", label, (group, float(number), float(number), text.casefold()), True,
-            number, number, special, 0.90,
+            "chapter", label,
+            (group, float(number), float(number), int(color_edition), text.casefold()), True,
+            number, number, special, 0.90, color_edition,
         )
 
     if special:
+        label = mark_color_edition(special, source_name=text)
         return VolumeDescriptor(
-            "special", special, (6, _SORT_LAST, _SORT_LAST, text.casefold()), True,
-            special=special, confidence=0.75,
+            "special", label,
+            (6, _SORT_LAST, _SORT_LAST, int(color_edition), text.casefold()), True,
+            special=special, confidence=0.75, color_edition=color_edition,
         )
 
     # 名前が無意味でも、内部に明示された巻ディレクトリがあれば利用する。
@@ -205,7 +222,9 @@ def parse_volume_descriptor(name: str, *, path: str | None = None) -> VolumeDesc
         return internal_descriptor
 
     return VolumeDescriptor(
-        "unknown", os.path.basename(name), (9, _SORT_LAST, _SORT_LAST, text.casefold()), False,
+        "unknown", mark_color_edition(os.path.basename(name), source_name=text),
+        (9, _SORT_LAST, _SORT_LAST, int(color_edition), text.casefold()), False,
+        color_edition=color_edition,
     )
 
 
