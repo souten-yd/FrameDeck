@@ -119,12 +119,16 @@ class HlsService:
                  auto_download_ffmpeg: bool = False,
                  max_cache_bytes: int = 0,
                  max_concurrent_jobs: int = 2,
+                 encode_threads: int | None = None,
+                 process_gate: threading.Semaphore | None = None,
                  idle_timeout_seconds: float = HLS_IDLE_TIMEOUT_SECONDS):
         self.cache_root = Path(cache_root)
         self.segment_duration = int(segment_duration)
         self.auto_download_ffmpeg = bool(auto_download_ffmpeg)
         self.max_cache_bytes = int(max_cache_bytes)
         self.max_concurrent_jobs = max(1, int(max_concurrent_jobs))
+        self.encode_threads = encode_threads
+        self.process_gate = process_gate
         self.idle_timeout_seconds = max(0.0, float(idle_timeout_seconds))
         self._lock = threading.Lock()
         self._job_condition = threading.Condition(self._lock)
@@ -326,8 +330,23 @@ class HlsService:
             if job.cancelled:
                 raise _HlsCancelled()
             self._running_jobs.add(job.key)
+        if self.process_gate is not None:
+            while not self.process_gate.acquire(timeout=0.2):
+                if job.cancelled:
+                    with self._job_condition:
+                        self._running_jobs.discard(job.key)
+                        self._job_condition.notify_all()
+                    raise _HlsCancelled()
+            if job.cancelled:
+                self.process_gate.release()
+                with self._job_condition:
+                    self._running_jobs.discard(job.key)
+                    self._job_condition.notify_all()
+                raise _HlsCancelled()
 
     def _release_slot(self, job: _HlsJob) -> None:
+        if self.process_gate is not None:
+            self.process_gate.release()
         with self._job_condition:
             self._running_jobs.discard(job.key)
             self._job_condition.notify_all()
@@ -605,6 +624,7 @@ class HlsService:
             "-i", source_path,
             "-map", "0:v:0", "-map", "0:a:0?",
             "-c:v", "libx264", "-preset", "veryfast",
+            *(["-threads", str(self.encode_threads)] if self.encode_threads else []),
             "-profile:v", "baseline", "-level", "4.0",
             "-pix_fmt", "yuv420p", "-tag:v", "avc1", "-bf", "0",
             "-b:v", video_bitrate,

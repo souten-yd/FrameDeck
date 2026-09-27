@@ -51,6 +51,7 @@ export PYTHONPATH="$APP_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export HOME="$VAR_DIR"
 export TMPDIR
 export QNAP_QPKG="$QPKG_NAME"
+export FRAMEDECK_PROFILE="qnap-lite"
 
 migrate_legacy_data() {
     legacy="$QPKG_ROOT/var"

@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..core.services import Services
+from ..runtime_profile import qnap_lite
 from .routers import comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
 
@@ -31,7 +32,7 @@ def create_app(services: Services) -> FastAPI:
         # プールを共有する。動画視聴中に枯渇するとアプリ全体が無応答に
         # なるため余裕を持たせる。
         try:
-            anyio.to_thread.current_default_thread_limiter().total_tokens = 96
+            anyio.to_thread.current_default_thread_limiter().total_tokens = 8 if qnap_lite() else 96
         except (RuntimeError, ValueError):  # pragma: no cover
             pass
         yield

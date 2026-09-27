@@ -91,8 +91,10 @@ TS-253Be (Intel J3455 / x86_64) 向けの自己完結型QPKGを生成できま�
 QPKGには portable CPython、Python依存、ffmpeg/ffprobe、7-Zipを含めるため、
 NAS側へPython・pip・Entwareなどを追加する必要はありません。
 
-UbuntuとQNAPは同じ `framedeck/` を実行し、QNAP固有処理は `packaging/qnap/` に限定しています。
-そのため通常の機能追加は共通コードだけを変更すれば両方へ反映できます。
+UbuntuとQNAPは同じ `framedeck/` を実行します。QPKGの起動設定が `qnap-lite`
+プロファイルを選び、漫画の画像処理を抑え、動画は直接配信を優先します。
+必要時は同梱ffmpegで最大480pの変換もできます。通常の機能追加は共通コードだけを
+変更すれば両方へ反映できます。
 
 ```bash
 # Ubuntu上でQPKGをローカル生成（GitHub Actions費用なし）

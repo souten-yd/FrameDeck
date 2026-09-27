@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .runtime_profile import QNAP_DEFAULTS, qnap_lite
+
 APP_NAME = "FrameDeck"
 
 VIDEO_EXTENSIONS = {
@@ -351,8 +353,21 @@ class Settings:
         self._paths = paths
         self._lock = threading.RLock()
         self._values: dict[str, Any] = dict(DEFAULT_SETTINGS)
+        if qnap_lite():
+            self._values.update(QNAP_DEFAULTS)
         self._listeners: list = []
         self.load()
+        # Existing QPKG installations may contain the old Linux defaults.
+        # Adopt the light profile once, then leave subsequent user edits alone.
+        if qnap_lite():
+            marker = self._paths.config_dir / "qnap-lite-v1"
+            if not marker.exists():
+                self._values.update(QNAP_DEFAULTS)
+                try:
+                    self.save()
+                    marker.write_text("1\n", encoding="utf-8")
+                except OSError:
+                    pass
         if not self._paths.settings_file.exists():
             try:
                 self.save()  # 初回起動時に既定値を書き出して編集可能にする
