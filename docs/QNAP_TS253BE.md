@@ -1,8 +1,57 @@
 # FrameDeck on QNAP TS-253Be
 
-FrameDeck uses one application codebase on Ubuntu and QNAP. QNAP-specific
-behavior is limited to `packaging/qnap/` and environment variables; features
-implemented under `framedeck/` apply to both platforms without a fork.
+FrameDeck uses one application codebase on Ubuntu and QNAP. The QPKG launcher
+sets `FRAMEDECK_PROFILE=qnap-lite`; common features under `framedeck/` apply
+to both platforms without a fork. Linux keeps its original defaults and limits.
+
+## Lightweight execution policy (2.4.0)
+
+The QNAP profile is adopted once for new and existing QPKG data directories.
+After that, settings edited in the UI are retained across restarts and QPKG
+upgrades. The migration marker is `config/qnap-lite-v1`. The platform safety
+caps on transcoding and thread counts remain in force even if settings request
+a higher resolution.
+
+| Work | QNAP default / limit | Linux behavior | Quality tradeoff |
+|---|---|---|---|
+| Comic page | Original archive bytes, no resize, crop, sharpen or AVIF/WebP re-encode | Existing adaptive image pipeline | Large originals use more bandwidth; no border removal |
+| Spread analysis | No background analysis in prefetch; no automatic split | Existing prefetch and analysis | Manual spread layout remains, wide page half splitting is off |
+| Comic prefetch | One page ahead, none behind; two workers, 64 MB raw cache | Eight ahead, two behind; four workers, 512 MB | Fast page flipping may wait for archive I/O |
+| Comic thumbnails | Up to 160 px, bilinear, JPEG quality 65 | 320 px, Lanczos, quality 80 | Softer previews |
+| Nested archive cache | 1 GB | 10 GB | Older nested entries may need re-extraction |
+| Video direct play | Range streaming first; 2 MB per stream read-ahead | Adaptive profiles, 8 MB read-ahead | Browser must support the source codec |
+| Remux | Retain encoded video without resizing when possible | Existing remux path | The source codec must be playable in the browser |
+| Video encode | Bundled ffmpeg on demand, max 854×480, one process shared across HLS and fMP4, two encoder threads | Higher profiles and parallel jobs allowed | Quality and speed depend on the source; demanding codecs can still fall behind real time |
+| Video thumbnail | Serve existing cache only; no cold thumbnail decoding | Generate on demand | New video thumbnails are absent |
+| Library volume view | Skip recent nested archive rescan | Scan recently opened nested entries when needed | Per-entry progress can be less precise in the volume overview |
+| Web requests | Eight worker thread tokens | 96 | Concurrent requests may queue rather than saturating the NAS |
+| Cache maintenance | Deferred two minutes after launch | During startup | Disk use can briefly remain above the configured limit |
+
+Transcoding is **included**, but is only used if direct play or remux cannot
+serve the client, or if the user explicitly requests conversion. The bundled
+static ffmpeg uses software H.264 encoding. TS-253Be's J3455 has Intel Quick
+Sync, but this QPKG does not claim GPU acceleration: that would require a
+QTS-compatible VAAPI-enabled ffmpeg and access to `/dev/dri`, verified on the
+actual NAS. Test with 480p material before relying on real-time conversion of
+high-bitrate HEVC or 4K inputs. HLS requests wait
+for the shared conversion slot; another fMP4 request receives a busy response.
+
+### Quality improvements to try later
+
+| Candidate | Benefit | NAS cost / risk | Priority |
+|---|---|---|---|
+| Enable client-side contrast/sharpen only | Improve display without NAS image processing | Device GPU/battery, no NAS CPU | First |
+| Raise comic prefetch to two pages | Faster page turns | More archive reads and memory | Second |
+| Resize original pages to mobile width on demand | Lower network use | Pillow decoding and encoding each uncached page | Only if network is bottleneck |
+| Restore auto crop / spread detection | Better framing | Full-page analysis and cache I/O | Only for archives needing it |
+| Raise software encode from 480p to 720p | Sharper unsupported video | J3455 may fail real-time playback | After measuring CPU and fps |
+| VAAPI H.264 on QTS | Faster compatible transcodes | Device access, ffmpeg compatibility and fallback engineering | Test on NAS before implementation |
+
+These are toggles or isolated runtime policies in the shared codebase; keep
+QNAP-only caps in `framedeck/runtime_profile.py` and the launch profile rather
+than maintaining an application fork. For diagnosis compare playback startup
+time, CPU load, resident memory, page-turn latency, and actual conversion fps
+on the TS-253Be.
 
 ## Supported target
 
@@ -146,6 +195,7 @@ launchers use these variables:
 | `FRAMEDECK_PORT` | `9000` | `9000` |
 | `FRAMEDECK_HOME` | auto | `/share/<volume>/.framedeck` |
 | `FRAMEDECK_OPEN_BROWSER` | `false` | `false` |
+| `FRAMEDECK_PROFILE` | unset | `qnap-lite` |
 
 The portable entry point is:
 

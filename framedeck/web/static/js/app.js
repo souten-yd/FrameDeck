@@ -117,6 +117,7 @@ function hlsProfileForSource(height) {
    尽きることがある。1080p以下の「原寸」は寸法を変えず、Safariが
    先行取得しやすい2秒HLSにして配信を平準化する。 */
 function shouldStabilizeMobileOriginal(info) {
+  if (S.settings.runtime_profile === "qnap-lite") return false;
   if (!shouldUseNativeHls() || configuredVideoQuality() !== "original") return false;
   const width = Number(info?.width) || 0;
   const height = Number(info?.height) || 0;
@@ -128,6 +129,7 @@ function shouldStabilizeMobileOriginal(info) {
    fMP4へ再多重化する。自動のDirect Playは維持しつつ、安定性を
    明示した原寸再生ではブラウザの細かいRange再取得を避ける。 */
 function shouldStabilizeDesktopOriginal() {
+  if (S.settings.runtime_profile === "qnap-lite") return false;
   return S.uiProfile !== "mobile" && configuredVideoQuality() === "original";
 }
 

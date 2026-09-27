@@ -24,6 +24,7 @@ from statistics import median
 from PIL import Image, ImageFilter, ImageOps
 
 from ..models import ComicEntry, PageRef
+from ..runtime_profile import qnap_lite
 from .crop_detector import detect_crop_box
 from .image_analysis import ComicImageAnalysis
 from .spread_detector import detect_spread
@@ -222,7 +223,8 @@ class ImagePipeline:
             self.get_page_size(source, entry, page)
             # 解析(トリミング/見開き)も先回りしてディスクへキャッシュし、
             # 表示時の合議が待たずに揃うようにする
-            self.analyze_page(source, entry, page)
+            if not qnap_lite():
+                self.analyze_page(source, entry, page)
         except Exception:
             pass
         finally:
@@ -673,9 +675,11 @@ class ImagePipeline:
         with Image.open(io.BytesIO(data)) as img:
             img = ImageOps.exif_transpose(img) or img
             img = img.convert("RGB")
-            img.thumbnail((size, size), Image.Resampling.LANCZOS)
+            if qnap_lite():
+                size = min(size, 160)
+            img.thumbnail((size, size), Image.Resampling.BILINEAR if qnap_lite() else Image.Resampling.LANCZOS)
             buf = io.BytesIO()
-            img.save(buf, "JPEG", quality=80)
+            img.save(buf, "JPEG", quality=65 if qnap_lite() else 80)
         encoded = buf.getvalue()
         try:
             self._thumb_cache_dir.mkdir(parents=True, exist_ok=True)

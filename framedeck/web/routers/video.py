@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 from ...core.security import PathValidationError
 from ...core.services import Services
 from ...models import MediaItem
+from ...runtime_profile import QNAP_TRANSCODE_HEIGHT, QNAP_TRANSCODE_WIDTH, qnap_lite
 from ...video.stream import (
     CHUNK_SIZE as FILE_CHUNK_SIZE,
     RangeNotSatisfiable,
@@ -165,6 +166,15 @@ def playback_profile(media_id: str, request: Request,
             hints,
             ui_profile=payload.get("uiProfile") or "desktop",
         )
+    if qnap_lite() and profile.transcode:
+        # Client hints and saved settings can request 4K/1080p. The J3455
+        # must never be asked to software encode those resolutions.
+        from ...video.profile_service import resolve_video_profile
+        if (profile.name != "original" or not direct.copy_video) and (
+            not profile.height or profile.height > QNAP_TRANSCODE_HEIGHT
+        ):
+            profile = resolve_video_profile("480p", info.height, info.width)
+    copy_video = direct.copy_video and profile.transcode and profile.name == "original"
     return {
         "profile": profile.to_dict(),
         "network": classify_network(hints),
@@ -172,7 +182,7 @@ def playback_profile(media_id: str, request: Request,
         "direct_play": direct.direct_play,
         "direct_play_reason": direct.reason or info.direct_play_reason,
         # 映像を再エンコードせずコンテナだけ入れ替えれば足りるか
-        "copy_video": direct.copy_video and profile.transcode,
+        "copy_video": copy_video,
         "copy_audio": direct.copy_audio and profile.transcode,
         "server_direct_play": info.direct_play,
     }
@@ -198,7 +208,7 @@ async def hls_master(media_id: str,
     """
     item = _resolve_video(services, media_id)
     info = services.video_playback.get_info(item.path, media_id)
-    profiles = _hls_profiles(profile)
+    profiles = ([profile] if profile == "360p" else ["480p"]) if qnap_lite() else _hls_profiles(profile)
     try:
         # 旧ジョブの停止待ちを含むため、専用スレッド枠で実行する
         manifest = await anyio.to_thread.run_sync(
@@ -340,7 +350,7 @@ async def _aiter_file_range(path: str, start: int, end: int):
     一瞬でも遅延するとそのまま再生の途切れになる。先読みしておけば
     数百ms程度のスパイクは在庫で埋められる。
     """
-    queue: "Queue" = Queue(maxsize=READAHEAD_CHUNKS)
+    queue: "Queue" = Queue(maxsize=2 if qnap_lite() else READAHEAD_CHUNKS)
     stop = threading.Event()
     reader = threading.Thread(
         target=_read_ahead, args=(path, start, end, queue, stop),
@@ -470,6 +480,10 @@ async def stream_transcode(media_id: str,
     再エンコードせずコンテナだけ入れ替える(端末が再生できる形式のとき)。
     """
     item = _resolve_video(services, media_id)
+    if qnap_lite() and not copy_video:
+        max_height = min(max_height or QNAP_TRANSCODE_HEIGHT, QNAP_TRANSCODE_HEIGHT)
+        max_width = min(max_width or QNAP_TRANSCODE_WIDTH, QNAP_TRANSCODE_WIDTH)
+        smooth_fps = None
     try:
         stream = services.transcode.open_fmp4(
             item.path, start, max_height=max_height, max_width=max_width,
@@ -496,6 +510,9 @@ def thumbnail(media_id: str,
     if cache_file.exists():
         return Response(cache_file.read_bytes(), media_type="image/jpeg",
                         headers={"Cache-Control": "private, max-age=86400"})
+    if qnap_lite():
+        # ffmpeg would seek and decode a full frame on every cold listing.
+        return Response(status_code=204)
     info = services.video_playback.get_info(item.path, media_id)
     at = min(10.0, max(0.5, info.duration_seconds * 0.1))
     try:

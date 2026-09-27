@@ -66,13 +66,19 @@ class Fmp4Stream:
 
 
 class TranscodeService:
-    def __init__(self, auto_download_ffmpeg: bool = False):
+    def __init__(self, auto_download_ffmpeg: bool = False,
+                 max_active_streams: int | None = None,
+                 encode_threads: int | None = None,
+                 process_gate: threading.Semaphore | None = None):
         self._lock = threading.Lock()
         self._active: set[subprocess.Popen] = set()
         self._streams: dict[str, Fmp4Stream] = {}
         self._open: set[Fmp4Stream] = set()
         self._reaper: threading.Thread | None = None
         self.auto_download_ffmpeg = bool(auto_download_ffmpeg)
+        self.max_active_streams = max_active_streams
+        self.encode_threads = encode_threads
+        self.process_gate = process_gate
 
     def configure(self, *, auto_download_ffmpeg: bool) -> None:
         self.auto_download_ffmpeg = bool(auto_download_ffmpeg)
@@ -111,17 +117,31 @@ class TranscodeService:
             max_height=max_height, max_width=max_width,
             copy_video=copy_video, copy_audio=copy_audio,
             smooth_fps=smooth_fps, ffmpeg_bin=ffmpeg.path,
+            encode_threads=self.encode_threads,
         )
         # stderrはパイプにするとログが溜まった時にffmpegが書き込みで
         # ブロックして配信が止まるため、一時ファイルへ逃がす
         errlog = tempfile.TemporaryFile()
-        process = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=errlog,
-            bufsize=TRANSCODE_CHUNK,
-        )
-        stream = Fmp4Stream(self, process, owner)
-        stream._errlog = errlog
         with self._lock:
+            if (self.max_active_streams is not None
+                    and len(self._active) >= self.max_active_streams):
+                errlog.close()
+                raise TranscodeError("NASで別の動画を変換中です。再生終了後に再試行してください。")
+            if self.process_gate is not None and not self.process_gate.acquire(blocking=False):
+                errlog.close()
+                raise TranscodeError("NASで別の動画を変換中です。再生終了後に再試行してください。")
+            try:
+                process = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=errlog,
+                    bufsize=TRANSCODE_CHUNK,
+                )
+            except BaseException:
+                errlog.close()
+                if self.process_gate is not None:
+                    self.process_gate.release()
+                raise
+            stream = Fmp4Stream(self, process, owner)
+            stream._errlog = errlog
             self._active.add(process)
             self._open.add(stream)
             if owner:
@@ -199,6 +219,7 @@ class TranscodeService:
 
     def _terminate(self, process: subprocess.Popen) -> None:
         with self._lock:
+            was_active = process in self._active
             self._active.discard(process)
         if process.poll() is None:
             process.terminate()
@@ -207,6 +228,8 @@ class TranscodeService:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+        if was_active and self.process_gate is not None:
+            self.process_gate.release()
 
     def shutdown(self) -> None:
         with self._lock:
@@ -252,6 +275,7 @@ def build_fmp4_transcode_cmd(
     copy_audio: bool = False,
     smooth_fps: float | None = None,
     ffmpeg_bin: str = "ffmpeg",
+    encode_threads: int | None = None,
 ) -> list[str]:
     """Build a mobile-compatible progressive fragmented MP4 command.
 
@@ -277,6 +301,7 @@ def build_fmp4_transcode_cmd(
             filters.append(f"framerate=fps={smooth_fps:.3f}")
         cmd += [
             "-c:v", "libx264",
+            *(["-threads", str(encode_threads)] if encode_threads else []),
             "-preset", "veryfast",
             "-tune", "zerolatency",
             "-profile:v", "baseline",

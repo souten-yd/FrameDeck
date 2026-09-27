@@ -14,6 +14,7 @@ from ..comic.reader_engine import ComicReaderEngine
 from ..comic.sequence_builder import SequenceBuilder
 from ..comic.source import ComicSourceResolver
 from ..config import AppPaths, Settings
+from ..runtime_profile import qnap_lite
 from ..video.playback_service import VideoPlaybackService
 from ..video.transcode import TranscodeService
 from ..video.capabilities import EncoderCapabilityService
@@ -49,6 +50,7 @@ class Services:
             paths.comic_page_cache, paths.thumbnail_cache,
             memory_limit_bytes=int(settings.get("memory_cache_mb", 512)) * 1024**2,
             resize_filter=settings.get("resize_filter", "lanczos"),
+            max_workers=2 if qnap_lite() else 4,
             variant_cache_dir=paths.comic_variants_cache,
             analysis_cache_dir=paths.comic_analysis_cache,
         )
@@ -64,13 +66,21 @@ class Services:
 
         self.video_playback = VideoPlaybackService(storage)
         auto_download_ffmpeg = bool(settings.get("video_ffmpeg_auto_download", True))
-        self.transcode = TranscodeService(auto_download_ffmpeg=auto_download_ffmpeg)
+        video_gate = threading.BoundedSemaphore(1) if qnap_lite() else None
+        self.transcode = TranscodeService(
+            auto_download_ffmpeg=auto_download_ffmpeg,
+            max_active_streams=1 if qnap_lite() else None,
+            encode_threads=2 if qnap_lite() else None,
+            process_gate=video_gate,
+        )
         self.hls = HlsService(
             paths.video_variants_cache,
             segment_duration=int(settings.get("video_segment_duration", 2)),
             auto_download_ffmpeg=auto_download_ffmpeg,
             max_cache_bytes=int(settings.get("video_variant_cache_mb", 300)) * 1024**2,
-            max_concurrent_jobs=int(settings.get("video_hls_max_concurrent", 2)),
+            max_concurrent_jobs=(1 if qnap_lite() else int(settings.get("video_hls_max_concurrent", 2))),
+            encode_threads=2 if qnap_lite() else None,
+            process_gate=video_gate,
         )
         self.transcode_jobs = TranscodeJobManager()
         self.encoder_capabilities = EncoderCapabilityService()
@@ -92,7 +102,7 @@ class Services:
         self.hls.configure(
             auto_download_ffmpeg=auto_download_ffmpeg,
             max_cache_bytes=int(values.get("video_variant_cache_mb", 300)) * 1024**2,
-            max_concurrent_jobs=int(values.get("video_hls_max_concurrent", 2)),
+            max_concurrent_jobs=(1 if qnap_lite() else int(values.get("video_hls_max_concurrent", 2))),
         )
         self.hls.update_segment_duration(int(values.get("video_segment_duration", 2)))
         # 上限を下げた場合に即反映されるよう、バックグラウンドで掃除する
@@ -107,6 +117,15 @@ class Services:
             logger.exception("HLSキャッシュ整理に失敗しました")
 
     def startup_maintenance(self) -> None:
+        if qnap_lite():
+            # Large existing caches should not delay App Center startup.
+            timer = threading.Timer(120, self._startup_maintenance_now)
+            timer.daemon = True
+            timer.start()
+            return
+        self._startup_maintenance_now()
+
+    def _startup_maintenance_now(self) -> None:
         try:
             self.nested_cache.prune()
         except Exception:

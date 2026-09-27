@@ -9,6 +9,7 @@ from ...core.services import Services
 from ...core.library_service import canonical_path
 from ...core.volume_view import parse_volume_descriptor, recommend_display_mode
 from ...models import comic_entry_id
+from ...runtime_profile import qnap_lite
 from ..dependencies import get_services
 from .library import _resolve_folder, _visible_items
 
@@ -62,7 +63,7 @@ def volume_view(folder_id: str = Query(...),
     # A normal archive's entry id is derived without opening the archive. Only
     # recently opened physical items need discovery to account for nested
     # archives; scanning every volume here made a cold folder load take seconds.
-    recent_item_ids = {
+    recent_item_ids = set() if qnap_lite() else {
         row["media_id"] for row in services.storage.list_recent(100)
         if row.get("media_type") == "comic"
     }

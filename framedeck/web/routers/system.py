@@ -11,6 +11,7 @@ from ... import __version__
 from ...comic.archive_backend import rar_backend_available
 from ...core.services import Services
 from ...core.update_service import UpdateError, get_update_manager
+from ...runtime_profile import qnap_lite
 from ...video.ffmpeg import resolve_ffmpeg, system_ffprobe_path
 from ..dependencies import get_services
 
@@ -59,6 +60,7 @@ def system_info(services: Services = Depends(get_services)) -> dict:
 def get_settings(services: Services = Depends(get_services)) -> dict:
     values = services.settings.as_dict()
     values.pop("web_pin", None)  # PINは公開しない
+    values["runtime_profile"] = "qnap-lite" if qnap_lite() else "standard"
     return values
 
 
@@ -70,6 +72,7 @@ def put_settings(values: dict[str, Any],
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     updated.pop("web_pin", None)
+    updated["runtime_profile"] = "qnap-lite" if qnap_lite() else "standard"
     return updated
 
 
