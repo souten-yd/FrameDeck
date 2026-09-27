@@ -110,3 +110,29 @@ def test_source_version(tmp_path: Path):
     package.mkdir()
     (package / "__init__.py").write_text('__version__ = "2.3.4"\n', encoding="utf-8")
     assert updater._source_version(tmp_path) == "2.3.4"
+
+
+def test_linux_source_download_uses_github_tarball_accept(monkeypatch, tmp_path: Path):
+    class Response:
+        headers = {"Content-Length": "4"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def read(self, _size):
+            value, self.next = getattr(self, "next", b"test"), b""
+            return value
+
+    def urlopen(request, timeout):
+        assert request.get_header("Accept") == "application/vnd.github+json"
+        return Response()
+
+    monkeypatch.setattr(updater, "urlopen", urlopen)
+    manager = updater.UpdateManager(resolve_app_paths(tmp_path))
+    target = {"kind": "source", "url": "https://api.github.com/repos/souten-yd/FrameDeck/tarball/v2.4.1"}
+    destination = tmp_path / "source.tar.gz"
+    manager._download(target, destination, "2.4.1")
+    assert destination.read_bytes() == b"test"

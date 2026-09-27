@@ -1,5 +1,6 @@
 """The QPKG selects light defaults without changing the Linux profile."""
 import asyncio
+import json
 import threading
 from types import SimpleNamespace
 
@@ -27,6 +28,23 @@ def test_qnap_defaults_and_linux_defaults_are_independent(tmp_path, monkeypatch)
     assert linux.get("video_profile_mobile") == "1080p"
 
 
+def test_qnap_upgrade_keeps_manual_quality_but_retires_old_limits(tmp_path, monkeypatch):
+    monkeypatch.setenv("FRAMEDECK_PROFILE", "qnap-lite")
+    paths = resolve_app_paths(tmp_path / "qnap")
+    paths.settings_file.parent.mkdir(parents=True)
+    (paths.config_dir / "qnap-lite-v1").write_text("1\n")
+    paths.settings_file.write_text(json.dumps({
+        "settings_version": 4,
+        "video_profile_mobile": "1440p",
+        "video_profile_desktop": "auto",
+        "video_cellular_max_resolution": "480p",
+    }))
+    settings = Settings(paths)
+    assert settings.get("video_profile_mobile") == "720p"
+    assert settings.get("video_profile_desktop") == "auto"
+    assert settings.get("video_cellular_max_resolution") == "original"
+
+
 def test_qnap_hls_never_generates_high_resolution(tmp_path, monkeypatch):
     monkeypatch.setenv("FRAMEDECK_PROFILE", "qnap-lite")
     source = tmp_path / "source.mp4"
@@ -43,18 +61,21 @@ def test_qnap_hls_never_generates_high_resolution(tmp_path, monkeypatch):
     services = SimpleNamespace(hls=hls, video_playback=SimpleNamespace(
         get_info=lambda *_: SimpleNamespace(height=2160)))
     asyncio.run(video_router.hls_master("movie", profile="2160p", session="", services=services))
-    assert selected == ["480p"]
+    assert selected == ["720p"]
+    selected.clear()
+    asyncio.run(video_router.hls_master("movie", profile="720p", session="", services=services))
+    assert selected == ["720p"]
     hls.shutdown()
 
 
 def test_qnap_fmp4_limits_resolution_and_threads():
     from framedeck.video.transcode import build_fmp4_transcode_cmd
 
-    cmd = build_fmp4_transcode_cmd("movie.mkv", max_width=854,
-                                    max_height=480, encode_threads=2)
+    cmd = build_fmp4_transcode_cmd("movie.mkv", max_width=1280,
+                                    max_height=720, encode_threads=2)
     assert ["-threads", "2"] == cmd[cmd.index("-threads"):cmd.index("-threads") + 2]
-    assert "min(iw,854)" in cmd[cmd.index("-vf") + 1]
-    assert "min(ih,480)" in cmd[cmd.index("-vf") + 1]
+    assert "min(iw,1280)" in cmd[cmd.index("-vf") + 1]
+    assert "min(ih,720)" in cmd[cmd.index("-vf") + 1]
     remux = build_fmp4_transcode_cmd("movie.mkv", copy_video=True, encode_threads=2)
     assert "-vf" not in remux and "copy" in remux
 
@@ -78,11 +99,27 @@ def test_qnap_profile_prefers_direct_and_caps_unsupported_video(tmp_path, monkey
     assert direct["profile"]["transcode"] is False
     assert direct["direct_play"] is True
 
+    # Mobile/cellular/saveData and even persisted auto settings stay original.
+    hints.update({"connectionType": "cellular", "saveData": True})
+    assert video_router.playback_profile("movie", request, payload=hints, services=services)["profile"]["name"] == "original"
+    hints["requestedProfile"] = "auto"
+    assert video_router.playback_profile("movie", request, payload=hints, services=services)["profile"]["transcode"] is False
+    hints["requestedProfile"] = "720p"
+    manual = video_router.playback_profile("movie", request, payload=hints, services=services)
+    assert manual["profile"]["name"] == "720p" and manual["profile"]["transcode"]
+    hints["requestedProfile"] = "1080p"
+    assert video_router.playback_profile("movie", request, payload=hints, services=services)["profile"]["name"] == "720p"
+    hints.pop("requestedProfile")
+
     # The same 4K source cannot be decoded by this client.
     hints["videoCodecs"] = ["vp9"]
     converted = video_router.playback_profile("movie", request, payload=hints, services=services)
     assert converted["profile"]["name"] == "480p"
     assert converted["copy_video"] is False
+
+    # A stored user choice also counts as explicit, even with Auto in the player.
+    settings.update({"video_profile_mobile": "720p"})
+    assert video_router.playback_profile("movie", request, payload=hints, services=services)["profile"]["name"] == "720p"
 
 
 def test_shared_video_process_gate_rejects_second_fmp4(monkeypatch):

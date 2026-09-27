@@ -18,8 +18,9 @@ def test_comic_spread_css_has_no_gap():
 def test_video_quality_select_exists():
     html = (ROOT / "framedeck/web/templates/index.html").read_text()
     assert 'id="sel-video-quality"' in html
-    for value in ["auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p"]:
+    for value in ["auto", "original", "2160p", "1080p", "720p", "480p", "360p"]:
         assert f'value="{value}"' in html
+    assert 'value="1440p"' not in html
 
 
 def test_aux_mouse_navigation_is_debounced_and_window_captured():
