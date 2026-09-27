@@ -34,9 +34,11 @@ from ...video.stream import (
 from ...video.hls_service import HLS_PROFILES
 from ...video.profile_service import (
     VideoClientHints,
+    canonical_video_profile,
     classify_network,
     original_profile,
     resolve_direct_play,
+    resolve_video_profile,
     select_video_profile,
 )
 from ...video.transcode import TranscodeError, video_thumbnail
@@ -149,7 +151,29 @@ def playback_profile(media_id: str, request: Request,
     settings = services.settings.as_dict()
     requested = payload.get("requestedProfile")
     direct = resolve_direct_play(info, hints)
-    if requested == "original":
+    if qnap_lite():
+        # Auto means original on every connection, including mobile/saveData.
+        # Only a chosen quality or "always transcode" may resize by choice.
+        ui = payload.get("uiProfile") or "desktop"
+        configured = settings.get("video_profile_mobile" if ui == "mobile" else "video_profile_desktop", "auto")
+        if configured == "auto":
+            configured = settings.get("video_max_resolution", "auto")
+        selected = canonical_video_profile(requested if requested and requested != "auto" else configured)
+        if selected == "auto" and settings.get("video_stream_mode") == "transcode":
+            selected = "720p"
+        if selected in {"2160p", "1080p"}:
+            selected = "720p"
+        if selected in {"720p", "480p", "360p"}:
+            profile = resolve_video_profile(selected, info.height, info.width)
+        elif direct.direct_play:
+            profile = original_profile(False, "qnap/original-direct")
+        elif direct.copy_video:
+            profile = original_profile(True, "qnap/original-remux")
+        else:
+            # An unplayable codec needs a bounded software encode. This is
+            # the sole automatic resize; a 4K source is too costly at 720p.
+            profile = resolve_video_profile("480p", info.height, info.width)
+    elif requested == "original":
         # 手動で原寸を選んだ場合は回線判定より優先する
         profile = original_profile(not direct.direct_play, "requested=original")
     else:
@@ -166,14 +190,6 @@ def playback_profile(media_id: str, request: Request,
             hints,
             ui_profile=payload.get("uiProfile") or "desktop",
         )
-    if qnap_lite() and profile.transcode:
-        # Client hints and saved settings can request 4K/1080p. The J3455
-        # must never be asked to software encode those resolutions.
-        from ...video.profile_service import resolve_video_profile
-        if (profile.name != "original" or not direct.copy_video) and (
-            not profile.height or profile.height > QNAP_TRANSCODE_HEIGHT
-        ):
-            profile = resolve_video_profile("480p", info.height, info.width)
     copy_video = direct.copy_video and profile.transcode and profile.name == "original"
     return {
         "profile": profile.to_dict(),
@@ -208,7 +224,7 @@ async def hls_master(media_id: str,
     """
     item = _resolve_video(services, media_id)
     info = services.video_playback.get_info(item.path, media_id)
-    profiles = ([profile] if profile == "360p" else ["480p"]) if qnap_lite() else _hls_profiles(profile)
+    profiles = ([profile] if profile in {"360p", "480p", "720p"} else ["720p"]) if qnap_lite() else _hls_profiles(profile)
     try:
         # 旧ジョブの停止待ちを含むため、専用スレッド枠で実行する
         manifest = await anyio.to_thread.run_sync(

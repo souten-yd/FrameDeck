@@ -26,6 +26,18 @@ FrameDeck_<version>_TS-253Be_x86_64.qpkg
 
 適用時は現在の `framedeck/` と `FrameDeck.py` を同じ配置先の `.framedeck-backup-<version>-<timestamp>/` に退避してから、新しいソースへ切り替えます。切替中に失敗した場合は旧コードへ戻します。成功後は同じ Python 環境で FrameDeck を再起動します。
 
+### 2.4.1以前からLinux版を更新する場合
+
+旧版にはGitHubのソースtarball APIへ `Accept: application/octet-stream` を送る
+不具合があり、HTTP 415で自動更新が止まります。2.4.2で修正しましたが、旧版の
+更新処理自身は修正されないため、**一度だけ手動で更新**してください。
+Git cloneで配置した場合、FrameDeckを停止して配置ディレクトリで
+`git status` を確認し、未コミットの変更がなければ `git pull --ff-only origin main`
+を実行してから再起動します。設定・DB・キャッシュは `FrameDeck_venv/`
+などの永続データにあり、Gitの更新対象ではありません。配置元がGit cloneで
+ない場合は2.4.2のソースを別フォルダに展開し、旧 `framedeck/` と
+`FrameDeck.py` を退避した上で置き換えます。以後はWeb UIから更新できます。
+
 ## Release 作成時の注意
 
 QNAP の自動更新を成立させるには、GitHub Release に対象 architecture の QPKG asset が必要です。GitHub Actions は自動実行せず、既存の manual validation workflow を必要な時だけ手動起動して QPKG を生成・Release へ登録してください。

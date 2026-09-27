@@ -419,7 +419,10 @@ class UpdateManager:
             part.unlink()
         except OSError:
             pass
-        req = Request(url, headers={"User-Agent": _USER_AGENT, "Accept": "application/octet-stream"})
+        # GitHub's source tarball API rejects application/octet-stream (HTTP
+        # 415); release assets use binary negotiation instead.
+        accept = "application/vnd.github+json" if target.get("kind") == "source" else "application/octet-stream"
+        req = Request(url, headers={"User-Agent": _USER_AGENT, "Accept": accept})
         try:
             with urlopen(req, timeout=45) as response, part.open("wb") as out:
                 header_size = int(response.headers.get("Content-Length") or 0)

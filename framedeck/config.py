@@ -36,7 +36,7 @@ SUBPROCESS_TIMEOUT_LIST = 60
 SUBPROCESS_TIMEOUT_READ = 300
 
 #: settings.json のスキーマ版。上げると Settings._migrate が走る。
-SETTINGS_VERSION = 4
+SETTINGS_VERSION = 5
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "settings_version": SETTINGS_VERSION,
@@ -153,18 +153,18 @@ _VALID_ENUMS = {
     },
     "video_stream_mode": {"original", "auto", "transcode"},
     "video_profile_desktop": {
-        "auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p",
+        "auto", "original", "2160p", "1080p", "720p", "480p", "360p",
         "wifi_high", "mobile_balanced", "mobile_low", "data_saver", "custom",
     },
     "video_profile_mobile": {
-        "auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p",
+        "auto", "original", "2160p", "1080p", "720p", "480p", "360p",
         "wifi_high", "mobile_balanced", "mobile_low", "data_saver", "custom",
     },
     "video_max_resolution": {
-        "auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p",
+        "auto", "original", "2160p", "1080p", "720p", "480p", "360p",
     },
     "video_cellular_max_resolution": {
-        "auto", "original", "2160p", "1440p", "1080p", "720p", "480p", "360p",
+        "auto", "original", "2160p", "1080p", "720p", "480p", "360p",
     },
     "video_codec": {"h264", "hevc", "av1", "vp9", "copy"},
     "video_container": {"hls_fmp4"},
@@ -386,6 +386,11 @@ class Settings:
                             self._values[key] = value
             except (OSError, ValueError, TypeError):
                 pass
+            # Retire 1440p without discarding a user's explicit quality choice.
+            for key in ("video_profile_desktop", "video_profile_mobile",
+                        "video_max_resolution", "video_cellular_max_resolution"):
+                if self._values.get(key) == "1440p":
+                    self._values[key] = "1080p"
             self._validate()
             if version < SETTINGS_VERSION:
                 self._migrate(version)
@@ -415,6 +420,14 @@ class Settings:
             # 待ち時間を従来の体感(1〜2秒程度)へ戻す。
             if self._values.get("video_segment_duration") == 4:
                 self._values["video_segment_duration"] = 2
+        if version < 5 and qnap_lite():
+            # Older QPKGs stored a 480p cellular cap. Auto is now original on
+            # every network; keep explicit quality choices but cap them at 720p.
+            for key in ("video_profile_desktop", "video_profile_mobile",
+                        "video_max_resolution"):
+                if self._values.get(key) in {"2160p", "1080p"}:
+                    self._values[key] = "720p"
+            self._values["video_cellular_max_resolution"] = "original"
         self._values["settings_version"] = SETTINGS_VERSION
         try:
             self.save()

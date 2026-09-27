@@ -8,7 +8,6 @@ from ..models import VideoInfo
 
 VIDEO_RESOLUTION_PROFILES: dict[str, dict[str, int]] = {
     "2160p": {"max_width": 3840, "max_height": 2160},
-    "1440p": {"max_width": 2560, "max_height": 1440},
     "1080p": {"max_width": 1920, "max_height": 1080},
     "720p": {"max_width": 1280, "max_height": 720},
     "480p": {"max_width": 854, "max_height": 480},
@@ -18,7 +17,6 @@ VIDEO_RESOLUTION_PROFILES: dict[str, dict[str, int]] = {
 VIDEO_PROFILES: dict[str, dict[str, Any]] = {
     "original": {"transcode": False},
     "2160p": {"resolution": "2160p", "video_bitrate": "16000k", "audio_bitrate": "192k", "fps_limit": None, "codec": "h264"},
-    "1440p": {"resolution": "1440p", "video_bitrate": "9000k", "audio_bitrate": "160k", "fps_limit": None, "codec": "h264"},
     "1080p": {"resolution": "1080p", "video_bitrate": "5000k", "audio_bitrate": "160k", "fps_limit": None, "codec": "h264"},
     "720p": {"resolution": "720p", "video_bitrate": "1800k", "audio_bitrate": "96k", "fps_limit": 30, "codec": "h264"},
     "480p": {"resolution": "480p", "video_bitrate": "850k", "audio_bitrate": "64k", "fps_limit": 30, "codec": "h264"},
@@ -30,8 +28,9 @@ _LEGACY_PROFILE_ALIASES = {
     "mobile_balanced": "720p",
     "mobile_low": "480p",
     "data_saver": "360p",
+    "1440p": "1080p",  # Older saved/client profiles use the next lower supported size.
 }
-_PROFILE_ORDER = ["360p", "480p", "720p", "1080p", "1440p", "2160p"]
+_PROFILE_ORDER = ["360p", "480p", "720p", "1080p", "2160p"]
 
 
 @dataclass(frozen=True)

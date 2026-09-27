@@ -21,19 +21,24 @@ a higher resolution.
 | Nested archive cache | 1 GB | 10 GB | Older nested entries may need re-extraction |
 | Video direct play | Range streaming first; 2 MB per stream read-ahead | Adaptive profiles, 8 MB read-ahead | Browser must support the source codec |
 | Remux | Retain encoded video without resizing when possible | Existing remux path | The source codec must be playable in the browser |
-| Video encode | Bundled ffmpeg on demand, max 854×480, one process shared across HLS and fMP4, two encoder threads | Higher profiles and parallel jobs allowed | Quality and speed depend on the source; demanding codecs can still fall behind real time |
+| Video encode | Bundled ffmpeg on demand, max 1280×720 only for manual quality choice; unsupported codecs automatically fall back to 480p, one process shared across HLS and fMP4, two encoder threads | Higher profiles and parallel jobs allowed | Quality and speed depend on the source; demanding codecs can still fall behind real time |
 | Video thumbnail | Serve existing cache only; no cold thumbnail decoding | Generate on demand | New video thumbnails are absent |
 | Library volume view | Skip recent nested archive rescan | Scan recently opened nested entries when needed | Per-entry progress can be less precise in the volume overview |
 | Web requests | Eight worker thread tokens | 96 | Concurrent requests may queue rather than saturating the NAS |
 | Cache maintenance | Deferred two minutes after launch | During startup | Disk use can briefly remain above the configured limit |
 
 Transcoding is **included**, but is only used if direct play or remux cannot
-serve the client, or if the user explicitly requests conversion. The bundled
+serve the client, or if the user explicitly requests conversion. On QNAP,
+**Auto means original resolution on desktop, mobile, cellular, and saveData**.
+No network-based or starvation-based quality downgrade is triggered. A manual
+720p/480p/360p selection is honored (higher old choices are capped to 720p);
+an unsupported video codec falls back to 480p so it can still play. The bundled
 static ffmpeg uses software H.264 encoding. TS-253Be's J3455 has Intel Quick
 Sync, but this QPKG does not claim GPU acceleration: that would require a
 QTS-compatible VAAPI-enabled ffmpeg and access to `/dev/dri`, verified on the
 actual NAS. Test with 480p material before relying on real-time conversion of
-high-bitrate HEVC or 4K inputs. HLS requests wait
+high-bitrate HEVC or 4K inputs. Try manual 720p only after checking conversion
+speed on the TS-253Be. HLS requests wait
 for the shared conversion slot; another fMP4 request receives a busy response.
 
 ### Quality improvements to try later
@@ -90,6 +95,11 @@ The QPKG is self-contained. The NAS does **not** need Python, pip, Entware,
 ffmpeg, ffprobe, 7-Zip, or a compiler. The package bundles portable CPython,
 Python dependencies, static ffmpeg/ffprobe, and 7zz (also exposed as `7z` for
 FrameDeck's archive backend).
+
+QDK packages the same artwork as the Web PWA into three App Center GIFs:
+`FrameDeck.gif` (64×64), `FrameDeck_80.gif` (80×80), and
+`FrameDeck_gray.gif` (64×64, disabled). They are generated from the checked-in
+`icon-512.png` during the build, so the Web and QTS icons stay in sync.
 
 The portable Python target is baseline `x86_64-unknown-linux-gnu`; compiled
 Python dependencies are explicitly downloaded as `manylinux2014_x86_64`

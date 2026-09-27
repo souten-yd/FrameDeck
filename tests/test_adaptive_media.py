@@ -192,6 +192,21 @@ def test_default_video_quality_is_network_adaptive(tmp_path):
     assert settings.get("video_profile_mobile") == "1080p"
 
 
+def test_linux_saved_1440p_becomes_1080p(tmp_path):
+    import json
+    from framedeck.config import Settings, resolve_app_paths
+    paths = resolve_app_paths(tmp_path / "home")
+    paths.settings_file.parent.mkdir(parents=True)
+    paths.settings_file.write_text(json.dumps({
+        "settings_version": 4, "video_profile_desktop": "1440p",
+        "video_profile_mobile": "1440p", "video_max_resolution": "1440p",
+    }))
+    settings = Settings(paths)
+    assert settings.get("video_profile_desktop") == "1080p"
+    assert settings.get("video_profile_mobile") == "1080p"
+    assert settings.get("video_max_resolution") == "1080p"
+
+
 def test_settings_migrate_old_video_defaults_to_auto(tmp_path):
     import json
 

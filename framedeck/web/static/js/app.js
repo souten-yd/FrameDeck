@@ -86,7 +86,7 @@ function configuredVideoQuality() {
 }
 
 function hlsProfileName(profile) {
-  const allowed = new Set(["2160p", "1440p", "1080p", "720p", "480p", "360p"]);
+  const allowed = new Set(["2160p", "1080p", "720p", "480p", "360p"]);
   if (allowed.has(profile)) return profile;
   return S.uiProfile === "mobile" ? "720p" : "1080p";
 }
@@ -2475,7 +2475,9 @@ video.addEventListener("error", () => {
       S.video.item && !S.video.hlsFallback) {
     S.video.hlsFallback = true;
     const position = currentPosition();
-    const profile = hlsProfileForSource(S.video.info?.height);
+    const profile = S.settings.runtime_profile === "qnap-lite"
+      && !S.video.qualityIsManual && configuredVideoQuality() === "auto"
+      ? "480p" : hlsProfileForSource(S.video.info?.height);
     S.video.transcode = false;
     S.video.hls = true;
     S.video.hlsProfile = profile;
@@ -2540,10 +2542,10 @@ video.addEventListener("dblclick", () => toggleFullscreen($("video-player")));
    手動で画質を選んでいる場合は尊重して何もしない。 */
 const ADAPT_WINDOW_MS = 45000;
 const ADAPT_STARVE_LIMIT = 3;
-const QUALITY_LADDER = ["original", "1440p", "1080p", "720p", "480p"];
+const QUALITY_LADDER = ["original", "1080p", "720p", "480p"];
 
 function noteStarvation() {
-  if (S.video.qualityIsManual || S.video.adapting) return;
+  if (S.settings.runtime_profile === "qnap-lite" || S.video.qualityIsManual || S.video.adapting) return;
   const now = performance.now();
   S.video.starveTimes = (S.video.starveTimes || [])
     .filter((t) => now - t < ADAPT_WINDOW_MS);
@@ -3107,18 +3109,23 @@ async function openSettings() {
   settingRow(grid, "動画軽量配信", makeSelect("video_stream_mode", [
     ["original", "無効"], ["auto", "自動"], ["transcode", "常に有効"],
   ]));
-  const videoQualityOptions = [
-    ["auto", "自動 (回線で判定)"], ["original", "原寸"], ["2160p", "4K"], ["1440p", "1440p"],
-    ["1080p", "1080p"], ["720p", "720p"], ["480p", "480p"], ["360p", "360p"],
-  ];
+  const qnapVideo = S.settings.runtime_profile === "qnap-lite";
+  const videoQualityOptions = qnapVideo
+    ? [["auto", "自動 (原寸)"], ["original", "原寸"], ["720p", "720p"],
+       ["480p", "480p"], ["360p", "360p"]]
+    : [["auto", "自動 (回線で判定)"], ["original", "原寸"], ["2160p", "4K"],
+       ["1080p", "1080p"], ["720p", "720p"], ["480p", "480p"], ["360p", "360p"]];
   settingRow(grid, "最大解像度", makeSelect("video_max_resolution", videoQualityOptions),
+    qnapVideo ? "自動は原寸。720p以下への縮小は手動指定時のみです。" :
     "4K変換は通信量・CPU/GPU負荷・キャッシュ容量が大きくなります。");
   settingRow(grid, "PC 動画品質", makeSelect("video_profile_desktop", videoQualityOptions),
+    qnapVideo ? "自動でも原寸。ブラウザ非対応形式だけ480pへ変換します。" :
     "自動: Wi-Fi/有線(同一LAN)なら原寸、モバイル回線なら下の上限で配信します。");
   settingRow(grid, "モバイル動画品質", makeSelect("video_profile_mobile", videoQualityOptions),
+    qnapVideo ? "自動でも原寸。手動で720p以下を選んだ場合だけ縮小します。" :
     "既定は1080p。iOSでは原寸の直接再生が安定しないため、回線によらず" +
     "セグメント配信(HLS)で届けます。原寸にしたい場合はここで変更できます。");
-  settingRow(grid, "モバイル回線の上限",
+  if (!qnapVideo) settingRow(grid, "モバイル回線の上限",
     makeSelect("video_cellular_max_resolution", videoQualityOptions.filter(([v]) => v !== "auto")),
     "モバイル回線と判定された時だけ適用される上限です。");
   settingRow(grid, "表示同期", makeSelect("video_display_sync", [
@@ -3518,6 +3525,11 @@ async function init() {
   setupHistoryNavigation();
   try {
     S.settings = await api("/api/settings");
+    if (S.settings.runtime_profile === "qnap-lite") {
+      for (const option of [...$("sel-video-quality").options]) {
+        if (["2160p", "1080p"].includes(option.value)) option.remove();
+      }
+    }
     await loadRoots();
   } catch (e) {
     toast(`初期化に失敗: ${e.message}`, true);

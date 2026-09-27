@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import os
 
-QNAP_TRANSCODE_WIDTH = 854
-QNAP_TRANSCODE_HEIGHT = 480
+QNAP_TRANSCODE_WIDTH = 1280
+QNAP_TRANSCODE_HEIGHT = 720
 
 
 def qnap_lite() -> bool:
@@ -35,7 +35,7 @@ QNAP_DEFAULTS = {
     "video_stream_mode": "auto",
     "video_profile_desktop": "auto",
     "video_profile_mobile": "auto",
-    "video_cellular_max_resolution": "480p",
+    "video_cellular_max_resolution": "original",
     "video_hls_max_concurrent": 1,
     "video_ffmpeg_auto_download": False,
     "video_variant_cache_mb": 128,

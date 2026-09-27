@@ -96,6 +96,27 @@ import framedeck
 print('FrameDeck runtime imports: OK')
 PY
 
+# QDK embeds these three GIFs as the QTS App Center / desktop icons. Derive
+# them from the same checked-in artwork used by the web app.
+"$PYTHON" - "$ROOT_DIR/framedeck/web/static/icons/icon-512.png" "$WORK_DIR/env/icons" <<'PY'
+from pathlib import Path
+from PIL import Image, ImageOps
+import sys
+
+source = Image.open(sys.argv[1]).convert("RGBA")
+icons = Path(sys.argv[2])
+for name, size, disabled in (("FrameDeck.gif", 64, False),
+                             ("FrameDeck_80.gif", 80, False),
+                             ("FrameDeck_gray.gif", 64, True)):
+    resized = source.resize((size, size), Image.Resampling.LANCZOS)
+    background = Image.new("RGBA", resized.size, "#15151e")
+    background.alpha_composite(resized)
+    output = background.convert("RGB")
+    if disabled:
+        output = ImageOps.grayscale(output)
+    output.convert("P", palette=Image.Palette.ADAPTIVE, colors=256).save(icons / name, format="GIF")
+PY
+
 # Use a pinned, fully static musl ffmpeg/ffprobe release. A rolling third-party
 # URL previously returned an HTML response with HTTP 200, which only failed at
 # extraction time. Pinning both the release and SHA-256 makes the QPKG build
