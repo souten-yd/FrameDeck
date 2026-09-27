@@ -53,6 +53,31 @@ than maintaining an application fork. For diagnosis compare playback startup
 time, CPU load, resident memory, page-turn latency, and actual conversion fps
 on the TS-253Be.
 
+## Large library listings (2.4.1)
+
+The listing improvements live in the shared `framedeck/` code and also apply
+to the Linux release. A directory is enumerated with `os.scandir`, then only
+matching entries are stat'ed once. Ratings and IDs are parsed from the name
+without another filesystem lookup. SQLite persists the full listing in one
+transaction. The comic volume view is computed from that same listing and
+returned with the items, avoiding a second scan. Navigating to a nested folder
+no longer scans the grandparent. The browser renders the list once; QNAP
+initially creates 300 rows and reveals more in groups of 300 on demand.
+Linux keeps its full-list rendering behavior and existing quality settings.
+
+In a local warm-cache benchmark with 4,000 empty `.cbz` files on temporary
+storage, the original listing took 0.20–0.24 s and the shared listing took
+0.11 s. This is a synthetic measurement, not a TS-253Be HDD result. On an
+actual NAS, compare cold and warm loads for a representative folder and watch
+CPU, disk utilization, API latency, and browser responsiveness.
+
+| Further candidate | Assessment | When to revisit |
+|---|---|---|
+| Four parallel directory stat workers | Extra seeks on HDD and SQLite serialization may outweigh parallelism; not enabled | Measure on NAS SSD or multiple independent disks after the single-scan change |
+| Folder mtime/TTL cache | Avoids repeated readdir, but external file edits and rating renames can go stale | Only if repeat loads remain slow; define invalidation first |
+| Server pagination / incremental volume metadata | Cuts network payload for tens of thousands of files, but changes global sorting, counts, selection and volume order | If JSON transfer is the remaining bottleneck |
+| Virtualized browser list | Bounds DOM nodes while preserving keyboard focus and scroll position | If QNAP's 300-row batches still feel slow |
+
 ## Supported target
 
 - QNAP TS-253Be

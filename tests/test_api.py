@@ -45,6 +45,59 @@ def test_list_items(client_env):
         assert not (item.get("relative_path") or "").startswith("/")
 
 
+def test_inline_volume_metadata_uses_one_listing(client_env, monkeypatch):
+    client, services, root_id, comic_root = client_env
+    original = services.library.list_folder
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(services.library, "list_folder", counted)
+    response = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic&include_volume=true"
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert calls == [str(comic_root)]
+    assert {entry["item_id"] for entry in data["volume_view"]["entries"]} == {
+        item["id"] for item in data["items"] if item["media_type"] == "comic"
+    }
+
+    # Metadata still describes the whole folder when the visible list is filtered.
+    calls.clear()
+    filtered = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic&query=C.cbz&include_volume=true"
+    ).json()
+    assert calls == [str(comic_root)]
+    assert len(filtered["items"]) == 1
+    assert len(filtered["volume_view"]["entries"]) == 2
+
+
+def test_nested_folder_listing_does_not_scan_grandparent(client_env, monkeypatch):
+    client, services, root_id, comic_root = client_env
+    folder = next(
+        item for item in client.get(
+            f"/api/library/items?folder_id={root_id}&mode=comic"
+        ).json()["items"] if item["display_name"] == "B"
+    )
+    original = services.library.list_folder
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(services.library, "list_folder", counted)
+    response = client.get(
+        f"/api/library/items?folder_id={folder['id']}&mode=comic"
+    )
+    assert response.status_code == 200
+    assert response.json()["folder"]["parent_id"]
+    assert calls == [str(comic_root / "B")]
+
+
 def test_volume_view_includes_saved_reading_progress(client_env, monkeypatch):
     client, services, root_id, comic_root = client_env
     items = client.get(

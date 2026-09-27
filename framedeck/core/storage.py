@@ -214,15 +214,28 @@ class Storage:
     def upsert_media_item(self, item_id: str, path: str, media_type: str,
                           rating: int | None, modified_at: float | None,
                           size: int | None) -> None:
-        self._execute(
+        self.upsert_media_items([(item_id, path, media_type, rating, modified_at, size)])
+
+    def upsert_media_items(self, items: list[tuple]) -> None:
+        """Persist a folder listing in one transaction instead of one fsync per item."""
+        if not items:
+            return
+        now = time.time()
+        sql = (
             "INSERT INTO media_items(id,path,media_type,rating,modified_at,size,last_seen) "
             "VALUES(?,?,?,?,?,?,?) "
             "ON CONFLICT(id) DO UPDATE SET path=excluded.path, "
             "media_type=excluded.media_type, rating=excluded.rating, "
             "modified_at=excluded.modified_at, size=excluded.size, "
-            "last_seen=excluded.last_seen",
-            (item_id, path, media_type, rating, modified_at, size, time.time()),
+            "last_seen=excluded.last_seen"
         )
+        with self._lock:
+            try:
+                self._conn.executemany(sql, (item + (now,) for item in items))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
 
     def get_media_item(self, item_id: str) -> dict | None:
         rows = self._query("SELECT * FROM media_items WHERE id=?", (item_id,))
