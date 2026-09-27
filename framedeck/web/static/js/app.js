@@ -537,7 +537,7 @@ function restoreListPreferences() {
   }
 }
 
-async function loadFolder(folderId, { remember = true } = {}) {
+async function loadFolder(folderId, { remember = true, includeVolume = false, deferRender = false } = {}) {
   if (!folderId) return;
   const sort = $("sel-sort").value;
   const filter = $("sel-filter").value;
@@ -551,6 +551,7 @@ async function loadFolder(folderId, { remember = true } = {}) {
     filter,
   });
   if (query) params.set("query", query);
+  if (includeVolume) params.set("include_volume", "true");
   try {
     const data = await api(`/api/library/items?${params.toString()}`);
     const sameFolder = S.folderId === folderId;
@@ -564,10 +565,13 @@ async function loadFolder(folderId, { remember = true } = {}) {
     );
     if (remember) pushHistory(folderId);
     renderBreadcrumb();
-    renderList();
+    if (!sameFolder) S.listRenderLimit = 300;
+    if (!deferRender) renderList();
     updateNavButtons();
+    return data;
   } catch (e) {
     toast(`フォルダを読めません: ${e.message}`, true);
+    return null;
   }
 }
 
@@ -596,7 +600,10 @@ function renderList() {
   const list = $("item-list");
   list.innerHTML = "";
   $("library-empty").classList.toggle("hidden", S.items.length > 0);
-  for (const item of S.items) {
+  const limit = S.settings.runtime_profile === "qnap-lite"
+    ? (S.listRenderLimit || 300) : S.items.length;
+  const fragment = document.createDocumentFragment();
+  for (const item of S.items.slice(0, limit)) {
     const li = document.createElement("li");
     li.dataset.id = item.id;
     if (item.id === S.selectedId) li.classList.add("selected");
@@ -638,7 +645,23 @@ function renderList() {
       else activateItem(item);
     };
     li.ondblclick = () => { if (S.selectMode) activateItem(item); };
-    list.appendChild(li);
+    fragment.appendChild(li);
+  }
+  list.appendChild(fragment);
+  if (S.items.length > limit) {
+    const more = document.createElement("li");
+    more.className = "library-more";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = `さらに表示 (${Math.min(300, S.items.length - limit)} / 残り ${S.items.length - limit} 件)`;
+    button.onclick = () => {
+      const scrollTop = list.scrollTop;
+      S.listRenderLimit = limit + 300;
+      renderList();
+      list.scrollTop = scrollTop;
+    };
+    more.appendChild(button);
+    list.appendChild(more);
   }
   updateLibraryCount();
   updateBulkBar();

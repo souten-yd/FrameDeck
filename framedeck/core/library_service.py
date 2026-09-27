@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import stat as stat_module
 import time
 from pathlib import Path
 
@@ -129,19 +130,44 @@ class LibraryService:
         if enforce_roots:
             folder = str(self.validate_path(folder))
         items: list[MediaItem] = []
-        for name in sorted(os.listdir(folder), key=rs.natural_key):
-            full = os.path.join(folder, name)
-            ext = os.path.splitext(name)[1].lower()
-            is_dir = os.path.isdir(full)
-            if is_dir and is_internal_directory_name(name):
-                continue
-            if mode == "video" and not (is_dir or ext in VIDEO_EXTENSIONS):
-                continue
-            if mode == "comic" and not (is_dir or ext in COMIC_EXTENSIONS):
-                continue
-            item = self._make_item(full)
-            if item:
-                items.append(item)
+        rows: list[tuple] = []
+        # DirEntry gives file type from readdir on common filesystems. Only
+        # matching entries need stat; names, ratings and IDs need no more I/O.
+        with os.scandir(folder) as scan:
+            entries = sorted(scan, key=lambda entry: rs.natural_key(entry.name))
+        for entry in entries:
+            name = entry.name
+            try:
+                is_dir = entry.is_dir()
+                if is_dir and is_internal_directory_name(name):
+                    continue
+                ext = os.path.splitext(name)[1].lower()
+                if mode == "video" and not (is_dir or ext in VIDEO_EXTENSIONS):
+                    continue
+                if mode == "comic" and not (is_dir or ext in COMIC_EXTENSIONS):
+                    continue
+                if not is_dir and ext not in VIDEO_EXTENSIONS | COMIC_EXTENSIONS:
+                    continue
+                info = entry.stat()
+            except OSError:
+                continue  # The entry can disappear while the directory is read.
+            is_dir = stat_module.S_ISDIR(info.st_mode)
+            media_type = "folder" if is_dir else (
+                "video" if ext in VIDEO_EXTENSIONS else "comic"
+            )
+            stem, suffix = (name, "") if is_dir else os.path.splitext(name)
+            display, rating = rs.parse_name(stem)
+            display_name = display + suffix
+            path = os.path.abspath(entry.path)
+            item = MediaItem(
+                id=media_id_for_path(os.path.join(os.path.dirname(path), display_name)),
+                path=path, display_name=display_name, media_type=media_type,
+                source_kind="directory" if is_dir else "file", rating=rating,
+                modified_at=info.st_mtime, size=None if is_dir else info.st_size,
+            )
+            items.append(item)
+            rows.append((item.id, path, media_type, rating, item.modified_at, item.size))
+        self._storage.upsert_media_items(rows)
         return items
 
     def get_item(self, item_id: str) -> MediaItem | None:

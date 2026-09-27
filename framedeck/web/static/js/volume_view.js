@@ -6,7 +6,7 @@
 
 (() => {
   const MODE_KEY_PREFIX = "framedeck.volumeView.";
-  const state = { folderId: null, meta: null, rawItems: [] };
+  const state = { folderId: null, meta: null, rawItems: [], appliedMode: null, itemsById: new Map() };
   const originalLoadFolder = loadFolder;
   const originalRenderList = renderList;
 
@@ -109,8 +109,11 @@
   function applyModeToItems() {
     if (!state.rawItems.length || state.folderId !== S.folderId) return;
     const mode = effectiveMode();
+    if (state.appliedMode === mode) return;
     if (mode !== "volume") {
       S.items = state.rawItems.map((item) => ({ ...item }));
+      state.appliedMode = mode;
+      state.itemsById = new Map(S.items.map((item) => [item.id, item]));
       return;
     }
 
@@ -133,6 +136,8 @@
       if (ae !== be) return ae ? -1 : 1;
       return a._volumeSourceIndex - b._volumeSourceIndex;
     });
+    state.appliedMode = mode;
+    state.itemsById = new Map(S.items.map((item) => [item.id, item]));
   }
 
   function decorateVolumeList() {
@@ -142,7 +147,7 @@
     list.classList.toggle("volume-list", active);
     if (!active) return;
     for (const li of list.querySelectorAll("li")) {
-      const item = S.items.find((candidate) => candidate.id === li.dataset.id);
+      const item = state.itemsById.get(li.dataset.id);
       if (!item || item.media_type === "folder") continue;
       li.classList.add("volume-row");
       const icon = li.querySelector(".item-icon");
@@ -174,7 +179,12 @@
     state.folderId = null;
     state.meta = null;
     state.rawItems = [];
-    await originalLoadFolder(folderId, options);
+    state.appliedMode = null;
+    state.itemsById = new Map();
+    const data = await originalLoadFolder(folderId, {
+      ...options, includeVolume: S.mode === "comic", deferRender: true,
+    });
+    if (!data) return;
     state.folderId = S.folderId;
     state.rawItems = S.items.map((item) => ({ ...item }));
     if (S.mode !== "comic" || !S.folderId) {
@@ -182,7 +192,7 @@
       return;
     }
     try {
-      state.meta = await api(`/api/library/volume-view?folder_id=${encodeURIComponent(S.folderId)}`);
+      state.meta = data.volume_view || await api(`/api/library/volume-view?folder_id=${encodeURIComponent(S.folderId)}`);
     } catch (error) {
       // Supplemental analysis must never make the conventional library unusable.
       state.meta = { recommended_mode: "files", recognized_ratio: 0, entries: [] };

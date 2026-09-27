@@ -181,9 +181,18 @@ def list_items(folder_id: str = Query(...),
                sort: str = Query("date_desc"),
                filter: str = Query("all"),
                query: str = Query(""),
+               include_volume: bool = Query(False),
                services: Services = Depends(get_services)) -> dict:
     folder = _resolve_folder(services, folder_id, mode)
-    items = _visible_items(services, folder, mode, filter, query)
+    all_items = _visible_items(services, folder, mode)
+    items = all_items
+    if filter == "rated":
+        items = [i for i in items if i.rating]
+    elif filter == "unrated":
+        items = [i for i in items if not i.rating]
+    search = query.strip().lower()
+    if search:
+        items = [i for i in items if search in i.display_name.lower()]
     ordered = _sorted_items(items, sort)
 
     root = _find_root_for(services, folder, mode)
@@ -194,10 +203,6 @@ def list_items(folder_id: str = Query(...),
     if root_path and folder.rstrip(os.sep) != root_path.rstrip(os.sep):
         try:
             services.library.validate_path(parent)
-            parent_items = services.library.list_folder(
-                os.path.dirname(parent) or parent, mode=mode,
-                enforce_roots=False,
-            )
             from ...core.library_service import item_id_for
             parent_id = item_id_for(parent)
             # 親フォルダをIDで辿れるようDBへ登録しておく
@@ -205,7 +210,6 @@ def list_items(folder_id: str = Query(...),
                 parent_id, os.path.abspath(parent), "folder", None,
                 os.path.getmtime(parent), None,
             )
-            del parent_items
         except (PathValidationError, OSError):
             parent_id = None
 
@@ -213,7 +217,7 @@ def list_items(folder_id: str = Query(...),
     rel = os.path.relpath(folder, root_path) if root_path else folder_name
     _remember_folder(services, mode, folder_id, folder,
                      root["id"] if root else None)
-    return {
+    response = {
         "folder": {
             "id": folder_id,
             "display_name": folder_name,
@@ -225,6 +229,10 @@ def list_items(folder_id: str = Query(...),
         "total": len(items),
         "rated": sum(1 for i in items if i.rating),
     }
+    if include_volume and mode == "comic":
+        from .volume_view import build_volume_view
+        response["volume_view"] = build_volume_view(services, all_items)
+    return response
 
 
 def _last_folder_key(mode: str) -> str:
