@@ -20,6 +20,8 @@ FrameDeck_<version>_TS-253Be_x86_64.qpkg
 
 ダウンロード後は QPKG を別プロセスからインストールするため、FrameDeck サービス自身が停止・更新されても updater helper は永続領域に残ります。QPKG の更新には QTS 側で FrameDeck サービスが管理者権限で実行されている必要があります。
 
+インストーラーが非ゼロで終了しても、新しい版のサービスが実際に起動していれば、設定画面では「完了」と終了コードの警告を表示します。終了コードだけでは後処理の失敗と本体の失敗を区別できないため、詳細は永続データ領域の `logs/update.log` を確認してください。新しい版が起動していなければ失敗として表示します。旧版が保存した失敗表示も、版数が一致すれば次の起動時に修正されます。
+
 ## Ubuntu / Linux source installation
 
 通常の `FrameDeck.py` 配置は Ubuntu/Linux として判定し、GitHub Release の source tarball を使用します。展開時に path traversal、symbolic link、hard link、device entry を拒否し、展開された `framedeck/__init__.py` の version が Release tag と一致することを確認します。

@@ -283,20 +283,41 @@ class UpdateManager:
                 self.qnap_result_file.unlink()
             except OSError:
                 pass
-            if qnap_result.get("ok"):
+            target_version = qnap_result.get("target_version")
+            if target_version == __version__:
                 return self._set_state(
                     "completed",
-                    target_version=qnap_result.get("target_version"),
-                    message="QPKG更新が完了しました",
+                    target_version=target_version,
+                    installer_warning=not qnap_result.get("ok"),
+                    installer_exit_code=qnap_result.get("exit_code"),
+                    message=(
+                        f"v{target_version}で起動しています。インストーラーは非ゼロで終了しました。"
+                        "詳細はupdate.logを確認してください。"
+                        if not qnap_result.get("ok") else "QPKG更新が完了しました"
+                    ),
                 )
             return self._set_state(
                 "failed",
-                target_version=qnap_result.get("target_version"),
-                message=qnap_result.get("message") or "QPKG更新に失敗しました",
+                target_version=target_version,
+                installer_exit_code=qnap_result.get("exit_code"),
+                message=(f"QPKG更新を確認できませんでした。update.logを確認してください。"
+                         if qnap_result.get("ok") else
+                         f"QPKGインストーラーが非ゼロで終了しました。update.logを確認してください。"),
             )
 
         state = _load_json(self.state_file)
         if state:
+            # The result file may already have been consumed by the previous
+            # process. Reconcile its persisted installer warning after restart.
+            if (state.get("status") == "failed" and
+                    (state.get("installer_exit_code") is not None or
+                     state.get("message") == "QPKG installer returned a non-zero status")
+                    and state.get("target_version") == __version__):
+                return self._set_state(
+                    "completed", target_version=__version__, installer_warning=True,
+                    installer_exit_code=state.get("installer_exit_code"),
+                    message=f"v{__version__}で起動しています。インストーラーは非ゼロで終了しました。詳細はupdate.logを確認してください。",
+                )
             state["current_version"] = __version__
             state["platform"] = self._platform_dict()
             return state
@@ -474,6 +495,7 @@ class UpdateManager:
             "ok": False,
             "target_version": target_version,
             "message": "QPKG installer returned a non-zero status",
+            "exit_code": "__EXIT_CODE__",
         }, ensure_ascii=False)
         script.write_text(
             "#!/bin/sh\n"
@@ -485,7 +507,7 @@ class UpdateManager:
             "if [ \"$RC\" -eq 0 ]; then\n"
             f"  printf '%s\\n' {shlex.quote(success_json)} > {shlex.quote(str(result))}.tmp\n"
             "else\n"
-            f"  printf '%s\\n' {shlex.quote(failed_json)} > {shlex.quote(str(result))}.tmp\n"
+            f"  printf '%s\\n' {shlex.quote(failed_json)} | sed \"s/\\\"__EXIT_CODE__\\\"/$RC/\" > {shlex.quote(str(result))}.tmp\n"
             "fi\n"
             f"mv {shlex.quote(str(result))}.tmp {shlex.quote(str(result))}\n"
             "exit $RC\n",
