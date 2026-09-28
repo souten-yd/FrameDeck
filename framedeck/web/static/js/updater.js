@@ -8,6 +8,7 @@
   const originalOpenSettings = settingsButton.onclick;
   let pollTimer = null;
   let reconnectAttempts = 0;
+  let updateStartedHere = false;
 
   function bytesLabel(value) {
     const bytes = Number(value) || 0;
@@ -112,8 +113,8 @@
       return false;
     }
     if (job.status === "completed") {
-      setMessage(panel, "更新が完了しました。画面を再読み込みします。", "ok");
-      window.setTimeout(() => location.reload(), 600);
+      setMessage(panel, job.message || "更新が完了しました。", job.installer_warning ? "warn" : "ok");
+      if (updateStartedHere) window.setTimeout(() => location.reload(), 600);
       return false;
     }
     // A normal release check also records target_version. Only treat a matching
@@ -185,6 +186,7 @@
     setMessage(panel, "更新を開始しています…");
     try {
       const job = await request("/api/update/apply", { method: "POST" });
+      updateStartedHere = true;
       renderJob(panel, job);
       startPolling(panel);
     } catch (error) {
@@ -242,7 +244,7 @@
       renderJob(panel, job);
       if (["queued", "downloading", "verified", "installing", "restarting"].includes(job.status)) {
         startPolling(panel);
-      } else {
+      } else if (job.status !== "failed" && job.status !== "completed") {
         setMessage(panel, "「更新を確認」でGitHub Releasesを確認します。");
       }
     } catch (error) {

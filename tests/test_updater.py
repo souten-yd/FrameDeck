@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import tarfile
 from pathlib import Path
 
@@ -136,3 +137,30 @@ def test_linux_source_download_uses_github_tarball_accept(monkeypatch, tmp_path:
     destination = tmp_path / "source.tar.gz"
     manager._download(target, destination, "2.4.1")
     assert destination.read_bytes() == b"test"
+
+
+@pytest.mark.parametrize("version,expected", [("2.4.3", "completed"), ("2.4.2", "failed")])
+def test_qnap_installer_exit_is_reconciled_with_running_version(monkeypatch, tmp_path: Path, version, expected):
+    monkeypatch.setattr(updater, "__version__", version)
+    monkeypatch.setattr(updater, "detect_platform", lambda: updater.PlatformInfo("qnap", "x86_64", "QNAP", True))
+    manager = updater.UpdateManager(resolve_app_paths(tmp_path))
+    manager.update_dir.mkdir(parents=True)
+    manager.qnap_result_file.write_text(json.dumps({"ok": False, "target_version": "2.4.3", "exit_code": 1}))
+
+    result = manager.job_status()
+    assert result["status"] == expected
+    assert result["installer_exit_code"] == 1
+    assert not manager.qnap_result_file.exists()
+    assert manager.job_status()["status"] == expected
+
+
+def test_qnap_legacy_failed_state_reconciles_after_restart(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(updater, "__version__", "2.4.3")
+    monkeypatch.setattr(updater, "detect_platform", lambda: updater.PlatformInfo("qnap", "x86_64", "QNAP", True))
+    manager = updater.UpdateManager(resolve_app_paths(tmp_path))
+    updater._atomic_json(manager.state_file, {
+        "status": "failed", "target_version": "2.4.3",
+        "message": "QPKG installer returned a non-zero status",
+    })
+    assert manager.job_status()["status"] == "completed"
+    assert manager.job_status()["installer_warning"] is True
