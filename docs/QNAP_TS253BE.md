@@ -70,6 +70,11 @@ no longer scans the grandparent. The browser renders the list once; QNAP
 initially creates 300 rows and reveals more in groups of 300 on demand.
 Linux keeps its full-list rendering behavior and existing quality settings.
 
+From 2.4.3, returning to a parent folder centers the previously opened child
+row. QNAP draws a 300-row window around it, with buttons to reveal preceding
+or following rows. Folder history and refresh also restore the saved scroll
+position; the same navigation applies to Linux without limiting its row count.
+
 In a local warm-cache benchmark with 4,000 empty `.cbz` files on temporary
 storage, the original listing took 0.20–0.24 s and the shared listing took
 0.11 s. This is a synthetic measurement, not a TS-253Be HDD result. On an

@@ -13,6 +13,8 @@ const S = {
   readingItemId: null,
   history: [],
   histIndex: -1,
+  folderScrollPositions: new Map(),
+  listRenderStart: 0,
   settings: {},
   uiProfile: "desktop",
   selectMode: false,
@@ -525,6 +527,49 @@ function updateNavButtons() {
 
 const SORT_STORAGE_KEY = "framedeck.sort";
 const FILTER_STORAGE_KEY = "framedeck.filter";
+const LIBRARY_RENDER_BATCH = 300;
+
+function folderScrollKey(folderId) {
+  return `${S.mode}:${folderId}`;
+}
+
+function rememberFolderScroll() {
+  if (!S.folderId) return;
+  S.folderScrollPositions.set(folderScrollKey(S.folderId), {
+    top: $("item-list").scrollTop,
+    start: S.listRenderStart || 0,
+    limit: S.listRenderLimit || LIBRARY_RENDER_BATCH,
+  });
+}
+
+function prepareFolderPosition(folderId, focusItemId, sameFolder) {
+  if (sameFolder) return;
+  const saved = S.folderScrollPositions.get(folderScrollKey(folderId));
+  S.listRenderStart = Math.min(saved?.start || 0,
+    Math.max(0, S.items.length - LIBRARY_RENDER_BATCH));
+  S.listRenderLimit = saved?.limit || LIBRARY_RENDER_BATCH;
+  if (S.settings.runtime_profile === "qnap-lite" && focusItemId) {
+    const index = S.items.findIndex((item) => item.id === focusItemId);
+    if (index >= 0) {
+      S.listRenderStart = Math.max(0, index - Math.floor(LIBRARY_RENDER_BATCH / 2));
+      S.listRenderLimit = LIBRARY_RENDER_BATCH;
+    }
+  }
+}
+
+function restoreFolderPosition(folderId, focusItemId) {
+  requestAnimationFrame(() => {
+    if (S.folderId !== folderId) return;
+    const list = $("item-list");
+    const row = focusItemId && list.querySelector(`li[data-id="${CSS.escape(focusItemId)}"]`);
+    if (row) {
+      const delta = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+      list.scrollTop += delta - (list.clientHeight - row.offsetHeight) / 2;
+    } else {
+      list.scrollTop = S.folderScrollPositions.get(folderScrollKey(folderId))?.top || 0;
+    }
+  });
+}
 
 function restoreListPreferences() {
   const sort = localStorage.getItem(SORT_STORAGE_KEY);
@@ -537,8 +582,10 @@ function restoreListPreferences() {
   }
 }
 
-async function loadFolder(folderId, { remember = true, includeVolume = false, deferRender = false } = {}) {
+async function loadFolder(folderId, { remember = true, includeVolume = false, deferRender = false,
+                                      focusItemId = null } = {}) {
   if (!folderId) return;
+  rememberFolderScroll();
   const sort = $("sel-sort").value;
   const filter = $("sel-filter").value;
   localStorage.setItem(SORT_STORAGE_KEY, sort);
@@ -565,8 +612,11 @@ async function loadFolder(folderId, { remember = true, includeVolume = false, de
     );
     if (remember) pushHistory(folderId);
     renderBreadcrumb();
-    if (!sameFolder) S.listRenderLimit = 300;
-    if (!deferRender) renderList();
+    prepareFolderPosition(folderId, focusItemId, sameFolder);
+    if (!deferRender) {
+      renderList();
+      restoreFolderPosition(folderId, focusItemId);
+    }
     updateNavButtons();
     return data;
   } catch (e) {
@@ -598,12 +648,32 @@ function comicItemDisplayName(item) {
 
 function renderList() {
   const list = $("item-list");
+  const previousScroll = list.scrollTop;
   list.innerHTML = "";
   $("library-empty").classList.toggle("hidden", S.items.length > 0);
-  const limit = S.settings.runtime_profile === "qnap-lite"
-    ? (S.listRenderLimit || 300) : S.items.length;
+  const qnap = S.settings.runtime_profile === "qnap-lite";
+  const start = qnap ? (S.listRenderStart || 0) : 0;
+  const limit = qnap ? (S.listRenderLimit || LIBRARY_RENDER_BATCH) : S.items.length;
+  const end = Math.min(S.items.length, start + limit);
+  if (start > 0) {
+    const previous = document.createElement("li");
+    previous.className = "library-more";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = `前を表示 (残り ${start} 件)`;
+    button.onclick = () => {
+      const oldHeight = list.scrollHeight;
+      const oldTop = list.scrollTop;
+      S.listRenderStart = Math.max(0, start - LIBRARY_RENDER_BATCH);
+      S.listRenderLimit = end - S.listRenderStart;
+      renderList();
+      list.scrollTop = oldTop + list.scrollHeight - oldHeight;
+    };
+    previous.appendChild(button);
+    list.appendChild(previous);
+  }
   const fragment = document.createDocumentFragment();
-  for (const item of S.items.slice(0, limit)) {
+  for (const item of S.items.slice(start, end)) {
     const li = document.createElement("li");
     li.dataset.id = item.id;
     if (item.id === S.selectedId) li.classList.add("selected");
@@ -648,21 +718,22 @@ function renderList() {
     fragment.appendChild(li);
   }
   list.appendChild(fragment);
-  if (S.items.length > limit) {
+  if (S.items.length > end) {
     const more = document.createElement("li");
     more.className = "library-more";
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = `さらに表示 (${Math.min(300, S.items.length - limit)} / 残り ${S.items.length - limit} 件)`;
+    button.textContent = `さらに表示 (${Math.min(LIBRARY_RENDER_BATCH, S.items.length - end)} / 残り ${S.items.length - end} 件)`;
     button.onclick = () => {
       const scrollTop = list.scrollTop;
-      S.listRenderLimit = limit + 300;
+      S.listRenderLimit = limit + LIBRARY_RENDER_BATCH;
       renderList();
       list.scrollTop = scrollTop;
     };
     more.appendChild(button);
     list.appendChild(more);
   }
+  list.scrollTop = previousScroll;
   updateLibraryCount();
   updateBulkBar();
 }
@@ -3313,8 +3384,9 @@ function refreshCurrentFolder() {
 }
 function goFolderBack() {
   if (S.histIndex > 0) {
+    const childId = S.folderId;
     S.histIndex--;
-    loadFolder(S.history[S.histIndex], { remember: false });
+    loadFolder(S.history[S.histIndex], { remember: false, focusItemId: childId });
   }
 }
 function goFolderForward() {
@@ -3324,7 +3396,9 @@ function goFolderForward() {
   }
 }
 function goFolderUp() {
-  if (S.folderInfo && S.folderInfo.parent_id) loadFolder(S.folderInfo.parent_id);
+  if (S.folderInfo && S.folderInfo.parent_id) {
+    loadFolder(S.folderInfo.parent_id, { focusItemId: S.folderId });
+  }
 }
 $("btn-refresh").onclick = refreshCurrentFolder;
 $("btn-folder-back").onclick = goFolderBack;

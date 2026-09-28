@@ -189,6 +189,7 @@
     state.rawItems = S.items.map((item) => ({ ...item }));
     if (S.mode !== "comic" || !S.folderId) {
       renderList();
+      restoreFolderPosition(folderId, options.focusItemId);
       return;
     }
     try {
@@ -199,6 +200,7 @@
       console.warn("volume view analysis failed", error);
     }
     renderList();
+    restoreFolderPosition(folderId, options.focusItemId);
   };
 
   ensureSelector();
