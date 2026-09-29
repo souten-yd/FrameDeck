@@ -29,10 +29,9 @@
     <div id="breadcrumb" class="tb-breadcrumb"></div>
     <div class="tb-group tb-right">
       <div id="star-bar" class="star-bar" title="選択項目の評価"></div>
-      <select id="sel-filter" class="tb-select">
-        <option value="all">すべて</option>
-        <option value="rated">評価あり</option>
-        <option value="unrated">評価なし</option>
+      <select id="sel-filter" class="tb-select" aria-label="評価優先">
+        <option value="all">ソートなし（通常順）</option>
+        <option value="rating_priority">評価優先</option>
       </select>
       <select id="sel-sort" class="tb-select" aria-label="並び替え">
         <option value="date_desc">更新が新しい順</option>

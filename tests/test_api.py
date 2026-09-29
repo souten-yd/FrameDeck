@@ -45,6 +45,34 @@ def test_list_items(client_env):
         assert not (item.get("relative_path") or "").startswith("/")
 
 
+def test_rating_priority_keeps_unrated_items_after_rated(client_env):
+    client, _, root_id, comic_root = client_env
+    (comic_root / "A.zip").rename(comic_root / "A{zpi$r=5}.zip")
+    (comic_root / "B").rename(comic_root / "B{zpi$r=3}")
+    (comic_root / "D{zpi$r=5}.cbz").write_bytes(b"")
+    (comic_root / "E{zpi$r=1}.cbz").write_bytes(b"")
+    (comic_root / "F.cbz").write_bytes(b"")
+
+    def listing(filter_value):
+        response = client.get("/api/library/items", params={
+            "folder_id": root_id, "mode": "comic", "sort": "name_asc",
+            "filter": filter_value,
+        })
+        assert response.status_code == 200
+        return response.json()
+
+    normal = listing("all")
+    assert [item["display_name"] for item in normal["items"]] == [
+        "B", "A.zip", "C.cbz", "D.cbz", "E.cbz", "F.cbz",
+    ]
+    priority = listing("rating_priority")
+    assert [item["display_name"] for item in priority["items"]] == [
+        "A.zip", "D.cbz", "B", "E.cbz", "C.cbz", "F.cbz",
+    ]
+    assert [item["rating"] for item in priority["items"]] == [5, 5, 3, 1, None, None]
+    assert priority["total"] == len(normal["items"]) == 6
+
+
 def test_inline_volume_metadata_uses_one_listing(client_env, monkeypatch):
     client, services, root_id, comic_root = client_env
     original = services.library.list_folder

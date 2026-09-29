@@ -194,6 +194,10 @@ def list_items(folder_id: str = Query(...),
     if search:
         items = [i for i in items if search in i.display_name.lower()]
     ordered = _sorted_items(items, sort)
+    if filter == "rating_priority":
+        # Stable sort preserves the selected normal order within each rating.
+        # Priority is across folders and files; unrated items stay at the end.
+        ordered.sort(key=lambda item: -(item.rating or 0))
 
     root = _find_root_for(services, folder, mode)
     root_path = root["path"] if root else None
