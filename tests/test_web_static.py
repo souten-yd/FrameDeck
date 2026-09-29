@@ -191,6 +191,15 @@ def test_library_sort_offers_both_directions():
         assert f'value="{value}"' in sort
 
 
+def test_rating_priority_control_keeps_unrated_items_visible():
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    control = html[html.index('id="sel-filter"'):html.index('id="sel-sort"')]
+    assert 'value="all">ソートなし' in control
+    assert 'value="rating_priority">評価優先' in control
+    assert 'value="rated"' not in control
+    assert 'value="unrated"' not in control
+
+
 def test_library_pane_can_be_collapsed_and_resized():
     html = (ROOT / "framedeck/web/templates/index.html").read_text()
     css = (ROOT / "framedeck/web/static/css/app.css").read_text()
