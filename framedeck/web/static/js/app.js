@@ -1208,7 +1208,9 @@ function clearComicBoundaryState() {
 function setComicState(state) {
   clearComicBoundaryState();
   updateComicView(state);
-  if (state.root_item_id && S.items.some((i) => i.id === state.root_item_id)) {
+  if (state.root_item_id &&
+      (S.readingItemId !== state.root_item_id || S.selectedId !== state.root_item_id) &&
+      S.items.some((i) => i.id === state.root_item_id)) {
     S.readingItemId = state.root_item_id;
     S.selectedId = state.root_item_id;
     updateStarBar();
@@ -1531,18 +1533,24 @@ function updateComicControls() {
   $("btn-comic-page-right").title = rtl ? "1ページ戻す" : "1ページ進む";
 }
 
+let comicRequestBusy = false;
+
 async function comicCall(path, body) {
   const state = S.comic.state;
-  if (!state) return null;
+  if (!state || comicRequestBusy) return null;
+  comicRequestBusy = true;
   try {
     const result = await api(
       `/api/comics/session/${state.session_id}/${path}`,
       { json: body || {} }
     );
+    if (S.comic.state?.session_id !== state.session_id) return null;
     return result;
   } catch (e) {
     toast(e.message, true);
     return null;
+  } finally {
+    comicRequestBusy = false;
   }
 }
 
