@@ -825,3 +825,31 @@ def test_start_folder_is_recorded_per_mode(client_env, tmp_path):
     client.get(f"/api/library/items?folder_id={video_root}&mode=video")
     assert client.get("/api/library/start-folder?mode=comic").json()["root_id"] == root_id
     assert client.get("/api/library/start-folder?mode=video").json()["root_id"] == video_root
+
+
+@pytest.mark.parametrize('variant', [False, True])
+def test_page_requests_are_bound_to_volume(client_env, variant):
+    client, _, root_id, _ = client_env
+    items = client.get('/api/library/items', params={'folder_id': root_id}).json()['items']
+    archive = next(i for i in items if i['display_name'] == 'A.zip')
+    entries = client.post('/api/comics/session', json={'item_id': archive['id']}).json()['entries']
+    state = client.post('/api/comics/session', json={
+        'item_id': archive['id'], 'entry_id': entries[0]['id'],
+    }).json()
+    base = f"/api/comics/session/{state['session_id']}"
+    params = {'entry': state['entry_id']}
+    if variant:
+        params.update(width=200, height=300, profile='mobile')
+    old = client.get(base + '/page/2', params=params)
+    assert old.status_code == 200
+    assert 'max-age=86400' in old.headers['cache-control']
+    moved = client.post(base + '/next-entry').json()
+    assert moved['entry_id'] != state['entry_id']
+    stale = client.get(base + '/page/2', params=params)
+    assert stale.status_code == 404  # Never serve the next volume under the old URL.
+    params['entry'] = moved['entry_id']
+    new = client.get(base + '/page/2', params=params, headers={'If-None-Match': old.headers['etag']})
+    assert new.status_code == 200
+    assert new.headers['etag'] != old.headers['etag']
+    legacy = client.get(base + '/page/2')
+    assert legacy.headers['cache-control'] == 'private, no-cache'

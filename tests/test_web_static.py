@@ -495,5 +495,12 @@ def test_comic_prefetch_uses_larger_serial_retained_window():
     assert "const comicPreloader = {" in js
     assert "retained: new Map()" in js
     assert "if (comicPreloader.paused || comicPreloader.active) return" in js
-    assert "queueComicPreloads(state.session_id, specs)" in js
+    assert "queueComicPreloads(`${state.session_id}:${state.entry_id}`, specs)" in js
     assert "window.setTimeout(start, 2000)" in js
+
+
+def test_original_comic_urls_and_preloader_are_volume_scoped():
+    js = (ROOT / 'framedeck/web/static/js/app.js').read_text()
+    original = js[js.index('if (S.settings.comic_delivery_mode === "original")'):js.index('function comicVisiblePageSpecs')]
+    assert 'new URLSearchParams({ entry: state.entry_id || "" })' in original
+    assert 'queueComicPreloads(`${state.session_id}:${state.entry_id}`, specs)' in js

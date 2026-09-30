@@ -1248,7 +1248,9 @@ function comicPageUrl(pageIndex, side = "full") {
   const state = S.comic.state;
   const base = `/api/comics/session/${state.session_id}/page/${pageIndex}`;
   if (S.settings.comic_delivery_mode === "original") {
-    return side === "full" ? base : `${base}?split_side=${side}`;
+    const params = new URLSearchParams({ entry: state.entry_id || "" });
+    if (side !== "full") params.set("split_side", side);
+    return `${base}?${params.toString()}`;
   }
   const rect = $("comic-stage").getBoundingClientRect();
   const params = new URLSearchParams();
@@ -1378,7 +1380,7 @@ function preloadComicPages() {
   for (let i = 1; i <= behind; i++) {
     add(first - i);
   }
-  queueComicPreloads(state.session_id, specs);
+  queueComicPreloads(`${state.session_id}:${state.entry_id}`, specs);
 }
 
 /* iOSでは複数ページのWebP生成を同時に走らせると、先読み自体が表示中の
