@@ -226,13 +226,14 @@ def set_options(session_id: str, payload: dict = Body(...),
 
 
 def _image_response(request: Request, data: bytes, mime: str,
-                    etag: str) -> Response:
+                    etag: str, *, cacheable: bool = False) -> Response:
+    cache_headers = PAGE_CACHE_HEADERS if cacheable else {"Cache-Control": "private, no-cache"}
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304,
-                        headers={**PAGE_CACHE_HEADERS, "ETag": etag})
+                        headers={**cache_headers, "ETag": etag})
     return Response(
         content=data, media_type=mime,
-        headers={**PAGE_CACHE_HEADERS, "ETag": etag},
+        headers={**cache_headers, "ETag": etag},
     )
 
 
@@ -248,6 +249,7 @@ def get_page(session_id: str, page_index: int, request: Request,
              quality: int | None = Query(default=None, ge=40, le=95),
              auto_crop: bool | None = Query(default=None),
              split_side: str = Query(default="full"),
+             entry: str | None = Query(default=None),
              services: Services = Depends(get_services)) -> Response:
     try:
         if profile or format or width or height or auto_crop is not None or split_side != "full":
@@ -271,16 +273,17 @@ def get_page(session_id: str, page_index: int, request: Request,
                 auto_crop=bool(services.settings.get("comic_auto_crop", True) if auto_crop is None else auto_crop),
                 split_side=split_side if split_side in {"full", "left", "right"} else "full",
                 crop_border_types=crop_border_types,
+                expected_entry=entry,
             )
         else:
             data, mime, etag = services.comic_engine.render_page(
-                session_id, page_index, w, h
+                session_id, page_index, w, h, expected_entry=entry
             )
     except ComicEngineError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except (ArchiveError, OSError) as e:
         raise HTTPException(status_code=422, detail=f"ページ読み込み失敗: {e}")
-    return _image_response(request, data, mime, etag)
+    return _image_response(request, data, mime, etag, cacheable=bool(entry))
 
 
 @router.get("/session/{session_id}/page/{page_index}/analysis")

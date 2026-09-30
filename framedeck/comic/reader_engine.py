@@ -495,9 +495,12 @@ class ComicReaderEngine:
 
     def render_page(self, session_id: str, page_index: int,
                     max_width: int | None = None,
-                    max_height: int | None = None) -> tuple[bytes, str, str]:
+                    max_height: int | None = None,
+                    expected_entry: str | None = None) -> tuple[bytes, str, str]:
         with self._lock:
             session = self._get(session_id)
+            if expected_entry is not None and session.entry.id != expected_entry:
+                raise ComicEngineError("巻が切り替わったため画像要求を破棄しました")
             if not (0 <= page_index < session.page_count):
                 raise ComicEngineError(f"ページ範囲外です: {page_index}")
             source = session.source
@@ -529,9 +532,12 @@ class ComicReaderEngine:
         auto_crop: bool = True,
         split_side: str = "full",
         crop_border_types: set[str] | None = None,
+        expected_entry: str | None = None,
     ) -> tuple[bytes, str, str]:
         with self._lock:
             session = self._get(session_id)
+            if expected_entry is not None and session.entry.id != expected_entry:
+                raise ComicEngineError("巻が切り替わったため画像要求を破棄しました")
             if not (0 <= page_index < session.page_count):
                 raise ComicEngineError(f"ページ範囲外です: {page_index}")
             source = session.source
