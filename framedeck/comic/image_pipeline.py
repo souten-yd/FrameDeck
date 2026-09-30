@@ -76,6 +76,9 @@ class MemoryLRU:
             return value
 
     def put(self, key: str, value: bytes) -> None:
+        # An uncacheable page must not flush every useful nearby page.
+        if len(value) > self._max:
+            return
         with self._lock:
             old = self._data.pop(key, None)
             if old is not None:
@@ -109,6 +112,7 @@ class ImagePipeline:
         self._analysis_inflight: set[str] = set()
         self._analysis_inflight_lock = threading.Lock()
         self._prefetch_inflight: set[str] = set()
+        self._prefetch_targets: dict[int, set[str]] = {}
         self._prefetch_inflight_lock = threading.Lock()
         self.variant_sharpen = True
         # ディスクキャッシュ(変換画像/ページ/サムネイル)の合計上限。
@@ -138,6 +142,8 @@ class ImagePipeline:
             return lock
 
     def release_source(self, source) -> None:
+        with self._prefetch_inflight_lock:
+            self._prefetch_targets.pop(id(source), None)
         with self._read_locks_lock:
             self._read_locks.pop(id(source), None)
 
@@ -155,7 +161,7 @@ class ImagePipeline:
             if cached is not None:
                 return cached
             data = source.read_page(page)
-        self._raw_cache.put(key, data)
+            self._raw_cache.put(key, data)
         return data
 
     def get_page_size(self, source, entry: ComicEntry,
@@ -168,9 +174,10 @@ class ImagePipeline:
         with Image.open(io.BytesIO(data)) as img:
             size = img.size
             try:
-                transposed = ImageOps.exif_transpose(img)
-                if transposed is not None:
-                    size = transposed.size
+                # Orientation metadata is enough; exif_transpose decodes and
+                # copies the whole image even when only dimensions are needed.
+                if img.getexif().get(274) in (5, 6, 7, 8):
+                    size = (img.height, img.width)
             except Exception:
                 pass
         with self._size_lock:
@@ -198,6 +205,8 @@ class ImagePipeline:
             idx = center - offset
             if 0 <= idx < len(pages):
                 targets.append(pages[idx])
+        with self._prefetch_inflight_lock:
+            self._prefetch_targets[id(source)] = {self._raw_key(entry, p) for p in targets}
         for page in targets:
             key = self._raw_key(entry, page)
             if self._raw_cache.get(key) is not None:
@@ -206,7 +215,7 @@ class ImagePipeline:
             # 未完了の先読みは1件にまとめ、重複した解析処理で表示用の
             # executor とCPUを占有しないようにする。
             with self._prefetch_inflight_lock:
-                if key in self._prefetch_inflight:
+                if key in self._prefetch_inflight or len(self._prefetch_inflight) >= 16:
                     continue
                 self._prefetch_inflight.add(key)
             try:
@@ -219,7 +228,18 @@ class ImagePipeline:
     def _prefetch_one(self, source, entry: ComicEntry, page: PageRef,
                       key: str) -> None:
         try:
-            self.get_raw(source, entry, page)
+            with self._prefetch_inflight_lock:
+                if key not in self._prefetch_targets.get(id(source), set()):
+                    return
+            # Speculation must not queue behind a foreground archive read.
+            lock = self._source_lock(source)
+            if not lock.acquire(blocking=False):
+                return
+            try:
+                if self._raw_cache.get(key) is None:
+                    self._raw_cache.put(key, source.read_page(page))
+            finally:
+                lock.release()
             self.get_page_size(source, entry, page)
             # 解析(トリミング/見開き)も先回りしてディスクへキャッシュし、
             # 表示時の合議が待たずに揃うようにする
