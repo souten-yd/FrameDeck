@@ -28,6 +28,12 @@ FrameDeck_<version>_TS-253Be_x86_64.qpkg
 
 適用時は現在の `framedeck/` と `FrameDeck.py` を同じ配置先の `.framedeck-backup-<version>-<timestamp>/` に退避してから、新しいソースへ切り替えます。切替中に失敗した場合は旧コードへ戻します。成功後は同じ Python 環境で FrameDeck を再起動します。
 
+再起動後、更新状態を取得した際に、実行中の版数が更新対象以上なら `restarting` を
+`completed` として保存します。過去の更新記録が残ったまま手動でさらに新しい版へ
+更新した場合も完了に移り、設定画面の「更新を確認」を再び利用できます。
+更新対象より古い版で動いている間は完了扱いにしません。画面の自動再読み込みは
+その画面で開始した更新の完了時に一度だけ行い、設定を開き直しても繰り返しません。
+
 ### 2.4.1以前からLinux版を更新する場合
 
 旧版にはGitHubのソースtarball APIへ `Accept: application/octet-stream` を送る

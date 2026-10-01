@@ -307,6 +307,22 @@ class UpdateManager:
 
         state = _load_json(self.state_file)
         if state:
+            # Linux persists "restarting" before exec. Finalize that state from
+            # the running code, including when a later manual update overtook
+            # the original target. Persist completion so reopening Settings
+            # cannot repeatedly treat an old job as an active restart.
+            if state.get("status") == "restarting" and state.get("target_version"):
+                try:
+                    restarted = _version_tuple(__version__) >= _version_tuple(state["target_version"])
+                except UpdateError:
+                    restarted = False
+                if restarted:
+                    details = {key: value for key, value in state.items()
+                               if key not in {"status", "current_version", "platform", "updated_at", "message", "progress"}}
+                    return self._set_state(
+                        "completed", **details, progress=100,
+                        message=f"更新が完了しました。v{__version__}で起動しています。",
+                    )
             # The result file may already have been consumed by the previous
             # process. Reconcile its persisted installer warning after restart.
             if (state.get("status") == "failed" and
