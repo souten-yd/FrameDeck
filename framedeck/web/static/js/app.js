@@ -1148,24 +1148,33 @@ async function applyComicProfileOptions(state) {
       state.reading_direction === options.reading_direction) {
     return state;
   }
-  return api(`/api/comics/session/${state.session_id}/options`, {
+  return comicTransport(`/api/comics/session/${state.session_id}/options`, {
     method: "PATCH",
     json: options,
   });
 }
 
-async function openComic(item) {
+async function openComic(item, entryId = null) {
+  suspendComicRequests();
+  comicResumeNeeded = false;
+  comicOpening = true;
+  const epoch = comicRequestEpoch;
   try {
-    let result = await api("/api/comics/session", { json: { item_id: item.id } });
+    let result = await comicTransport("/api/comics/session", {
+      json: { item_id: item.id, ...(entryId ? { entry_id: entryId } : {}) },
+    }, epoch);
     if (result.requires_choice) {
       chooseEntry(item, result.entries);
       return;
     }
     result = await applyComicProfileOptions(result);
+    if (epoch !== comicRequestEpoch) return;
     S.readingItemId = item.id;
     setComicState(result);
   } catch (e) {
-    toast(`漫画を開けません: ${e.message}`, true);
+    if (epoch === comicRequestEpoch) toast(`漫画を開けません: ${e.message}`, true);
+  } finally {
+    if (epoch === comicRequestEpoch) comicOpening = false;
   }
 }
 
@@ -1178,14 +1187,7 @@ function chooseEntry(item, entries) {
     li.textContent = `${icon} ${entry.label}`;
     li.onclick = async () => {
       closeModal();
-      try {
-        let state = await api("/api/comics/session", {
-          json: { item_id: item.id, entry_id: entry.id },
-        });
-        state = await applyComicProfileOptions(state);
-        S.readingItemId = item.id;
-        setComicState(state);
-      } catch (e) { toast(e.message, true); }
+      await openComic(item, entry.id);
     };
     list.appendChild(li);
   }
@@ -1539,13 +1541,17 @@ let comicRequestBusy = false;
 let comicRequestEpoch = 0;
 let comicRequestController = null;
 let comicResumeNeeded = false;
+let comicOpening = false;
 
-async function comicTransport(path, options = {}) {
+async function comicTransport(path, options = {}, epoch = comicRequestEpoch) {
+  if (epoch !== comicRequestEpoch) throw new DOMException("Obsolete comic request", "AbortError");
   const controller = new AbortController();
   comicRequestController = controller;
   const timer = setTimeout(() => controller.abort(), 12000);
   try {
-    return await api(path, { ...options, signal: controller.signal });
+    const result = await api(path, { ...options, signal: controller.signal });
+    if (epoch !== comicRequestEpoch) throw new DOMException("Obsolete comic request", "AbortError");
+    return result;
   } finally {
     clearTimeout(timer);
     if (comicRequestController === controller) comicRequestController = null;
@@ -1554,6 +1560,7 @@ async function comicTransport(path, options = {}) {
 
 function suspendComicRequests() {
   comicRequestEpoch += 1;
+  comicOpening = false;
   comicResumeNeeded = true;
   comicRequestController?.abort();
   comicRequestController = null;
@@ -1562,8 +1569,9 @@ function suspendComicRequests() {
 }
 
 async function restoreComicSession(before) {
+  const epoch = comicRequestEpoch;
   try {
-    return await comicTransport(`/api/comics/session/${before.session_id}`);
+    return await comicTransport(`/api/comics/session/${before.session_id}`, {}, epoch);
   } catch (error) {
     if (error.status !== 404) throw error;
   }
@@ -1572,20 +1580,20 @@ async function restoreComicSession(before) {
   let state = await comicTransport("/api/comics/session", { json: {
     item_id: before.root_item_id, entry_id: before.entry_id,
     restore_progress: false,
-  } });
+  } }, epoch);
   state = await comicTransport(`/api/comics/session/${state.session_id}/options`, {
     method: "PATCH", json: {
       view_mode: before.view_mode, reading_direction: before.reading_direction,
     },
-  });
+  }, epoch);
   return comicTransport(`/api/comics/session/${state.session_id}/goto`, {
     json: { page_index: before.page_index },
-  });
+  }, epoch);
 }
 
 async function comicCall(path, body) {
   let state = S.comic.state;
-  if (!state || comicRequestBusy) return null;
+  if (!state || comicRequestBusy || comicOpening) return null;
   const epoch = comicRequestEpoch;
   comicRequestBusy = true;
   try {

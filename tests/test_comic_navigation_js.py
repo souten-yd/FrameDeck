@@ -109,3 +109,56 @@ const api = (path, options) => handler(path, options);
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
     subprocess.run([node, '-e', harness + code + checks], check=True, timeout=10)
+
+
+def test_opening_another_book_discards_old_open_and_resume():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js required')
+    js = (Path(__file__).resolve().parents[1] / 'framedeck/web/static/js/app.js').read_text()
+    code = js[js.index('let comicRequestBusy = false;'):js.index('function armComicBoundary')]
+    opening = js[js.index('async function openComic('):js.index('function chooseEntry(')]
+    harness = '''
+const assert = require('node:assert/strict');
+const S = {comic:{state:{session_id:'old',root_item_id:'old-book',entry_id:'old-entry',page_index:10}}};
+const toast = () => {};
+const resetComicPreloader = () => {};
+const setComicState = state => {S.comic.state=state;};
+const applyComicProfileOptions = async state => state;
+const chooseEntry = () => {};
+let handler;
+const api = (path, options) => handler(path, options);
+'''
+    checks = '''
+(async () => {
+  const pending = [];
+  handler = (path, options) => new Promise(resolve => pending.push({resolve,options}));
+  const a = openComic({id:'A'});
+  const b = openComic({id:'B'});
+  assert.equal(pending[0].options.signal.aborted,true);
+  pending[1].resolve({session_id:'B',root_item_id:'B'});
+  await b;
+  pending[0].resolve({session_id:'A',root_item_id:'A'});
+  await a;
+  assert.equal(S.comic.state.session_id,'B');
+  assert.equal(comicOpening,false);
+  // A slow session recreation must stop before PATCH/goto when a new book opens.
+  suspendComicRequests();
+  let finishOld;
+  const calls=[];
+  handler = async (path, options) => {
+    calls.push(path);
+    if(path==='/api/comics/session/B') throw Object.assign(new Error('missing'),{status:404});
+    if(options.json?.item_id==='B') return new Promise(resolve=>{finishOld=resolve;});
+    return {session_id:'C',root_item_id:'C'};
+  };
+  const resume = comicCall(null);
+  while(!finishOld) await new Promise(resolve=>setImmediate(resolve));
+  await openComic({id:'C'});
+  finishOld({session_id:'obsolete'});
+  await resume;
+  assert.equal(S.comic.state.session_id,'C');
+  assert.equal(calls.some(path=>path.includes('obsolete')),false);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+    subprocess.run([node, '-e', harness + code + opening + checks], check=True, timeout=10)
