@@ -164,3 +164,45 @@ def test_qnap_legacy_failed_state_reconciles_after_restart(monkeypatch, tmp_path
     })
     assert manager.job_status()["status"] == "completed"
     assert manager.job_status()["installer_warning"] is True
+
+
+@pytest.mark.parametrize("version", ["2.4.5", "2.4.9", "2.4.10"])
+def test_linux_restart_completion_is_persisted(monkeypatch, tmp_path: Path, version):
+    monkeypatch.setattr(updater, "__version__", version)
+    monkeypatch.setattr(updater, "detect_platform", lambda: updater.PlatformInfo("ubuntu", "x86_64", "Linux", True))
+    paths = resolve_app_paths(tmp_path)
+    manager = updater.UpdateManager(paths)
+    updater._atomic_json(manager.state_file, {
+        "status": "restarting", "current_version": "2.4.2", "target_version": "2.4.5",
+        "message": "更新を適用しました。FrameDeckを再起動しています",
+        "progress": 100, "backup": "/saved/backup", "updated_at": 1,
+    })
+
+    result = manager.job_status()
+    assert result["status"] == "completed"
+    assert result["current_version"] == version
+    assert result["target_version"] == "2.4.5"
+    assert result["backup"] == "/saved/backup"
+    assert result["progress"] == 100
+    assert "更新が完了" in result["message"]
+    assert updater._load_json(manager.state_file) == result
+    # Another status poll or process startup must not re-enter restarting.
+    assert updater.UpdateManager(paths).job_status() == result
+
+
+@pytest.mark.parametrize("status,version,target", [
+    ("restarting", "2.4.2", "2.4.5"),
+    ("restarting", "2.4.9", "2.4.10"),
+    ("restarting", "2.4.9", "invalid"),
+    ("checked", "2.4.5", "2.4.5"),
+    ("failed", "2.4.5", "2.4.5"),
+    ("installing", "2.4.5", "2.4.5"),
+])
+def test_restart_reconciliation_does_not_claim_unconfirmed_completion(
+        monkeypatch, tmp_path: Path, status, version, target):
+    monkeypatch.setattr(updater, "__version__", version)
+    manager = updater.UpdateManager(resolve_app_paths(tmp_path))
+    saved = {"status": status, "target_version": target, "current_version": "2.4.2"}
+    updater._atomic_json(manager.state_file, saved)
+    assert manager.job_status()["status"] == status
+    assert updater._load_json(manager.state_file) == saved

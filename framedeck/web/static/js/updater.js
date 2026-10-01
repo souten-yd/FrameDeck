@@ -114,16 +114,10 @@
     }
     if (job.status === "completed") {
       setMessage(panel, job.message || "更新が完了しました。", job.installer_warning ? "warn" : "ok");
-      if (updateStartedHere) window.setTimeout(() => location.reload(), 600);
-      return false;
-    }
-    // A normal release check also records target_version. Only treat a matching
-    // version as a completed restart when an update was actually restarting;
-    // otherwise opening Settings would reload the whole page after 600 ms.
-    if (job.status === "restarting" && job.target_version &&
-        job.current_version === job.target_version) {
-      setMessage(panel, `v${job.current_version} へ更新されました。`, "ok");
-      window.setTimeout(() => location.reload(), 600);
+      if (updateStartedHere) {
+        updateStartedHere = false;
+        window.setTimeout(() => location.reload(), 600);
+      }
       return false;
     }
     return isActive;
@@ -241,8 +235,7 @@
     container.prepend(panel);
     try {
       const job = await request("/api/update/status");
-      renderJob(panel, job);
-      if (["queued", "downloading", "verified", "installing", "restarting"].includes(job.status)) {
+      if (renderJob(panel, job)) {
         startPolling(panel);
       } else if (job.status !== "failed" && job.status !== "completed") {
         setMessage(panel, "「更新を確認」でGitHub Releasesを確認します。");
