@@ -34,6 +34,7 @@ const renderList = () => {renders++;};
   const failure = comicCall('next-page');
   rejectRequest(new Error('offline'));
   assert.equal(await failure, null);
+  comicResumeNeeded = false; // Recovery behavior is covered separately below.
   const stale = comicCall('next-page');
   S.comic.state = {session_id:'two'};
   resolveRequest({session_id:'one', page_index:2});
@@ -46,3 +47,65 @@ const renderList = () => {renders++;};
 })().catch(error=>{ console.error(error); process.exitCode=1; });
 '''
     subprocess.run([node, '-e', harness + call + state + assertions], check=True, timeout=10)
+
+
+def test_resume_aborts_frozen_requests_and_recreates_missing_session():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js required')
+    js = (Path(__file__).resolve().parents[1] / 'framedeck/web/static/js/app.js').read_text()
+    code = js[js.index('let comicRequestBusy = false;'):js.index('function armComicBoundary')]
+    harness = '''
+const assert = require('node:assert/strict');
+const old = {session_id:'old', root_item_id:'book', entry_id:'volume4', page_index:42, view_mode:'single', reading_direction:'rtl'};
+const S = {comic:{state:old}};
+const toast = () => {};
+let resets=0;
+const resetComicPreloader = () => {resets++;};
+const setComicState = state => {S.comic.state=state;};
+let handler;
+const api = (path, options) => handler(path, options);
+'''
+    checks = '''
+(async () => {
+  handler = (path, options) => new Promise((resolve,reject) => {
+    options.signal.addEventListener('abort',()=>reject(Object.assign(new Error('aborted'),{name:'AbortError'})));
+  });
+  const frozen = comicCall('next-page');
+  suspendComicRequests();
+  assert.equal(await frozen, null);
+  assert.equal(comicRequestBusy,false);
+  assert.equal(resets,1);
+  const calls=[];
+  handler = async (path, options) => {
+    calls.push(path);
+    if(path==='/api/comics/session/old') throw Object.assign(new Error('missing'),{status:404});
+    if(path==='/api/comics/session') {
+      assert.equal(options.json.entry_id,'volume4');
+      assert.equal(options.json.item_id,'book');
+      return {...old,session_id:'new',page_index:0};
+    }
+    if(path.endsWith('/options')) return {...old,session_id:'new',page_index:0};
+    if(path.endsWith('/goto')) {
+      assert.equal(options.json.page_index,42);
+      return {...old,session_id:'new'};
+    }
+    throw new Error('unexpected request '+path);
+  };
+  await comicCall(null);
+  assert.equal(S.comic.state.session_id,'new');
+  assert.equal(S.comic.state.page_index,42);
+  assert.equal(calls.length,4);
+  assert.equal(comicResumeNeeded,false);
+  // A timed-out mutation is not automatically replayed.
+  handler = async () => {throw Object.assign(new Error('timeout'),{name:'AbortError'});};
+  assert.equal(await comicCall('next-page'),null);
+  assert.equal(comicRequestBusy,false);
+  const recovery=[];
+  handler = async path => {recovery.push(path); return {...old,session_id:'new',page_index:43};};
+  await comicCall(null);
+  assert.deepEqual(recovery,['/api/comics/session/new']);
+  assert.equal(S.comic.state.page_index,43);
+})().catch(error=>{console.error(error);process.exitCode=1;});
+'''
+    subprocess.run([node, '-e', harness + code + checks], check=True, timeout=10)

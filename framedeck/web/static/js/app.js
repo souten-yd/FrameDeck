@@ -385,7 +385,9 @@ async function api(path, options = {}) {
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
     try { detail = (await response.json()).detail || detail; } catch (e) {}
-    throw new Error(detail);
+    const error = new Error(detail);
+    error.status = response.status;
+    throw error;
   }
   if (response.status === 204) return null;
   return response.json();
@@ -1534,23 +1536,82 @@ function updateComicControls() {
 }
 
 let comicRequestBusy = false;
+let comicRequestEpoch = 0;
+let comicRequestController = null;
+let comicResumeNeeded = false;
+
+async function comicTransport(path, options = {}) {
+  const controller = new AbortController();
+  comicRequestController = controller;
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    return await api(path, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+    if (comicRequestController === controller) comicRequestController = null;
+  }
+}
+
+function suspendComicRequests() {
+  comicRequestEpoch += 1;
+  comicResumeNeeded = true;
+  comicRequestController?.abort();
+  comicRequestController = null;
+  comicRequestBusy = false;
+  resetComicPreloader();
+}
+
+async function restoreComicSession(before) {
+  try {
+    return await comicTransport(`/api/comics/session/${before.session_id}`);
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+  // Recreate only a missing session. Do not replay a timed-out page turn:
+  // the server may already have applied it before the connection was lost.
+  let state = await comicTransport("/api/comics/session", { json: {
+    item_id: before.root_item_id, entry_id: before.entry_id,
+    restore_progress: false,
+  } });
+  state = await comicTransport(`/api/comics/session/${state.session_id}/options`, {
+    method: "PATCH", json: {
+      view_mode: before.view_mode, reading_direction: before.reading_direction,
+    },
+  });
+  return comicTransport(`/api/comics/session/${state.session_id}/goto`, {
+    json: { page_index: before.page_index },
+  });
+}
 
 async function comicCall(path, body) {
-  const state = S.comic.state;
+  let state = S.comic.state;
   if (!state || comicRequestBusy) return null;
+  const epoch = comicRequestEpoch;
   comicRequestBusy = true;
   try {
-    const result = await api(
+    if (comicResumeNeeded) {
+      const restored = await restoreComicSession(state);
+      if (epoch !== comicRequestEpoch || S.comic.state?.session_id !== state.session_id) return null;
+      comicResumeNeeded = false;
+      setComicState(restored);
+      state = restored;
+    }
+    if (!path) return state;
+    const result = await comicTransport(
       `/api/comics/session/${state.session_id}/${path}`,
       { json: body || {} }
     );
-    if (S.comic.state?.session_id !== state.session_id) return null;
+    if (epoch !== comicRequestEpoch || S.comic.state?.session_id !== state.session_id) return null;
     return result;
   } catch (e) {
-    toast(e.message, true);
+    if (epoch !== comicRequestEpoch) return null;
+    comicResumeNeeded = true;
+    toast(e.name === "AbortError"
+      ? "通信がタイムアウトしました。接続を確認して再度操作してください。"
+      : e.message, true);
     return null;
   } finally {
-    comicRequestBusy = false;
+    if (epoch === comicRequestEpoch) comicRequestBusy = false;
   }
 }
 
@@ -3592,7 +3653,18 @@ function connectWs() {
 }
 
 /* ================= save on unload ================= */
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) suspendComicRequests();
+  else if (S.comic.state) void comicCall(null);
+});
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted && S.comic.state) {
+    suspendComicRequests();
+    void comicCall(null);
+  }
+});
 window.addEventListener("pagehide", () => {
+  suspendComicRequests();
   if (S.video.item) saveVideoProgress();
   if ((S.video.hls || S.video.transcode) && S.video.item) {
     requestTranscodeStop(S.video.item.id);
