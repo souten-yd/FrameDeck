@@ -104,6 +104,7 @@ bash packaging/qnap/build.sh
 
 生成物は `dist/FrameDeck_<version>_TS-253Be_x86_64.qpkg` です。
 GitHub Actionsは費用抑制のため**手動実行専用**で、push / PR / tag / releaseでは自動起動しません。
+公開担当向けの手順は [リリース手順](docs/RELEASE.md) を参照してください。
 インストール、永続データ、ログ、更新方法の詳細は [QNAP TS-253Be ガイド](docs/QNAP_TS253BE.md) を参照してください。
 
 ## 📖 漫画リーダーの中身
