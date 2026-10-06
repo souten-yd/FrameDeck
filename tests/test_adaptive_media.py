@@ -1,6 +1,8 @@
 """Adaptive media delivery and comic image processing tests."""
 from __future__ import annotations
 
+import pytest
+
 from PIL import Image, ImageDraw
 
 from framedeck.comic.crop_detector import detect_crop_box
@@ -67,16 +69,43 @@ def test_mobile_and_desktop_comic_settings_are_independent():
     assert mobile["split_spread"] is True
 
 
-def test_video_save_data_selects_480p():
+def test_video_save_data_does_not_reduce_quality():
     profile = select_video_profile(
         {"video_stream_mode": "auto"},
         _video_info(),
         VideoClientHints(save_data=True, viewport_width=390, viewport_height=844),
         ui_profile="mobile",
     )
-    assert profile.name == "480p"
-    assert profile.transcode is True
-    assert profile.height == 480
+    assert profile.name == "original"
+    assert profile.transcode is False
+    assert profile.height is None
+
+
+@pytest.mark.parametrize("ui_profile", ["desktop", "mobile"])
+@pytest.mark.parametrize("mode", ["auto", "original", "transcode"])
+@pytest.mark.parametrize("quality", ["auto", "720p", "original"])
+def test_network_hints_never_change_selected_video_quality(ui_profile, mode, quality):
+    settings = {
+        "video_stream_mode": mode,
+        f"video_profile_{ui_profile}": quality,
+        "video_cellular_max_resolution": "360p",  # Persisted legacy cap is ignored.
+    }
+    info = _video_info(width=3840, height=2160)
+    baseline = select_video_profile(settings, info, VideoClientHints(
+        connection_type="wifi", local_network=True,
+    ), ui_profile=ui_profile)
+    for hints in (
+        VideoClientHints(connection_type="cellular", effective_type="3g"),
+        VideoClientHints(effective_type="slow-2g", downlink_mbps=0.1,
+                         measured_mbps=0.05, save_data=True),
+        VideoClientHints(save_data=True),
+        VideoClientHints(),
+    ):
+        assert select_video_profile(settings, info, hints, ui_profile=ui_profile) == baseline
+    if mode == "original" or quality in {"auto", "original"}:
+        assert baseline.name == "original"
+    else:
+        assert baseline.name == quality
 
 
 def test_video_profile_does_not_upscale():
@@ -177,7 +206,7 @@ def test_hls_resolve_rejects_path_escape(tmp_path):
         raise AssertionError("path escape should be rejected")
 
 
-def test_default_video_quality_is_network_adaptive(tmp_path):
+def test_default_video_quality_is_fixed_by_ui_profile(tmp_path):
     from framedeck.config import Settings, ensure_runtime_directories, resolve_app_paths
 
     paths = resolve_app_paths(tmp_path / "home")
@@ -254,7 +283,7 @@ def test_settings_migrate_default_hls_segment_duration_to_two_seconds(tmp_path):
     assert Settings(paths).get("video_segment_duration") == 6
 
 
-def test_lan_client_gets_original_and_cellular_is_capped():
+def test_lan_and_cellular_clients_get_the_same_quality():
     lan = select_video_profile(
         {"video_stream_mode": "auto"},
         _video_info(width=3840, height=2160),
@@ -272,9 +301,7 @@ def test_lan_client_gets_original_and_cellular_is_capped():
                          viewport_height=844),
         ui_profile="mobile",
     )
-    assert cellular.name == "1080p"
-    assert cellular.transcode is True
-    assert cellular.height == 1080
+    assert cellular == lan
 
 
 def test_private_ip_is_treated_as_lan_without_connection_api():

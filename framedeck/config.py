@@ -94,14 +94,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "video_display_sync": "auto",            # auto | strong | off
     # 速度補正では均等化できない場合に中間フレームを生成する(実験)
     "video_smooth_motion": "off",            # off | auto
-    # 動画適応配信
+    # 動画配信
     "video_stream_mode": "auto",             # original | auto | transcode
-    # auto = 回線種別で自動 (Wi-Fi/有線=原寸, モバイル回線=下の上限)
+    # auto = 原寸 (回線状況による画質変更なし)
     "video_profile_desktop": "auto",         # auto | original | 2160p | ... | 360p
     # モバイルは回線によらず1080pを既定にする(iOSでは原寸の直接再生が
     # 安定しないため。手動で変更すればその指定が優先される)
     "video_profile_mobile": "1080p",
-    "video_cellular_max_resolution": "1080p",  # モバイル回線での上限
+    "video_cellular_max_resolution": "1080p",  # 旧設定互換用 (回線による上限は適用しない)
     "video_codec": "h264",                   # h264 | hevc | av1 | vp9 | copy
     "video_container": "hls_fmp4",           # hls_fmp4
     "video_max_resolution": "auto",

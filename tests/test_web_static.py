@@ -467,12 +467,15 @@ def test_desktop_original_uses_lossless_continuous_remux():
     assert "原寸安定配信 (無劣化・連続配信)" in js
 
 
-def test_quality_steps_down_when_network_starves():
+def test_network_starvation_does_not_change_quality():
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
-    assert "function noteStarvation" in js
-    assert "function stepDownQuality" in js
-    assert "QUALITY_LADDER" in js
-    assert "S.video.qualityIsManual" in js
+    assert "noteStarvation" not in js
+    assert "stepDownQuality" not in js
+    assert "QUALITY_LADDER" not in js
+    assert "回線が追いつかないため画質を" not in js
+    assert 'recordGlitch("buffer", `先読み残り ${ahead}秒`)' in js
+    assert 'changeVideoQuality($("sel-video-quality").value)' in js
+    assert 'makeSelect("video_cellular_max_resolution"' not in js
 
 
 def test_hls_requests_carry_the_client_session():
