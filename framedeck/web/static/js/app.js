@@ -42,7 +42,7 @@ const S = {
     copyVideo: false, copyAudio: false, transcodeFallback: false,
     mobileStableOriginal: false, desktopStableOriginal: false,
     syncRate: 1, syncInfo: null,
-    starveTimes: [], adapting: false, qualityIsManual: false, hlsFallback: false,
+    hlsFallback: false,
     watchdogTimer: null, watchdogPosition: 0, watchdogStrikes: 0,
     recovering: false,
     pauseStopTimer: null, pausedConversionStopped: false,
@@ -1930,7 +1930,6 @@ async function openVideo(item) {
   S.video.hlsFallback = false;
   S.video.mobileStableOriginal = false;
   S.video.desktopStableOriginal = false;
-  S.video.starveTimes = [];
   try {
     const hints = clientMediaHints();
     if (S.video.quality && S.video.quality !== "auto") hints.requestedProfile = S.video.quality;
@@ -2574,7 +2573,6 @@ video.addEventListener("waiting", () => {
     const b = video.buffered;
     const ahead = b.length ? (b.end(b.length - 1) - video.currentTime).toFixed(1) : 0;
     recordGlitch("buffer", `先読み残り ${ahead}秒`);
-    noteStarvation();
   }
 });
 video.addEventListener("stalled", () => {
@@ -2626,7 +2624,7 @@ video.addEventListener("error", () => {
     S.video.hlsFallback = true;
     const position = currentPosition();
     const profile = S.settings.runtime_profile === "qnap-lite"
-      && !S.video.qualityIsManual && configuredVideoQuality() === "auto"
+      && configuredVideoQuality() === "auto"
       ? "480p" : hlsProfileForSource(S.video.info?.height);
     S.video.transcode = false;
     S.video.hls = true;
@@ -2686,36 +2684,6 @@ video.addEventListener("click", (e) => {
 });
 video.addEventListener("dblclick", () => toggleFullscreen($("video-player")));
 
-/* ================= 回線に合わせた自動調整 =================
-   Wi-Fi越しでは帯域も遅延も揺らぐため、原寸配信が続かないことがある。
-   供給不足(バッファ切れ)が短時間に続いたら画質を一段下げて安定させる。
-   手動で画質を選んでいる場合は尊重して何もしない。 */
-const ADAPT_WINDOW_MS = 45000;
-const ADAPT_STARVE_LIMIT = 3;
-const QUALITY_LADDER = ["original", "1080p", "720p", "480p"];
-
-function noteStarvation() {
-  if (S.settings.runtime_profile === "qnap-lite" || S.video.qualityIsManual || S.video.adapting) return;
-  const now = performance.now();
-  S.video.starveTimes = (S.video.starveTimes || [])
-    .filter((t) => now - t < ADAPT_WINDOW_MS);
-  S.video.starveTimes.push(now);
-  if (S.video.starveTimes.length >= ADAPT_STARVE_LIMIT) stepDownQuality();
-}
-
-function stepDownQuality() {
-  const current = ["auto", "remux", ""].includes(S.video.quality || "auto")
-    ? "original" : S.video.quality;
-  const index = QUALITY_LADDER.indexOf(current);
-  const next = QUALITY_LADDER[Math.min(QUALITY_LADDER.length - 1,
-                                       (index < 0 ? 0 : index) + 1)];
-  if (!next || next === current) return;
-  S.video.starveTimes = [];
-  S.video.adapting = true;
-  toast(`回線が追いつかないため画質を ${next} に下げました`);
-  changeVideoQuality(next).finally(() => { S.video.adapting = false; });
-}
-
 function togglePlay() {
   if (!S.video.item) return;
   if (video.paused) video.play().catch(() => {}); else video.pause();
@@ -2766,8 +2734,6 @@ $("sel-speed").addEventListener("change", () => {
   applyPlaybackRate();
 });
 $("sel-video-quality")?.addEventListener("change", () => {
-  // 手動で選んだ画質は自動調整で上書きしない
-  S.video.qualityIsManual = $("sel-video-quality").value !== "auto";
   changeVideoQuality($("sel-video-quality").value);
 });
 
@@ -3270,14 +3236,11 @@ async function openSettings() {
     "4K変換は通信量・CPU/GPU負荷・キャッシュ容量が大きくなります。");
   settingRow(grid, "PC 動画品質", makeSelect("video_profile_desktop", videoQualityOptions),
     qnapVideo ? "自動でも原寸。ブラウザ非対応形式だけ480pへ変換します。" :
-    "自動: Wi-Fi/有線(同一LAN)なら原寸、モバイル回線なら下の上限で配信します。");
+    "自動は原寸。回線状況による画質変更は行いません。");
   settingRow(grid, "モバイル動画品質", makeSelect("video_profile_mobile", videoQualityOptions),
     qnapVideo ? "自動でも原寸。手動で720p以下を選んだ場合だけ縮小します。" :
     "既定は1080p。iOSでは原寸の直接再生が安定しないため、回線によらず" +
     "セグメント配信(HLS)で届けます。原寸にしたい場合はここで変更できます。");
-  if (!qnapVideo) settingRow(grid, "モバイル回線の上限",
-    makeSelect("video_cellular_max_resolution", videoQualityOptions.filter(([v]) => v !== "auto")),
-    "モバイル回線と判定された時だけ適用される上限です。");
   settingRow(grid, "表示同期", makeSelect("video_display_sync", [
     ["auto", "自動 (±1.2%まで)"], ["strong", "強め (±5%まで)"], ["off", "無効"],
   ]), buildDisplaySyncHint());

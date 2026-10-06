@@ -508,8 +508,8 @@ def test_video_playback_profile_api(client_env, tmp_path):
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["profile"]["name"] == "480p"
-    assert data["profile"]["height"] == 480
+    assert data["profile"]["name"] == "1080p"
+    assert data["profile"]["height"] == 1080
 
 
 def test_hls_cached_playlist_and_segment_delivery(client_env, tmp_path):

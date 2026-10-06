@@ -59,7 +59,7 @@ _WIRED_CONNECTION_TYPES = {"wifi", "ethernet", "wimax", "mixed", "other"}
 def classify_network(hints: VideoClientHints) -> str:
     """回線種別を判定する: lan | cellular | slow | unknown。
 
-    LAN(Wi-Fi/有線)は原寸配信、モバイル回線は上限付き配信に使う。
+    表示用の分類であり、動画画質の選択には使わない。
     ブラウザがNetwork Information APIを実装しない場合(Safari等)は
     クライアントIPがプライベート帯かどうかで代替判定する。
     """
@@ -220,23 +220,6 @@ def original_profile(transcode: bool, reason: str = "") -> ResolvedVideoProfile:
     )
 
 
-def network_resolution_limit(settings: dict[str, Any], network: str,
-                             ui_profile: str = "desktop") -> str:
-    """回線種別ごとの上限解像度。LAN(Wi-Fi/有線)は原寸。"""
-    if network == "slow":
-        return "480p"
-    if network == "cellular":
-        return canonical_video_profile(
-            settings.get("video_cellular_max_resolution", "1080p")) or "1080p"
-    if network == "lan":
-        return "original"
-    # 回線を判別できない外部アクセス: PCは原寸、モバイルはモバイル回線扱い
-    if ui_profile == "mobile":
-        return canonical_video_profile(
-            settings.get("video_cellular_max_resolution", "1080p")) or "1080p"
-    return "original"
-
-
 def _fits_within(name: str, info: VideoInfo) -> bool:
     """ソースが上限解像度に収まっている(縮小不要)か。"""
     if name == "original":
@@ -257,8 +240,6 @@ def select_video_profile(
 ) -> ResolvedVideoProfile:
     hints = hints or VideoClientHints()
     mode = settings.get("video_stream_mode", "auto")
-    network = classify_network(hints)
-    limit = network_resolution_limit(settings, network, ui_profile)
     direct = resolve_direct_play(info, hints)
 
     configured = canonical_video_profile(settings.get(
@@ -269,27 +250,22 @@ def select_video_profile(
         configured = canonical_video_profile(settings.get("video_max_resolution", "auto"))
 
     if mode == "transcode":
-        # 手動指定が最優先。未指定(auto)なら回線に応じた上限で変換する。
-        target = configured if configured != "auto" else limit
+        # 手動指定が最優先。autoでも回線情報による縮小はしない。
+        target = configured if configured != "auto" else "original"
         if target == "original":
             return original_profile(True, "mode=transcode/original")
         profile = resolve_video_profile(target, info.height, info.width)
         return ResolvedVideoProfile(**{**profile.to_dict(), "reason": "mode=transcode"})
 
-    if hints.save_data:
-        profile = resolve_video_profile("480p", info.height, info.width)
-        return ResolvedVideoProfile(**{**profile.to_dict(), "reason": "saveData"})
-
     if mode == "original":
-        # 軽量配信を無効にしていても、モバイル回線だけは上限を適用する
-        target = limit if network in {"cellular", "slow"} else "original"
-        reason = "mode=original" if target == "original" else f"mode=original/{network}"
+        target = "original"
+        reason = "mode=original"
     elif configured != "auto":
         target = configured                      # 明示指定(手動)を尊重する
         reason = "configured"
     else:
-        target = limit
-        reason = f"network={network}"
+        target = "original"
+        reason = "auto/original"
 
     if target == "original":
         if direct.direct_play:
