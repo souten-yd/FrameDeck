@@ -123,6 +123,7 @@
       return {
         ...item,
         _volumeSourceIndex: sourceIndex,
+        _volumeOriginalName: item.display_name,
         _volumeEntry: entry || null,
         display_name: entry ? entry.label : item.display_name,
       };
@@ -156,9 +157,7 @@
       if (stars) stars.hidden = true;
       const name = li.querySelector(".item-name");
       if (name) {
-        name.title = item._volumeEntry?.recognized
-          ? `${item._volumeEntry.kind} · confidence ${Math.round((item._volumeEntry.confidence || 0) * 100)}%`
-          : item.display_name;
+        name.title = item._volumeOriginalName || item.display_name;
       }
       li.appendChild(buildProgressMeta(item._volumeEntry?.reading));
     }

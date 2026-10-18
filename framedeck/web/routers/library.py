@@ -235,7 +235,7 @@ def list_items(folder_id: str = Query(...),
     }
     if include_volume and mode == "comic":
         from .volume_view import build_volume_view
-        response["volume_view"] = build_volume_view(services, all_items)
+        response["volume_view"] = build_volume_view(services, all_items, folder_name=folder_name)
     return response
 
 

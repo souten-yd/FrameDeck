@@ -853,3 +853,27 @@ def test_page_requests_are_bound_to_volume(client_env, variant):
     assert new.headers['etag'] != old.headers['etag']
     legacy = client.get(base + '/page/2')
     assert legacy.headers['cache-control'] == 'private, no-cache'
+
+
+def test_arc_labels_match_inline_and_standalone_metadata(client_env):
+    client, services, root_id, comic_root = client_env
+    folder = comic_root / '星の物語'
+    folder.mkdir()
+    names = ['[作者] 星の物語 第01巻.zip', '[別作者] 星の物語【共和国編】 第01巻.zip']
+    for name in names:
+        (folder / name).write_bytes(b'unchanged')
+    listing = client.get('/api/library/items', params={'folder_id': root_id, 'mode': 'comic'}).json()
+    folder_id = next(i['id'] for i in listing['items'] if i['display_name'] == '星の物語')
+    inline = client.get('/api/library/items', params={
+        'folder_id': folder_id, 'mode': 'comic', 'include_volume': 'true',
+    }).json()
+    standalone = client.get('/api/library/volume-view', params={'folder_id': folder_id}).json()
+    assert inline['volume_view'] == standalone
+    assert [e['label'] for e in standalone['entries']] == ['01', '共和国編 01']
+    assert {e['item_id'] for e in standalone['entries']} == {i['id'] for i in inline['items']}
+    filtered = client.get('/api/library/items', params={
+        'folder_id': folder_id, 'mode': 'comic', 'include_volume': 'true', 'query': '共和国編',
+    }).json()
+    assert filtered['volume_view'] == standalone
+    assert sorted(p.name for p in folder.iterdir()) == sorted(names)
+    assert all(p.read_bytes() == b'unchanged' for p in folder.iterdir())

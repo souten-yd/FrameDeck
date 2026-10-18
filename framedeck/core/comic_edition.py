@@ -32,3 +32,8 @@ def mark_color_edition(label: str, *, source_name: str | None = None) -> str:
     if not is_color_edition(source) or COLOR_MARK in label:
         return label
     return f"{COLOR_MARK} {label}"
+
+
+def strip_color_edition(name: str) -> str:
+    """Remove explicit edition metadata for series-title comparison only."""
+    return _COLOR_EDITION.sub("", name)
