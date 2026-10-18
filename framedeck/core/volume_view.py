@@ -5,13 +5,14 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
 import re
 import zipfile
+import unicodedata
 from typing import Iterable
 
-from .comic_edition import is_color_edition, mark_color_edition
+from .comic_edition import is_color_edition, mark_color_edition, strip_color_edition
 
 
 _ARCHIVE_EXTENSIONS = {".zip", ".cbz", ".rar", ".cbr", ".7z"}
@@ -240,3 +241,91 @@ def recommend_display_mode(descriptors: Iterable[VolumeDescriptor], *, has_folde
     recognized = sum(1 for value in values if value.recognized)
     ratio = recognized / len(values)
     return ("volume" if ratio >= 0.70 else "files"), ratio
+
+
+_TITLE_EDGES = " \t_-–—"
+
+
+def _series_title(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"\{zpi\$r=[1-5]\}", "", text)
+    text = text.strip(" \t⭐🌟★☆\ufe0f\ufe0e🌈")
+    # Only a leading author credit is discarded; bracketed arc names survive.
+    text = re.sub(r"^\[[^\]]+\]\s*", "", text)
+    return strip_color_edition(text).strip(_TITLE_EDGES)
+
+
+def _title_key(text: str) -> str:
+    return "".join(c.casefold() for c in text if not c.isspace())
+
+
+def contextualize_volumes(
+    names: list[str], descriptors: list[VolumeDescriptor], *, folder_name: str,
+) -> list[VolumeDescriptor]:
+    """Keep distinguishing series text in a shared folder, without title lists.
+
+    Use an actual folder/filename title as the base, never an arbitrary common
+    character prefix. Unknown names retain their existing fallback label.
+    This operates on listing metadata only and does not open or rename files.
+    """
+    titles = []
+    for name in names:
+        text = unicodedata.normalize("NFKC", _stem(name))
+        matches = [m for pattern in (*_VOLUME_RANGE_PATTERNS,
+                   _VOLUME_SET_PATTERN, _VOLUME_PATTERN, _VOL_PATTERN,
+                   _CHAPTER_PATTERN) if (m := pattern.search(text))]
+        titles.append(_series_title(text[:min(m.start() for m in matches)])
+                      if matches else "")
+    folder = _series_title(folder_name)
+    folder_key = _title_key(folder)
+    observed = sorted(set(t for t in titles if t), key=lambda t: (len(_title_key(t)), t))
+    # A folder may be named after a longer sequel (e.g. Series 1.0).
+    base = next((t for t in observed if folder_key.startswith(_title_key(t))), folder)
+    base_key = _title_key(base)
+    distinct = {_title_key(t) for t in observed}
+    # The full folder title and its observed short form are display aliases.
+    # Preserve numeric suffixes: a folder named Series 1.0 must not hide 1.0.
+    base_numbers = {d.start for t, d in zip(titles, descriptors)
+                    if _title_key(t) == base_key and d.start is not None}
+    folder_numbers = {d.start for t, d in zip(titles, descriptors)
+                      if _title_key(t) == folder_key and d.start is not None}
+    folder_is_main = (base_key == folder_key or (
+        not re.search(r"\d", folder_key[len(base_key):])
+        and not base_numbers.intersection(folder_numbers)
+    ))
+    result = []
+    for title, descriptor in zip(titles, descriptors):
+        if not title or descriptor.start is None or not base_key:
+            result.append(descriptor)
+            continue
+        key = _title_key(title)
+        if key == base_key or (key == folder_key and folder_is_main):
+            branch = ""
+        elif key.startswith(base_key):
+            # Locate the suffix in display text, preserving punctuation/case.
+            end = next((i for i in range(1, len(title) + 1)
+                        if _title_key(title[:i]) == base_key), None)
+            branch = title[end:].strip(_TITLE_EDGES) if end is not None else title
+            for opening, closing in (("【", "】"), ("[", "]"), ("(", ")"), ("「", "」")):
+                if branch.startswith(opening) and branch.endswith(closing):
+                    branch = branch[1:-1].strip()
+                    break
+        elif len(distinct) > 1:
+            branch = title  # No safe relationship: retain the complete title.
+        else:
+            result.append(descriptor)
+            continue
+        label = descriptor.label.removeprefix("🌈 ")
+        if descriptor.special:
+            label = label.removeprefix(descriptor.special + " ")
+        label = f"{branch} {label}" if branch else label
+        if descriptor.color_edition:
+            label = "🌈 " + label
+        # Keep each arc together, then retain existing volume/chapter ordering.
+        result.append(replace(descriptor, label=label,
+            sort_key=(int(bool(branch)), _title_key(branch), *descriptor.sort_key)))
+    # All keys must have the same comparable shape, including unknown entries.
+    for i, descriptor in enumerate(result):
+        if descriptor is descriptors[i]:
+            result[i] = replace(descriptor, sort_key=(2, "", *descriptor.sort_key))
+    return result

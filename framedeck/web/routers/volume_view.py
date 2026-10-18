@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Query
 
 from ...core.services import Services
 from ...core.library_service import canonical_path
-from ...core.volume_view import parse_volume_descriptor, recommend_display_mode
+from ...core.volume_view import parse_volume_descriptor, recommend_display_mode, contextualize_volumes
 from ...models import MediaItem, comic_entry_id
 from ...runtime_profile import qnap_lite
 from ..dependencies import get_services
@@ -57,10 +57,10 @@ def volume_view(folder_id: str = Query(...),
                 services: Services = Depends(get_services)) -> dict:
     folder = _resolve_folder(services, folder_id, "comic")
     items = _visible_items(services, folder, "comic")
-    return build_volume_view(services, items)
+    return build_volume_view(services, items, folder_name=os.path.basename(folder))
 
 
-def build_volume_view(services: Services, items: list[MediaItem]) -> dict:
+def build_volume_view(services: Services, items: list[MediaItem], *, folder_name: str = "") -> dict:
     """Build volume metadata from an existing listing without scanning it again."""
     files = [item for item in items if item.media_type != "folder"]
     has_folders = any(item.media_type == "folder" for item in items)
@@ -101,6 +101,12 @@ def build_volume_view(services: Services, items: list[MediaItem]) -> dict:
     for item in files:
         descriptor = parse_volume_descriptor(item.display_name, path=item.path)
         parsed.append((item, descriptor))
+
+    contextual = contextualize_volumes(
+        [item.display_name for item in files],
+        [descriptor for _, descriptor in parsed], folder_name=folder_name,
+    )
+    parsed = list(zip(files, contextual))
 
     recommended, ratio = recommend_display_mode(
         [descriptor for _, descriptor in parsed], has_folders=has_folders,

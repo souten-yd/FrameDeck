@@ -161,3 +161,66 @@ def test_partial_nested_progress_does_not_claim_overall_percentage():
     assert summary["progress_percent"] is None
     assert summary["page_count"] == 10
     assert summary["page_count_complete"] is False
+
+
+def contextual_labels(folder, names):
+    from framedeck.core.volume_view import contextualize_volumes
+    values = contextualize_volumes(names, [parse_volume_descriptor(n) for n in names],
+                                   folder_name=folder)
+    return [v.label for v in sorted(values, key=lambda v: v.sort_key)]
+
+
+def test_shared_folder_labels_arcs_without_main_prefix():
+    assert contextual_labels('星の物語', [
+        '[別作者] 星の物語【共和国編】 第02巻.zip',
+        '[作者] 星の物語 第02巻.zip',
+        '[作者] 星の物語 第01巻.zip',
+        '[別作者] 星の物語【共和国編】 第01巻.zip',
+        '[別作者] 星の物語 外伝 ～月の記録～ 第01巻.zip',
+    ]) == ['01', '02', '共和国編 01', '共和国編 02', '外伝 ~月の記録~ 01']
+
+
+def test_arc_names_need_no_keyword_dictionary():
+    assert contextual_labels('星の物語', [
+        '星の物語 第01巻.zip', '星の物語カタリナからの手紙 第01巻.zip',
+    ]) == ['01', 'カタリナからの手紙 01']
+    assert contextual_labels('星の物語1.0', [
+        '星の物語1.0 第01巻.zip', '星の物語 第01巻.zip',
+    ]) == ['01', '1.0 01']
+
+
+def test_ratings_width_spaces_color_and_ranges():
+    assert contextual_labels('⭐️ 星の物語{zpi$r=5}', [
+        '[作者] 星の物語 カラー版 第01巻.zip',
+        '[作者] 星の物語 第01巻.zip',
+        '[作者] 星の物語 【海辺編】 第01-03巻s セミカラー版.zip',
+    ]) == ['01', '🌈 01', '🌈 海辺編 01–03']
+    assert contextual_labels('Space Tale', [
+        '[A] Space  Tale Vol.01.cbz', '[B] Space Tale [New Dawn] Vol.02.cbz',
+    ]) == ['01', 'New Dawn 02']
+
+
+def test_unrelated_titles_and_unrecognized_files_keep_context():
+    assert contextual_labels('Collection', [
+        'Starship 第01巻.zip', 'Stardust 第01巻.zip', 'unknown.zip',
+    ]) == ['Stardust 01', 'Starship 01', 'unknown.zip']
+    assert contextual_labels('作品', ['作品 異聞 海 第01巻.zip',
+                                   '作品 異聞 空 第01巻.zip']) == ['異聞 海 01', '異聞 空 01']
+
+
+def test_contextual_order_is_independent_of_listing_order():
+    names = ['作品 新章 第02巻.zip', '作品 第02巻.zip', '作品 新章 第01巻.zip']
+    assert contextual_labels('作品', names) == contextual_labels('作品', list(reversed(names)))
+
+
+def test_folder_full_title_and_short_form_are_main_aliases():
+    assert contextual_labels('STAR SHIP スターシップ', [
+        'STAR SHIP 第01巻.zip', 'STAR SHIP スターシップ 第02巻.zip',
+        'STAR SHIP エダの旅 第01巻.zip',
+    ]) == ['01', '02', 'エダの旅 01']
+
+
+def test_sequel_named_folder_does_not_hide_restarted_volume_numbers():
+    assert contextual_labels('作品 新たな旅', [
+        '作品 第01巻.zip', '作品 新たな旅 第01巻.zip',
+    ]) == ['01', '新たな旅 01']
