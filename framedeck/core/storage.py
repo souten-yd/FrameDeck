@@ -248,6 +248,68 @@ class Storage:
     def delete_media_item(self, item_id: str) -> None:
         self._execute("DELETE FROM media_items WHERE id=?", (item_id,))
 
+    def remap_rated_folder(self, old_path: str, new_path: str,
+                           entry_ids: dict[str, str]) -> None:
+        """Move saved identities with a rated folder in one transaction.
+
+        Retain source progress rows as recovery history. If a target already has
+        progress (e.g. an earlier rating), preserve the most recently saved row.
+        Match directory boundaries literally, never with SQL LIKE wildcards.
+        """
+        import os
+        from .library_service import item_id_for
+        prefix = old_path + os.sep
+        with self._lock:
+            try:
+                for old_id, new_id in entry_ids.items():
+                    if old_id == new_id:
+                        continue
+                    self._conn.execute(
+                        "INSERT INTO reading_progress SELECT ?,page_index,page_count,"
+                        "updated_at,completed,reader_mode,reading_direction "
+                        "FROM reading_progress WHERE entry_id=? "
+                        "ON CONFLICT(entry_id) DO UPDATE SET "
+                        "page_index=excluded.page_index,page_count=excluded.page_count,"
+                        "updated_at=excluded.updated_at,completed=excluded.completed,"
+                        "reader_mode=excluded.reader_mode,reading_direction=excluded.reading_direction "
+                        "WHERE excluded.updated_at > reading_progress.updated_at",
+                        (new_id, old_id),
+                    )
+                    self._conn.execute("UPDATE bookmarks SET entry_id=? WHERE entry_id=?",
+                                       (new_id, old_id))
+                rows = self._conn.execute("SELECT * FROM media_items").fetchall()
+                for row in rows:
+                    if row["path"] != old_path and not row["path"].startswith(prefix):
+                        continue
+                    path = new_path + row["path"][len(old_path):]
+                    new_id = item_id_for(path)
+                    old_id = row["id"]
+                    if old_id != new_id:
+                        self._conn.execute(
+                            "INSERT INTO video_progress SELECT ?,position_seconds,duration_seconds,"
+                            "updated_at,completed,playback_speed,audio_track,subtitle_track "
+                            "FROM video_progress WHERE media_id=? "
+                            "ON CONFLICT(media_id) DO UPDATE SET "
+                            "position_seconds=excluded.position_seconds,duration_seconds=excluded.duration_seconds,"
+                            "updated_at=excluded.updated_at,completed=excluded.completed,"
+                            "playback_speed=excluded.playback_speed,audio_track=excluded.audio_track,"
+                            "subtitle_track=excluded.subtitle_track "
+                            "WHERE excluded.updated_at > video_progress.updated_at",
+                            (new_id, old_id),
+                        )
+                        self._conn.execute("INSERT OR IGNORE INTO favorites SELECT ?,added_at FROM favorites WHERE media_id=?", (new_id, old_id))
+                        self._conn.execute("DELETE FROM media_items WHERE id=?", (old_id,))
+                    self._conn.execute(
+                        "INSERT INTO media_items VALUES(?,?,?,?,?,?,?) "
+                        "ON CONFLICT(id) DO UPDATE SET path=excluded.path",
+                        (new_id, path, row["media_type"], row["rating"], row["modified_at"], row["size"], row["last_seen"]),
+                    )
+                    self._conn.execute("UPDATE recent_items SET media_id=?,path=? WHERE media_id=?", (new_id, path, old_id))
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     # ---------------- reading progress ----------------
 
     def save_reading_progress(self, entry_id: str, page_index: int,
