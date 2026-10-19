@@ -1518,7 +1518,7 @@ function updateComicControls() {
     `${range} / ${state.page_count}  [${state.entry_index + 1}/${state.entry_count}]`;
   $("comic-title").textContent = state.title;
   $("btn-view-mode").classList.toggle("active", state.view_mode === "single");
-  $("btn-direction").textContent = state.reading_direction === "rtl" ? "⇤" : "⇥";
+  updateComicTapControl();
   // ボタンは見た目の方向基準: シークバーの進行方向(RTLでは左=進む)と
   // 一致するよう、綴じ方向に応じてラベル/ツールチップ/無効状態を割り当てる
   const rtl = state.reading_direction === "rtl";
@@ -1775,12 +1775,31 @@ async function toggleViewMode() {
 }
 $("btn-view-mode").onclick = toggleViewMode;
 
-$("btn-direction").onclick = async () => {
-  const state = S.comic.state;
-  if (!state) return;
-  const next = state.reading_direction === "rtl" ? "ltr" : "rtl";
-  const result = await comicOptionsPatch({ reading_direction: next });
-  if (result) { setComicState(result); toast(next === "rtl" ? "右綴じ (RTL)" : "左綴じ (LTR)"); }
+function updateComicTapControl() {
+  const button = $("btn-tap-direction");
+  const rtl = (S.comic.state?.reading_direction || S.settings.reading_direction || "rtl") === "rtl";
+  const reverse = !!S.settings.comic_tap_reverse;
+  const leftForward = reverse ? !rtl : rtl;
+  button.textContent = leftForward ? "←" : "→";
+  button.classList.toggle("active", reverse);
+  button.setAttribute("aria-pressed", String(reverse));
+  const label = `左右クリック：${leftForward ? "左で進む・右で戻る" : "左で戻る・右で進む"}（押すと反転）`;
+  button.title = label;
+  button.setAttribute("aria-label", label);
+}
+
+$("btn-tap-direction").onclick = async () => {
+  const button = $("btn-tap-direction");
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    S.settings = await api("/api/settings", {
+      method: "PUT", json: { comic_tap_reverse: !S.settings.comic_tap_reverse },
+    });
+    updateComicTapControl();
+    toast(S.settings.comic_tap_reverse ? "左右クリック：進む/戻るを反転" : "左右クリック：標準");
+  } catch (e) { toast(e.message, true); }
+  finally { button.disabled = false; }
 };
 
 /* ボタンは見た目の方向で動作を決める(シークバーの進行方向と一致)。
@@ -3102,6 +3121,7 @@ function makeSelect(key, options) {
       if (value === "true") value = true;
       else if (value === "false") value = false;
       S.settings = await api("/api/settings", { method: "PUT", json: { [key]: value } });
+      updateComicTapControl();
     } catch (e) { toast(e.message, true); }
   };
   return select;
@@ -3127,7 +3147,7 @@ function makeNumberInput(key, { min = 0, max = 999999, step = 1 } = {}) {
 }
 
 async function openSettings() {
-  try { S.settings = await api("/api/settings"); } catch (e) {}
+  try { S.settings = await api("/api/settings"); updateComicTapControl(); } catch (e) {}
   const wrap = document.createElement("div");
   const grid = document.createElement("div");
   grid.className = "settings-grid";
@@ -3670,3 +3690,4 @@ async function init() {
   }
 }
 init();
+
