@@ -189,7 +189,30 @@ class LibraryService:
 
     def set_rating(self, item_id: str, rating: int | None) -> MediaItem:
         item = self.require_item(item_id)
+        if item.rating == rating:
+            return item
+        # Capture entry identities before the directory is renamed. In particular,
+        # nested archive IDs include both the physical path and container chain.
+        from ..comic.sequence_builder import SequenceBuilder
+        from ..models import comic_entry_id
+        entries = (SequenceBuilder().discover_entries_for_item(item.path)
+                   if item.media_type == "folder" else [])
         new_path = self._rating.set_rating(item.path, rating)
+        if new_path != item.path and item.media_type == "folder":
+            def moved(path):
+                return new_path + path[len(item.path):]
+            entry_ids = {
+                entry.id: comic_entry_id(
+                    canonical_path(moved(entry.physical_path)),
+                    tuple(canonical_path(moved(p)) for p in entry.container_chain),
+                    entry.inner_path,
+                ) for entry in entries
+            }
+            try:
+                self._storage.remap_rated_folder(item.path, new_path, entry_ids)
+            except Exception:
+                os.rename(new_path, item.path)
+                raise
         updated = self._make_item(new_path)
         assert updated is not None
         return updated

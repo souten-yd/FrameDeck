@@ -312,6 +312,7 @@ def set_rating(item_id: str, payload: dict = Body(...),
         raise HTTPException(status_code=422, detail="評価は1〜5またはnullです")
     try:
         item = services.library.set_rating(item_id, rating)
+        services.sequence_builder.invalidate()
     except KeyError:
         raise HTTPException(status_code=404, detail="項目が見つかりません")
     except FileExistsError as e:
