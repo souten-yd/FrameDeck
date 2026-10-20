@@ -162,3 +162,36 @@ const api = (path, options) => handler(path, options);
 })().catch(error=>{console.error(error);process.exitCode=1;});
 '''
     subprocess.run([node, '-e', harness + code + opening + checks], check=True, timeout=10)
+
+
+def test_view_options_share_navigation_lock_and_reject_old_session_reply():
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('Node.js required')
+    js = (Path(__file__).resolve().parents[1] / 'framedeck/web/static/js/app.js').read_text()
+    code = js[js.index('let comicRequestBusy = false;'):js.index('function armComicBoundary')]
+    options = js[js.index('async function comicOptionsPatch('):js.index('async function toggleViewMode(')]
+    harness = '''
+const assert = require('node:assert/strict');
+const S = {comic:{state:{session_id:'one'}}};
+let requests=[], resolve;
+const api = (path, options) => {requests.push({path,options}); return new Promise(r=>resolve=r);};
+const toast=()=>{};
+'''
+    assertions = '''
+(async()=>{
+  const first=comicOptionsPatch({view_mode:'single'});
+  assert.equal(await comicCall('next-page'),null);
+  assert.equal(requests.length,1);
+  assert.equal(requests[0].options.method,'PATCH');
+  S.comic.state={session_id:'two'};
+  resolve({session_id:'one',page_index:0});
+  assert.equal(await first,null);
+  const next=comicCall('next-page');
+  assert.equal(await comicOptionsPatch({view_mode:'spread'}),null);
+  assert.equal(requests.length,2);
+  resolve({session_id:'two',page_index:5});
+  assert.equal((await next).page_index,5);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+'''
+    subprocess.run([node, '-e', harness + code + options + assertions], check=True, timeout=10)

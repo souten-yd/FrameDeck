@@ -52,6 +52,7 @@ class _EngineSession:
         self.sub_index = sub_index
         self.entry = entry
         self.source = source
+        self.content_id = uuid.uuid4().hex
         self.pages = pages
         self.page_index = 0
         # 単ページモードで横長画像を半分ずつ表示するときの面(0=最初, 1=次)
@@ -283,6 +284,7 @@ class ComicReaderEngine:
         return ComicViewState(
             session_id=session.id,
             entry_id=session.entry.id,
+            content_id=session.content_id,
             entry_index=session.sub_index,
             entry_count=len(entries),
             page_index=session.page_index,
@@ -497,9 +499,12 @@ class ComicReaderEngine:
     def render_page(self, session_id: str, page_index: int,
                     max_width: int | None = None,
                     max_height: int | None = None,
-                    expected_entry: str | None = None) -> tuple[bytes, str, str]:
+                    expected_entry: str | None = None,
+                    expected_content: str | None = None) -> tuple[bytes, str, str]:
         with self._lock:
             session = self._get(session_id)
+            if expected_content is not None and session.content_id != expected_content:
+                raise ComicEngineError("読み込み元が切り替わったため画像要求を破棄しました")
             if expected_entry is not None and session.entry.id != expected_entry:
                 raise ComicEngineError("巻が切り替わったため画像要求を破棄しました")
             if not (0 <= page_index < session.page_count):
@@ -534,9 +539,12 @@ class ComicReaderEngine:
         split_side: str = "full",
         crop_border_types: set[str] | None = None,
         expected_entry: str | None = None,
+        expected_content: str | None = None,
     ) -> tuple[bytes, str, str]:
         with self._lock:
             session = self._get(session_id)
+            if expected_content is not None and session.content_id != expected_content:
+                raise ComicEngineError("読み込み元が切り替わったため画像要求を破棄しました")
             if expected_entry is not None and session.entry.id != expected_entry:
                 raise ComicEngineError("巻が切り替わったため画像要求を破棄しました")
             if not (0 <= page_index < session.page_count):

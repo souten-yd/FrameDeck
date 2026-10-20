@@ -148,11 +148,12 @@ class ImagePipeline:
             self._read_locks.pop(id(source), None)
 
     @staticmethod
-    def _raw_key(entry: ComicEntry, page: PageRef) -> str:
-        return f"raw:{entry.id}:{page.index}"
+    def _raw_key(entry: ComicEntry, page: PageRef, source=None) -> str:
+        identity = getattr(source, "cache_identity", entry.id)
+        return f"raw-v2:{identity}:{entry.id}:{page.index}:{page.name}"
 
     def get_raw(self, source, entry: ComicEntry, page: PageRef) -> bytes:
-        key = self._raw_key(entry, page)
+        key = self._raw_key(entry, page, source)
         cached = self._raw_cache.get(key)
         if cached is not None:
             return cached
@@ -166,7 +167,7 @@ class ImagePipeline:
 
     def get_page_size(self, source, entry: ComicEntry,
                       page: PageRef) -> tuple[int, int]:
-        key = f"{entry.id}:{page.index}"
+        key = self._raw_key(entry, page, source)
         with self._size_lock:
             if key in self._size_cache:
                 return self._size_cache[key]
@@ -206,9 +207,9 @@ class ImagePipeline:
             if 0 <= idx < len(pages):
                 targets.append(pages[idx])
         with self._prefetch_inflight_lock:
-            self._prefetch_targets[id(source)] = {self._raw_key(entry, p) for p in targets}
+            self._prefetch_targets[id(source)] = {self._raw_key(entry, p, source) for p in targets}
         for page in targets:
-            key = self._raw_key(entry, page)
+            key = self._raw_key(entry, page, source)
             if self._raw_cache.get(key) is not None:
                 continue
             # ページ移動が速いと同じ近傍ページが何度も候補になる。
@@ -330,7 +331,7 @@ class ImagePipeline:
             mtime = os.path.getmtime(entry.physical_path)
         except OSError:
             mtime = 0
-        raw = (f"{kind}|{entry.id}|{page.index}|{mtime}|"
+        raw = (f"page-identity-v2|{kind}|{entry.id}|{page.index}|{page.name}|{mtime}|"
                f"{width}|{height}|{self.resize_filter}")
         return hashlib.sha1(raw.encode()).hexdigest()
 
@@ -600,7 +601,7 @@ class ImagePipeline:
             except Exception:
                 analysis = None
         cache_raw = (
-            f"variant-v2|{entry.id}|{page.index}|{split_side}|{viewport_width}|"
+            f"variant-v3|{entry.id}|{page.index}|{page.name}|{split_side}|{viewport_width}|"
             f"{viewport_height}|{dpr:.3f}|{profile}|{format_name}|{quality}|"
             f"{auto_crop}|{sorted(crop_border_types or [])}|{self.resize_filter}|"
             f"{analysis.crop_box if analysis else None}|"
