@@ -1361,7 +1361,7 @@ function preloadComicPages() {
   const configuredAhead = Number(S.settings.prefetch_ahead);
   const configuredBehind = Number(S.settings.prefetch_behind);
   const ahead = Math.min(12, Math.max(
-    1, Number.isFinite(configuredAhead) ? configuredAhead : 8
+    0, Number.isFinite(configuredAhead) ? configuredAhead : 8
   ));
   const behind = Math.min(4, Math.max(
     0, Number.isFinite(configuredBehind) ? configuredBehind : 2
@@ -3204,6 +3204,12 @@ async function openSettings() {
   settingRow(grid, "縮小後シャープ化", makeSelect("comic_variant_sharpen", [
     ["true", "有効"], ["false", "無効"],
   ]), "軽量配信時に縮小でなまった線を復元してから圧縮します。");
+  settingRow(grid, "漫画アーカイブのメモリ上限MB", makeNumberInput("comic_archive_memory_mb", { min: 0, max: 1024, step: 64 }),
+    "ZIP/CBZを読む際にまとめてメモリへ読み込みます。全読書セッション合計の上限。0で無効。次に開く漫画から適用します。");
+  settingRow(grid, "前方の先読みページ数", makeNumberInput("prefetch_ahead", { min: 0, max: 12 }));
+  settingRow(grid, "後方の先読みページ数", makeNumberInput("prefetch_behind", { min: 0, max: 4 }));
+  settingRow(grid, "読書位置の保存間隔（秒）", makeNumberInput("comic_progress_save_seconds", { min: 0, max: 30 }),
+    "0は毎回保存。通常5秒でまとめて保存し、読了・読書セッション終了・正常終了時は即保存します。突然の電源断では未保存の数秒分が戻ることがあります。");
   settingRow(grid, "漫画キャッシュMB", makeNumberInput("comic_cache_max_mb", { min: 0, max: 1000000, step: 50 }),
     "変換画像・ページ・サムネイルの合計上限。超過分は古い順に自動削除(0で無制限)。");
   settingRow(grid, "白枠トリミング", makeSelect("comic_crop_white", [
@@ -3690,4 +3696,3 @@ async function init() {
   }
 }
 init();
-

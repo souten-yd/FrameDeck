@@ -32,6 +32,7 @@ class Services:
     def __init__(self, settings: Settings, storage: Storage, paths: AppPaths):
         self.settings = settings
         self.storage = storage
+        storage.reading_flush_seconds = float(settings.get("comic_progress_save_seconds", 5))
         self.paths = paths
 
         self.rating = RatingService(storage)
@@ -58,7 +59,10 @@ class Services:
             settings.get("comic_variant_sharpen", True))
         self.pipeline.disk_cache_max_bytes = int(
             settings.get("comic_cache_max_mb", 100)) * 1024**2
-        self.resolver = ComicSourceResolver(self.nested_cache)
+        self.resolver = ComicSourceResolver(
+            self.nested_cache,
+            archive_memory_bytes=int(settings.get("comic_archive_memory_mb", 256)) * 1024**2,
+        )
         self.comic_engine = ComicReaderEngine(
             self.sequence_builder, self.resolver, self.pipeline,
             storage, settings,
@@ -89,6 +93,9 @@ class Services:
         settings.add_listener(self._on_settings_changed)
 
     def _on_settings_changed(self, values: dict) -> None:
+        self.storage.flush_reading_progress()
+        self.storage.reading_flush_seconds = float(values.get("comic_progress_save_seconds", 5))
+        self.resolver.archive_memory.limit_bytes = int(values.get("comic_archive_memory_mb", 256)) * 1024**2
         self.sequence_builder.include_parent_direct_images = bool(
             values.get("include_parent_direct_images", True)
         )

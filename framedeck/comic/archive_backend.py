@@ -43,7 +43,10 @@ def rar_backend_available() -> str | None:
 class ArchiveReader:
     """ZIP/CBZ/RAR/CBRの一覧・読み出し。"""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, memory_budget=None):
+        self._memory_budget = memory_budget
+        self._memory_buffer = None
+        self._memory_size = 0
         self.path = path
         self.ext = os.path.splitext(path)[1].lower()
         self._zip: zipfile.ZipFile | None = None
@@ -53,8 +56,16 @@ class ArchiveReader:
     def open(self) -> "ArchiveReader":
         if self.ext in (".zip", ".cbz"):
             try:
-                self._zip = zipfile.ZipFile(self.path)
+                if self._memory_budget is not None:
+                    try:
+                        loaded = self._memory_budget.load(self.path)
+                    except (OSError, MemoryError):
+                        loaded = None
+                    if loaded is not None:
+                        self._memory_buffer, self._memory_size = loaded
+                self._zip = zipfile.ZipFile(self._memory_buffer or self.path)
             except (zipfile.BadZipFile, OSError) as e:
+                self.close()
                 raise ArchiveError(f"ZIPを開けませんでした: {e}") from e
             self._backend = "zip"
             return self
@@ -163,6 +174,11 @@ class ArchiveReader:
         if self._zip:
             self._zip.close()
             self._zip = None
+        if self._memory_buffer is not None:
+            self._memory_buffer.close()
+            self._memory_buffer = None
+            self._memory_budget.release(self._memory_size)
+            self._memory_size = 0
         if self._rar:
             try:
                 self._rar.close()

@@ -7,6 +7,7 @@ from typing import Protocol
 from ..config import IMAGE_EXTENSIONS
 from ..core.rating_service import natural_key
 from ..models import ComicEntry, PageRef
+from .archive_memory import ArchiveMemoryBudget
 from .archive_backend import ArchiveError, ArchiveReader
 from .nested_cache import NestedArchiveCache
 
@@ -48,8 +49,8 @@ class FolderComicSource:
 class ArchiveComicSource:
     """アーカイブ直下(および内部)の画像をページとして扱う。"""
 
-    def __init__(self, path: str):
-        self._reader = ArchiveReader(path).open()
+    def __init__(self, path: str, memory_budget=None):
+        self._reader = ArchiveReader(path, memory_budget=memory_budget).open()
 
     def list_pages(self) -> list[PageRef]:
         return [PageRef(i, n) for i, n in enumerate(self._reader.list_images())]
@@ -64,19 +65,20 @@ class ArchiveComicSource:
 class ComicSourceResolver:
     """ComicEntry から適切な ComicSource を生成する唯一の入口。"""
 
-    def __init__(self, nested_cache: NestedArchiveCache):
+    def __init__(self, nested_cache: NestedArchiveCache, archive_memory_bytes: int = 0):
         self._nested_cache = nested_cache
+        self.archive_memory = ArchiveMemoryBudget(archive_memory_bytes)
 
     def open(self, entry: ComicEntry) -> ComicSource:
         if entry.source_type == "image_folder":
             return FolderComicSource(entry.physical_path)
         if entry.source_type == "archive":
-            return ArchiveComicSource(entry.physical_path)
+            return ArchiveComicSource(entry.physical_path, self.archive_memory)
         if entry.source_type == "nested_archive":
             if not entry.container_chain or not entry.inner_path:
                 raise ArchiveError("ネストアーカイブ情報が不完全です。")
             extracted = self._nested_cache.get_extracted_path(
                 entry.container_chain[-1], entry.inner_path
             )
-            return ArchiveComicSource(extracted)
+            return ArchiveComicSource(extracted, self.archive_memory)
         raise ArchiveError(f"未知のソース種別です: {entry.source_type}")

@@ -171,6 +171,7 @@ class ComicReaderEngine:
     def _close_session_locked(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)
         if session is not None:
+            self._storage.flush_reading_progress()
             self._pipeline.release_source(session.source)
             try:
                 session.source.close()
