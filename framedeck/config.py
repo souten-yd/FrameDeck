@@ -56,6 +56,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "prefetch_ahead": 8,
     "prefetch_behind": 2,
     "memory_cache_mb": 512,
+    "comic_archive_memory_mb": 256,
+    "comic_progress_save_seconds": 5,
     "nested_cache_max_gb": 10,
     "nested_cache_max_age_days": 30,
     "resize_filter": "lanczos",              # lanczos | bicubic | bilinear | nearest
@@ -179,6 +181,10 @@ _VALID_ENUMS = {
 
 
 _NUMERIC_LIMITS: dict[str, tuple[float, float]] = {
+    "comic_archive_memory_mb": (0, 1024),
+    "comic_progress_save_seconds": (0, 30),
+    "prefetch_ahead": (0, 12),
+    "prefetch_behind": (0, 4),
     "comic_crop_tolerance": (0, 255),
     "comic_crop_safety_margin": (0, 128),
     "comic_cache_max_mb": (0, 1000000),

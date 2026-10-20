@@ -93,6 +93,9 @@ class Storage:
 
     def __init__(self, db_path: str | Path):
         self._lock = threading.RLock()
+        self.reading_flush_seconds = 0.0
+        self._pending_reading: dict[str, tuple] = {}
+        self._reading_timer = None
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._lock:
@@ -105,6 +108,7 @@ class Storage:
 
     def close(self) -> None:
         with self._lock:
+            self.flush_reading_progress()
             self._conn.close()
 
     def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -260,6 +264,7 @@ class Storage:
         from .library_service import item_id_for
         prefix = old_path + os.sep
         with self._lock:
+            self.flush_reading_progress()
             try:
                 for old_id, new_id in entry_ids.items():
                     if old_id == new_id:
@@ -316,23 +321,69 @@ class Storage:
                               page_count: int, completed: bool = False,
                               reader_mode: str | None = None,
                               reading_direction: str | None = None) -> None:
-        self._execute(
-            "INSERT INTO reading_progress"
-            "(entry_id,page_index,page_count,updated_at,completed,reader_mode,reading_direction) "
-            "VALUES(?,?,?,?,?,?,?) "
-            "ON CONFLICT(entry_id) DO UPDATE SET page_index=excluded.page_index, "
-            "page_count=excluded.page_count, updated_at=excluded.updated_at, "
-            "completed=excluded.completed, reader_mode=excluded.reader_mode, "
-            "reading_direction=excluded.reading_direction",
-            (entry_id, page_index, page_count, time.time(),
-             1 if completed else 0, reader_mode, reading_direction),
-        )
+        row = (entry_id, page_index, page_count, time.time(),
+               1 if completed else 0, reader_mode, reading_direction)
+        with self._lock:
+            self._pending_reading[entry_id] = row
+            if completed or self.reading_flush_seconds <= 0:
+                self.flush_reading_progress()
+            elif self._reading_timer is None:
+                self._schedule_reading_flush()
+
+    def _schedule_reading_flush(self) -> None:
+        self._reading_timer = threading.Timer(
+            max(0.1, self.reading_flush_seconds), self._timed_reading_flush)
+        self._reading_timer.daemon = True
+        self._reading_timer.start()
+
+    def _timed_reading_flush(self) -> None:
+        import logging
+        try:
+            self.flush_reading_progress()
+        except Exception:
+            logging.getLogger("framedeck").exception("Reading progress flush failed")
+            with self._lock:
+                if self._pending_reading and self._reading_timer is None:
+                    self._schedule_reading_flush()
+
+    def flush_reading_progress(self) -> None:
+        with self._lock:
+            if self._reading_timer is not None:
+                self._reading_timer.cancel()
+                self._reading_timer = None
+            if not self._pending_reading:
+                return
+            try:
+                self._conn.executemany(
+                    "INSERT INTO reading_progress"
+                    "(entry_id,page_index,page_count,updated_at,completed,reader_mode,reading_direction) "
+                    "VALUES(?,?,?,?,?,?,?) "
+                    "ON CONFLICT(entry_id) DO UPDATE SET page_index=excluded.page_index, "
+                    "page_count=excluded.page_count, updated_at=excluded.updated_at, "
+                    "completed=excluded.completed, reader_mode=excluded.reader_mode, "
+                    "reading_direction=excluded.reading_direction",
+                    list(self._pending_reading.values()),
+                )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            self._pending_reading.clear()
+
+    @staticmethod
+    def _reading_row(row: tuple) -> dict:
+        return dict(zip(("entry_id", "page_index", "page_count", "updated_at",
+                         "completed", "reader_mode", "reading_direction"), row))
 
     def get_reading_progress(self, entry_id: str) -> dict | None:
-        rows = self._query(
-            "SELECT * FROM reading_progress WHERE entry_id=?", (entry_id,)
-        )
-        return dict(rows[0]) if rows else None
+        with self._lock:
+            pending = self._pending_reading.get(entry_id)
+            if pending is not None:
+                return self._reading_row(pending)
+            rows = self._query(
+                "SELECT * FROM reading_progress WHERE entry_id=?", (entry_id,)
+            )
+            return dict(rows[0]) if rows else None
 
     def get_reading_progress_many(self, entry_ids: list[str]) -> dict[str, dict]:
         """Return saved reading state keyed by entry id.
@@ -341,17 +392,22 @@ class Storage:
         folders are queried in bounded chunks rather than issuing one query per
         comic or relying on a platform-specific variable limit.
         """
-        unique_ids = list(dict.fromkeys(entry_ids))
-        result: dict[str, dict] = {}
-        for offset in range(0, len(unique_ids), 500):
-            chunk = unique_ids[offset:offset + 500]
-            placeholders = ",".join("?" for _ in chunk)
-            rows = self._query(
-                f"SELECT * FROM reading_progress WHERE entry_id IN ({placeholders})",
-                tuple(chunk),
-            )
-            result.update((row["entry_id"], dict(row)) for row in rows)
-        return result
+        with self._lock:
+            unique_ids = list(dict.fromkeys(entry_ids))
+            result: dict[str, dict] = {}
+            for offset in range(0, len(unique_ids), 500):
+                chunk = unique_ids[offset:offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = self._query(
+                    f"SELECT * FROM reading_progress WHERE entry_id IN ({placeholders})",
+                    tuple(chunk),
+                )
+                result.update((row["entry_id"], dict(row)) for row in rows)
+            for entry_id in unique_ids:
+                pending = self._pending_reading.get(entry_id)
+                if pending is not None:
+                    result[entry_id] = self._reading_row(pending)
+            return result
 
     # ---------------- video progress ----------------
 
