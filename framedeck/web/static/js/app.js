@@ -1254,7 +1254,7 @@ function comicPageUrl(pageIndex, side = "full") {
   const state = S.comic.state;
   const base = `/api/comics/session/${state.session_id}/page/${pageIndex}`;
   if (S.settings.comic_delivery_mode === "original") {
-    const params = new URLSearchParams({ entry: state.entry_id || "" });
+    const params = new URLSearchParams({ entry: state.entry_id || "", content: state.content_id || "" });
     if (side !== "full") params.set("split_side", side);
     return `${base}?${params.toString()}`;
   }
@@ -1268,6 +1268,7 @@ function comicPageUrl(pageIndex, side = "full") {
   params.set("auto_crop", String(S.settings.comic_auto_crop !== false));
   if (side !== "full") params.set("split_side", side);
   params.set("entry", state.entry_id || "");
+  params.set("content", state.content_id || "");
   return `${base}?${params.toString()}`;
 }
 
@@ -1386,7 +1387,7 @@ function preloadComicPages() {
   for (let i = 1; i <= behind; i++) {
     add(first - i);
   }
-  queueComicPreloads(`${state.session_id}:${state.entry_id}`, specs);
+  queueComicPreloads(`${state.session_id}:${state.entry_id}:${state.content_id || ""}`, specs);
 }
 
 /* iOSでは複数ページのWebP生成を同時に走らせると、先読み自体が表示中の
@@ -1591,7 +1592,7 @@ async function restoreComicSession(before) {
   }, epoch);
 }
 
-async function comicCall(path, body) {
+async function comicCall(path, body, method = "POST") {
   let state = S.comic.state;
   if (!state || comicRequestBusy || comicOpening) return null;
   const epoch = comicRequestEpoch;
@@ -1607,7 +1608,7 @@ async function comicCall(path, body) {
     if (!path) return state;
     const result = await comicTransport(
       `/api/comics/session/${state.session_id}/${path}`,
-      { json: body || {} }
+      { method, json: body || {} }
     );
     if (epoch !== comicRequestEpoch || S.comic.state?.session_id !== state.session_id) return null;
     return result;
@@ -1758,12 +1759,7 @@ function comicShiftByVisualDirection(direction) {
 }
 
 async function comicOptionsPatch(body) {
-  const state = S.comic.state;
-  if (!state) return null;
-  try {
-    return await api(`/api/comics/session/${state.session_id}/options`,
-                     { method: "PATCH", json: body });
-  } catch (e) { toast(e.message, true); return null; }
+  return comicCall("options", body, "PATCH");
 }
 
 async function toggleViewMode() {

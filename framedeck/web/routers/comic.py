@@ -250,6 +250,7 @@ def get_page(session_id: str, page_index: int, request: Request,
              auto_crop: bool | None = Query(default=None),
              split_side: str = Query(default="full"),
              entry: str | None = Query(default=None),
+             content: str | None = Query(default=None),
              services: Services = Depends(get_services)) -> Response:
     try:
         if profile or format or width or height or auto_crop is not None or split_side != "full":
@@ -273,11 +274,11 @@ def get_page(session_id: str, page_index: int, request: Request,
                 auto_crop=bool(services.settings.get("comic_auto_crop", True) if auto_crop is None else auto_crop),
                 split_side=split_side if split_side in {"full", "left", "right"} else "full",
                 crop_border_types=crop_border_types,
-                expected_entry=entry,
+                expected_entry=entry, expected_content=content,
             )
         else:
             data, mime, etag = services.comic_engine.render_page(
-                session_id, page_index, w, h, expected_entry=entry
+                session_id, page_index, w, h, expected_entry=entry, expected_content=content
             )
     except ComicEngineError as e:
         raise HTTPException(status_code=404, detail=str(e))

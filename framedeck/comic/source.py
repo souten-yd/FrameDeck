@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Protocol
 
 from ..config import IMAGE_EXTENSIONS
@@ -20,6 +21,7 @@ class ComicSource(Protocol):
 
 class FolderComicSource:
     def __init__(self, path: str):
+        self.cache_identity = uuid.uuid4().hex
         self._path = path
         if not os.path.isdir(path):
             raise ArchiveError(f"画像フォルダが見つかりません: {path}")
@@ -50,6 +52,7 @@ class ArchiveComicSource:
     """アーカイブ直下(および内部)の画像をページとして扱う。"""
 
     def __init__(self, path: str, memory_budget=None):
+        self.cache_identity = uuid.uuid4().hex
         self._reader = ArchiveReader(path, memory_budget=memory_budget).open()
 
     def list_pages(self) -> list[PageRef]:
