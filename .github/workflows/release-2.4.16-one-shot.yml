@@ -1,0 +1,48 @@
+name: Release FrameDeck 2.4.16
+
+on:
+  push:
+    branches: [ci/release-2.4.16]
+    paths: [.github/workflows/release-2.4.16-one-shot.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4fb909d7a1807f603db66d00b99dd68df6893c8f
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Run tests
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q tests/
+      - name: Install QDK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl xz-utils libxml2-utils xmlstarlet pv dos2unix
+          curl -fsSL -o /tmp/qdk.deb https://github.com/qnap-dev/QDK/releases/download/v2.5.3/qdk_2.5.3_amd64.deb
+          sudo apt-get install -y /tmp/qdk.deb
+          command -v qbuild
+          command -v qpkg_encrypt
+      - name: Build QPKG
+        run: bash packaging/qnap/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameDeck-QPKG-2.4.16
+          path: dist/*.qpkg
+          if-no-files-found: error
+          retention-days: 3
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.4.16 dist/*.qpkg --target 4fb909d7a1807f603db66d00b99dd68df6893c8f --title "FrameDeck v2.4.16" --notes "漫画画像キャッシュを読み込み元ごとに分離し、開き直し後の古い画像要求を識別・拒否する修正です。表示モード変更の遅い応答によるページ巻き戻り経路も修正。PR #57を収録。メモリ保持・先読み・読書位置のまとめ保存は維持します。更新後はブラウザを再読み込みし漫画を開き直してください。QNAP・iOS実機での症状解消は未確認です。"
