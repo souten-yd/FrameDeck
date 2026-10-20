@@ -1,0 +1,48 @@
+name: Release FrameDeck 2.4.15
+
+on:
+  push:
+    branches: [ci/release-2.4.15]
+    paths: [.github/workflows/release-2.4.15-one-shot.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 741874acd0449332aba757261e5fc5f12bee7491
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Run tests
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q tests/
+      - name: Install QDK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl xz-utils libxml2-utils xmlstarlet pv dos2unix
+          curl -fsSL -o /tmp/qdk.deb https://github.com/qnap-dev/QDK/releases/download/v2.5.3/qdk_2.5.3_amd64.deb
+          sudo apt-get install -y /tmp/qdk.deb
+          command -v qbuild
+          command -v qpkg_encrypt
+      - name: Build QPKG
+        run: bash packaging/qnap/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameDeck-QPKG-2.4.15
+          path: dist/*.qpkg
+          if-no-files-found: error
+          retention-days: 3
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.4.15 dist/*.qpkg --target 741874acd0449332aba757261e5fc5f12bee7491 --title "FrameDeck v2.4.15" --notes "漫画のHDDアクセス削減：ZIP/CBZのメモリ保持（合計256MiB上限）、読書位置の5秒まとめ保存、先読み・メモリ上限・保存間隔の設定を追加。PR #56を収録。既存の先読み設定は維持します。大型ZIP・RAR・入れ子初回展開ではディスクアクセスが残ります。突然の電源断では直近保存間隔分の位置が戻る可能性があります。NAS実機での静音効果は未測定です。"
