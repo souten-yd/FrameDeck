@@ -42,7 +42,15 @@ def _folder_id_for_item(services: Services, item_id: str) -> str | None:
     root = _root_for_path(services, item_path, "comic")
     if root and os.path.abspath(parent) == os.path.abspath(root["path"]):
         return root["id"]
-    if parent and os.path.isdir(parent):
+    if parent:
+        # Page navigation only needs the identifier. Do not stat/upsert an
+        # indexed folder on every response (each upsert commits to disk and
+        # would also overwrite its stored rating with None).
+        existing = services.storage.get_media_item_by_path(os.path.abspath(parent))
+        if existing is not None:
+            return existing["id"]
+        if not os.path.isdir(parent):
+            return None
         folder_id = item_id_for(parent)
         try:
             stat = os.stat(parent)

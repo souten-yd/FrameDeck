@@ -1406,6 +1406,7 @@ const comicPreloader = {
 function stopComicPreloadActive() {
   const active = comicPreloader.active;
   if (!active) return;
+  clearTimeout(active.timer);
   active.image.onload = null;
   active.image.onerror = null;
   active.image.removeAttribute("src");
@@ -1437,6 +1438,9 @@ function pumpComicPreloads() {
   image.decoding = "async";
   const finish = () => {
     if (comicPreloader.active?.image !== image) return;
+    clearTimeout(comicPreloader.active.timer);
+    image.onload = null;
+    image.onerror = null;
     comicPreloader.active = null;
     if (comicPreloader.keep.has(url) && image.naturalWidth > 0) {
       comicPreloader.retained.set(url, image);
@@ -1449,6 +1453,12 @@ function pumpComicPreloads() {
     if (decoded?.then) decoded.catch(() => {}).finally(finish);
     else finish();
   };
+  // A lost load event or stalled decode must not block every later preload.
+  comicPreloader.active.timer = setTimeout(() => {
+    if (comicPreloader.active?.image !== image) return;
+    stopComicPreloadActive();
+    pumpComicPreloads();
+  }, 12000);
   image.src = url;
 }
 
@@ -1472,7 +1482,8 @@ function queueComicPreloads(sessionId, specs) {
     image.removeAttribute("src");
     comicPreloader.retained.delete(url);
   }
-  if (comicPreloader.active && !visibleUrls.has(comicPreloader.active.url)) {
+  if (comicPreloader.active && !visibleUrls.has(comicPreloader.active.url)
+      && !comicPreloader.keep.has(comicPreloader.active.url)) {
     stopComicPreloadActive();
   }
   const activeUrl = comicPreloader.active?.url;
