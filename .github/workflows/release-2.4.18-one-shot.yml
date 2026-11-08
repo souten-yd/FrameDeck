@@ -1,0 +1,48 @@
+name: Release FrameDeck 2.4.18
+
+on:
+  push:
+    branches: [ci/release-2.4.18]
+    paths: [.github/workflows/release-2.4.18-one-shot.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 730413ae3b71cc354c1d1f047d28bc53a3c55918
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Run tests
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q tests/
+      - name: Install QDK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl xz-utils libxml2-utils xmlstarlet pv dos2unix
+          curl -fsSL -o /tmp/qdk.deb https://github.com/qnap-dev/QDK/releases/download/v2.5.3/qdk_2.5.3_amd64.deb
+          sudo apt-get install -y /tmp/qdk.deb
+          command -v qbuild
+          command -v qpkg_encrypt
+      - name: Build QPKG
+        run: bash packaging/qnap/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameDeck-QPKG-2.4.18
+          path: dist/*.qpkg
+          if-no-files-found: error
+          retention-days: 3
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.4.18 dist/*.qpkg --target 730413ae3b71cc354c1d1f047d28bc53a3c55918 --title "FrameDeck v2.4.18" --notes "漫画モードのファイルブラウザで、フォルダ名の先頭に直下のアーカイブ数（.zip/.cbz/.rar/.cbr）を [N] 形式で表示するようにしました。Web UI・デスクトップ版の両方に対応。PR #60を収録。更新後はブラウザを再読み込みしてください。"
