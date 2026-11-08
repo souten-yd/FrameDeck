@@ -45,6 +45,20 @@ def test_list_items(client_env):
         assert not (item.get("relative_path") or "").startswith("/")
 
 
+
+def test_list_items_reports_archive_count_for_comic_folders(client_env):
+    client, _, root_id, comic_root = client_env
+    (comic_root / "B" / "note.txt").write_text("x")
+    (comic_root / "B" / "Sub").mkdir()
+    (comic_root / "B" / "Sub" / "S1.cbz").write_bytes(b"")
+    (comic_root / "Empty").mkdir()
+    data = client.get(
+        f"/api/library/items?folder_id={root_id}&mode=comic&sort=name"
+    ).json()
+    counts = {i["display_name"]: i["archive_count"] for i in data["items"]}
+    # 直下のアーカイブのみ数える(サブフォルダ内・非アーカイブは数えない)
+    assert counts == {"B": 2, "Empty": 0, "A.zip": None, "C.cbz": None}
+
 def test_rating_priority_keeps_unrated_items_after_rated(client_env):
     client, _, root_id, comic_root = client_env
     (comic_root / "A.zip").rename(comic_root / "A{zpi$r=5}.zip")
