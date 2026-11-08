@@ -234,8 +234,9 @@ def test_comic_color_edition_marker_is_rendered_without_changing_item_name():
     js = Path("framedeck/web/static/js/app.js").read_text("utf-8")
 
     assert "function comicItemDisplayName(item)" in js
-    assert 'item.color_edition && !item.display_name.includes("🌈")' in js
-    assert 'return `🌈 ${item.display_name}`' in js
+    assert "name = `[${item.archive_count}] ${name}`;" in js
+    assert 'item.color_edition && !name.includes("🌈")' in js
+    assert "name = `🌈 ${name}`;" in js
 
 
 def test_mobile_rating_bar_is_available_in_drawer():

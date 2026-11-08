@@ -62,6 +62,7 @@ def _item_dict(item: MediaItem, root_path: str | None = None) -> dict:
         "modified_at": item.modified_at,
         "size": item.size,
         "relative_path": rel,
+        "archive_count": item.archive_count,
         "color_edition": (
             item.media_type in ("comic", "folder")
             and is_color_edition(item.display_name)

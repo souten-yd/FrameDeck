@@ -124,6 +124,27 @@ class LibraryService:
         )
         return item
 
+    @staticmethod
+    def count_archives(folder: str) -> int | None:
+        """フォルダ直下にある漫画アーカイブの個数(読めない場合はNone)。
+
+        名前とreaddirの種別情報だけで判定し、各ファイルのstatは行わない。
+        """
+        count = 0
+        try:
+            with os.scandir(folder) as scan:
+                for entry in scan:
+                    if os.path.splitext(entry.name)[1].lower() not in COMIC_EXTENSIONS:
+                        continue
+                    try:
+                        if entry.is_file():
+                            count += 1
+                    except OSError:
+                        continue
+        except OSError:
+            return None
+        return count
+
     def list_folder(self, folder: str, mode: str = "comic",
                     enforce_roots: bool = True) -> list[MediaItem]:
         """フォルダ直下の項目一覧。mode=comicはフォルダ+漫画、videoはフォルダ+動画。"""
@@ -164,6 +185,9 @@ class LibraryService:
                 path=path, display_name=display_name, media_type=media_type,
                 source_kind="directory" if is_dir else "file", rating=rating,
                 modified_at=info.st_mtime, size=None if is_dir else info.st_size,
+                archive_count=(
+                    self.count_archives(path) if is_dir and mode == "comic" else None
+                ),
             )
             items.append(item)
             rows.append((item.id, path, media_type, rating, item.modified_at, item.size))

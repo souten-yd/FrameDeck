@@ -453,6 +453,10 @@ class DesktopApp(tk.Tk):
                 mark_color_edition(item.display_name)
                 if self.media_mode.get() == MODE_COMIC else item.display_name
             )
+            if (item.media_type == "folder"
+                    and self.media_mode.get() == MODE_COMIC
+                    and item.archive_count is not None):
+                display_name = f"[{item.archive_count}] {display_name}"
             self.tree.insert("", "end", iid=str(idx),
                              text=prefix + display_name,
                              values=(item.stars,), tags=tuple(tags))

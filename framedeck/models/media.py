@@ -23,6 +23,8 @@ class MediaItem:
     rating: int | None
     modified_at: float
     size: int | None
+    # 漫画モードのフォルダ: 直下にあるアーカイブ(漫画ファイル)の個数
+    archive_count: int | None = None
 
     @property
     def stars(self) -> str:

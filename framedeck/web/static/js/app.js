@@ -642,10 +642,16 @@ function itemIcon(item) {
 }
 
 function comicItemDisplayName(item) {
-  if (S.mode === "comic" && item.color_edition && !item.display_name.includes("🌈")) {
-    return `🌈 ${item.display_name}`;
+  let name = item.display_name;
+  if (S.mode === "comic" && item.color_edition && !name.includes("🌈")) {
+    name = `🌈 ${name}`;
   }
-  return item.display_name;
+  // 漫画モードのフォルダは直下のアーカイブ数を名前の先頭に表示する
+  if (S.mode === "comic" && item.media_type === "folder"
+      && Number.isInteger(item.archive_count)) {
+    name = `[${item.archive_count}] ${name}`;
+  }
+  return name;
 }
 
 function renderList() {
