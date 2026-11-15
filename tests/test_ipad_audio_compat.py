@@ -54,6 +54,7 @@ def test_hls_original_aac_copies_video_and_encodes_audio(tmp_path):
     manifest = service.manifest_for(str(source), profiles=["original-aac"], source_height=1080)
     assert [v.name for v in manifest.variants] == ["original-aac"]
     assert manifest.variants[0].width == 0  # Unknown, not invented in playlist
+    manifest.cache_dir.mkdir(parents=True, exist_ok=True)
     service._write_master(manifest)
     assert "#EXT-X-STREAM-INF:BANDWIDTH=" in manifest.master.read_text()
     assert "RESOLUTION=" not in manifest.master.read_text()
