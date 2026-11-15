@@ -1,0 +1,57 @@
+name: Release FrameDeck 2.4.19
+
+on:
+  push:
+    branches: [ci/release-2.4.19]
+    paths: [.github/workflows/release-2.4.19-one-shot.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 3554c86779db55be6339ac769adc1b3d93f09a1c
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install FFmpeg and QDK prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg curl xz-utils libxml2-utils xmlstarlet pv dos2unix
+          curl -fsSL -o /tmp/qdk.deb https://github.com/qnap-dev/QDK/releases/download/v2.5.3/qdk_2.5.3_amd64.deb
+          sudo apt-get install -y /tmp/qdk.deb
+          command -v qbuild
+          command -v qpkg_encrypt
+          ffmpeg -version | head -1
+      - name: Install Python test dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Verify exact source version and JS syntax
+        run: |
+          python - <<'PY'
+          from framedeck import __version__
+          assert __version__ == '2.4.19', __version__
+          assert 'QPKG_VER="2.4.19"' in open('packaging/qnap/qpkg.cfg').read()
+          PY
+          node --check framedeck/web/static/js/app.js
+      - name: Run full suite including FFmpeg integration
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q -rs tests/
+      - name: Build QNAP TS-253Be x86_64 QPKG
+        run: bash packaging/qnap/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameDeck-QPKG-2.4.19
+          path: dist/*.qpkg
+          if-no-files-found: error
+          retention-days: 3
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.4.19 dist/*.qpkg --target 3554c86779db55be6339ac769adc1b3d93f09a1c --title "FrameDeck v2.4.19" --notes "Linux表示モードが古い応答で戻る不具合を修正。動画の直接再生可能な原版はFFmpegを通さずRange配信し、QNAP読み出し終端処理も改善。iPadの初期無音と非AAC音声に対応し、映像をコピーしたまま音声をAACへ変換するHLSを追加。PR #61。CI/FFmpegサンプルテストは成功。TS-253Be/iPad実機での音声・速度改善は未検証。"
