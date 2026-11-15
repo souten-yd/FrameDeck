@@ -426,6 +426,15 @@ $("modal-backdrop").addEventListener("click", (e) => {
 });
 
 /* ================= library ================= */
+const LIBRARY_MODE_STORAGE_KEY = "framedeck.libraryMode";
+let libraryNavigationEpoch = 0;
+
+// Mode preference is per browser; never let the default comic mode erase a choice.
+function restoreLibraryMode() {
+  const saved = localStorage.getItem(LIBRARY_MODE_STORAGE_KEY);
+  if (saved === "comic" || saved === "video") S.mode = saved;
+}
+
 function rootsForMode(mode = S.mode) {
   return S.roots.filter((root) => root.kind === mode || root.kind === "any");
 }
@@ -587,6 +596,8 @@ function restoreListPreferences() {
 async function loadFolder(folderId, { remember = true, includeVolume = false, deferRender = false,
                                       focusItemId = null } = {}) {
   if (!folderId) return;
+  const mode = S.mode;
+  const requestEpoch = ++libraryNavigationEpoch;
   rememberFolderScroll();
   const sort = $("sel-sort").value;
   const filter = $("sel-filter").value;
@@ -595,7 +606,7 @@ async function loadFolder(folderId, { remember = true, includeVolume = false, de
   const query = ($("library-search")?.value || "").trim();
   const params = new URLSearchParams({
     folder_id: folderId,
-    mode: S.mode,
+    mode,
     sort,
     filter,
   });
@@ -603,6 +614,8 @@ async function loadFolder(folderId, { remember = true, includeVolume = false, de
   if (includeVolume) params.set("include_volume", "true");
   try {
     const data = await api(`/api/library/items?${params.toString()}`);
+    // A slower reply from the previous mode/folder must not repaint the list.
+    if (requestEpoch !== libraryNavigationEpoch || mode !== S.mode) return null;
     const sameFolder = S.folderId === folderId;
     S.folderId = folderId;
     S.folderInfo = data.folder;
@@ -622,6 +635,7 @@ async function loadFolder(folderId, { remember = true, includeVolume = false, de
     updateNavButtons();
     return data;
   } catch (e) {
+    if (requestEpoch !== libraryNavigationEpoch || mode !== S.mode) return null;
     toast(`フォルダを読めません: ${e.message}`, true);
     return null;
   }
@@ -796,17 +810,20 @@ function showMissingLibraryRoot(mode) {
 }
 
 async function switchLibraryRoot(rootId, { closeDrawer = true } = {}) {
-  const root = rootsForMode().find((candidate) => candidate.id === rootId);
+  const mode = S.mode;
+  const root = rootsForMode(mode).find((candidate) => candidate.id === rootId);
   if (!root) {
     toast("ライブラリが見つかりません", true);
     return;
   }
-  S.activeRootIds[S.mode] = root.id;
-  saveActiveRootId(S.mode, root.id);
+  ++libraryNavigationEpoch;
+  S.activeRootIds[mode] = root.id;
+  saveActiveRootId(mode, root.id);
   resetNavigationState();
   clearCurrentViewer();
   renderRootSelectors();
-  await loadFolder(root.id, { remember: true });
+  const loaded = await loadFolder(root.id, { remember: true });
+  if (!loaded || S.mode !== mode) return;
   if (closeDrawer) closeMobileDrawer();
   toast(`ライブラリを切り替えました: ${root.display_name}`);
 }
@@ -823,17 +840,21 @@ async function resumeFolderForMode(mode = S.mode) {
 }
 
 async function switchToActiveRoot({ announceResume = false } = {}) {
-  const root = activeRootForMode();
+  const mode = S.mode;
+  const requestEpoch = ++libraryNavigationEpoch;
+  const root = activeRootForMode(mode);
   renderRootSelectors();
   if (!root) {
-    showMissingLibraryRoot(S.mode);
+    showMissingLibraryRoot(mode);
     return;
   }
-  const resume = await resumeFolderForMode();
-  if (resume && rootsForMode().some((r) => r.id === resume.root_id)) {
+  const resume = await resumeFolderForMode(mode);
+  // A mode/root/navigation change while restoring must invalidate this resume.
+  if (requestEpoch !== libraryNavigationEpoch || mode !== S.mode) return;
+  if (resume && rootsForMode(mode).some((r) => r.id === resume.root_id)) {
     if (resume.root_id !== root.id) {
-      S.activeRootIds[S.mode] = resume.root_id;
-      saveActiveRootId(S.mode, resume.root_id);
+      S.activeRootIds[mode] = resume.root_id;
+      saveActiveRootId(mode, resume.root_id);
       renderRootSelectors();
     }
     resetNavigationState();
@@ -1238,10 +1259,11 @@ function focusLibraryItem(itemId) {
 }
 
 async function syncLibraryToComicState(state) {
-  if (!state.root_item_id) return;
+  if (!state.root_item_id || S.mode !== "comic") return;
   if (!S.items.some((item) => item.id === state.root_item_id) && state.root_folder_id) {
     await loadFolder(state.root_folder_id, { remember: true });
   }
+  if (S.mode !== "comic" || S.comic.state?.session_id !== state.session_id) return;
   focusLibraryItem(state.root_item_id);
 }
 
@@ -3440,7 +3462,9 @@ $("btn-settings").onclick = openSettings;
 /* ================= top bar wiring ================= */
 async function setMode(mode) {
   if (S.mode === mode) return;
+  ++libraryNavigationEpoch;
   S.mode = mode;
+  localStorage.setItem(LIBRARY_MODE_STORAGE_KEY, mode);
   resetNavigationState();
   clearCurrentViewer();
   $("placeholder-icon").textContent = mode === "comic" ? "📖" : "▶";
@@ -3685,6 +3709,7 @@ window.addEventListener("pagehide", () => {
 async function init() {
   applyUiProfile();
   buildStarBar();
+  restoreLibraryMode();
   updateModeButtons();
   restoreListPreferences();
   setupLibraryResizer();
