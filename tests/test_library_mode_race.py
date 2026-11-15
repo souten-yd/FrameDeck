@@ -17,7 +17,7 @@ def test_library_mode_navigation_rejects_stale_responses():
         js[js.index("const LIBRARY_MODE_STORAGE_KEY"):js.index("function renderRootSelectorInto(")],
         js[js.index("function resetNavigationState("):js.index("function pushHistory(")],
         js[js.index("async function loadFolder("):js.index("function renderBreadcrumb(")],
-        js[js.index("function showMissingLibraryRoot("):js.index("/* ================= star rating */")],
+        js[js.index("function showMissingLibraryRoot("):js.index("/* ================= star rating")],
         js[js.index("async function setMode("):js.index("function refreshCurrentFolder(")],
     ])
     assert "restoreLibraryMode();" in js[js.index("async function init()"):]
