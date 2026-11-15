@@ -1,0 +1,36 @@
+name: FrameDeck 2.4.19 one-shot validation
+on:
+  push:
+    branches:
+      - ci/test-frame-deck-2.4.19
+    paths:
+      - .github/workflows/test-frame-deck-2.4.19-once.yml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fe089f3a661df54354382150cfbdf9fbf4a69629
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            packaging/qnap/requirements-qnap.txt
+            requirements-test.txt
+      - name: Install runtime and test dependencies
+        run: |
+          python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Check JS syntax
+        run: |
+          node --check framedeck/web/static/js/app.js
+          node --check framedeck/web/static/js/updater.js
+      - name: Run regression and full suite
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: |
+          python -m pytest -q tests/
