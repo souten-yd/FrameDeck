@@ -25,6 +25,12 @@ jobs:
       - name: Install runtime and test dependencies
         run: |
           python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Install ffmpeg for real audio streaming test
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+          ffmpeg -encoders 2>/dev/null | grep libx264 || true
       - name: Check JS syntax
         run: |
           node --check framedeck/web/static/js/app.js
@@ -33,4 +39,4 @@ jobs:
         env:
           IMAGEIO_FFMPEG_EXE: /bin/true
         run: |
-          python -m pytest -q tests/
+          python -m pytest -q -rs tests/
