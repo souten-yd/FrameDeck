@@ -24,6 +24,8 @@ def test_library_mode_navigation_rejects_stale_responses():
 
     harness = r'''
 const assert = require("node:assert/strict");
+const SORT_STORAGE_KEY = "framedeck.sort";
+const FILTER_STORAGE_KEY = "framedeck.filter";
 const store = new Map();
 const localStorage = {
   getItem: key => store.get(key) ?? null,
