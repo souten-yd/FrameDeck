@@ -147,6 +147,7 @@ def playback_profile(media_id: str, request: Request,
         video_codecs=_codec_list(payload, "videoCodecs"),
         audio_codecs=_codec_list(payload, "audioCodecs"),
         containers=_codec_list(payload, "containers"),
+        prefer_aac_audio=bool(payload.get("preferAacAudio", False)),
     )
     settings = services.settings.as_dict()
     requested = payload.get("requestedProfile")
@@ -224,7 +225,11 @@ async def hls_master(media_id: str,
     """
     item = _resolve_video(services, media_id)
     info = services.video_playback.get_info(item.path, media_id)
-    profiles = ([profile] if profile in {"360p", "480p", "720p"} else ["720p"]) if qnap_lite() else _hls_profiles(profile)
+    if profile == "original-aac":
+        # Compatible video is copied unchanged; only the soundtrack is AAC.
+        profiles = ["original-aac"]
+    else:
+        profiles = ([profile] if profile in {"360p", "480p", "720p"} else ["720p"]) if qnap_lite() else _hls_profiles(profile)
     try:
         # 旧ジョブの停止待ちを含むため、専用スレッド枠で実行する
         manifest = await anyio.to_thread.run_sync(
@@ -281,7 +286,7 @@ async def hls_master_file(media_id: str, key: str,
 @router.get("/{media_id}/hls/{key}/{profile}/{segment}")
 async def hls_media_file(media_id: str, key: str, profile: str, segment: str,
                          services: Services = Depends(get_services)):
-    if profile not in HLS_PROFILES:
+    if profile not in HLS_PROFILES and profile != "original-aac":
         raise HTTPException(status_code=404, detail="HLS profile が見つかりません")
     if "/" in segment or ".." in segment or segment.startswith("."):
         raise HTTPException(status_code=404, detail="HLS segment が見つかりません")
