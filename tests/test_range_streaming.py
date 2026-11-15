@@ -176,3 +176,41 @@ def test_range_stream_uses_readahead(video_env):
     assert response.content == video.read_bytes()[1000:6000]
     whole = client.get(f"/api/videos/{media_id}/stream")
     assert whole.content == video.read_bytes()
+
+
+def test_readahead_always_delivers_end_marker_when_queue_was_full(tmp_path):
+    """Reader終了時にキューが満杯でも、終端が欠落して転送が止まらない。"""
+    from queue import Queue
+    from threading import Event, Thread
+
+    from framedeck.web.routers.video import _read_ahead
+    from framedeck.video.stream import CHUNK_SIZE
+
+    source = tmp_path / "readahead.mp4"
+    source.write_bytes(b"x" * (CHUNK_SIZE * 3))
+    queue = Queue(maxsize=1)
+    stop = Event()
+    reader = Thread(
+        target=_read_ahead,
+        args=(str(source), 0, source.stat().st_size - 1, queue, stop),
+        daemon=True,
+    )
+    reader.start()
+    try:
+        chunks = []
+        for _ in range(4):
+            # Slow clients can leave a queue full when the reader reaches EOF.
+            item = queue.get(timeout=4)
+            if item is None:
+                break
+            chunks.append(item)
+            import time
+            time.sleep(0.05)
+        else:
+            pytest.fail("no EOF signal after final chunk")
+        assert len(chunks) == 3
+        assert sum(map(len, chunks)) == source.stat().st_size
+    finally:
+        stop.set()
+        reader.join(timeout=2)
+    assert not reader.is_alive()

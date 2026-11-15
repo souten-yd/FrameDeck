@@ -40,7 +40,7 @@ const S = {
     reloadTimer: null,
     maxHeight: null, maxWidth: null,
     copyVideo: false, copyAudio: false, transcodeFallback: false,
-    mobileStableOriginal: false, desktopStableOriginal: false,
+    mobileStableOriginal: false,
     syncRate: 1, syncInfo: null,
     hlsFallback: false,
     watchdogTimer: null, watchdogPosition: 0, watchdogStrikes: 0,
@@ -127,12 +127,15 @@ function shouldStabilizeMobileOriginal(info) {
   return Math.max(width, height) <= 1920 && Math.min(width, height) <= 1088;
 }
 
-/* PCで明示的に「原寸」を選ぶ場合は、ビットストリームを無変換で
-   fMP4へ再多重化する。自動のDirect Playは維持しつつ、安定性を
-   明示した原寸再生ではブラウザの細かいRange再取得を避ける。 */
-function shouldStabilizeDesktopOriginal() {
-  if (S.settings.runtime_profile === "qnap-lite") return false;
-  return S.uiProfile !== "mobile" && configuredVideoQuality() === "original";
+/* 「原版」は再生可能なら元ファイルのHTTP Range配信を優先する。
+   必要なコーデック変換やユーザーの明示したremuxは別経路に残す。 */
+function usesRawDirectVideo(profile, canDirectPlay, smoothFps) {
+  return Boolean(canDirectPlay && !profile?.transcode && !smoothFps);
+}
+
+function isIosFamily() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent || "") ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }
 
 /* この端末が実際に再生できるコーデック/コンテナを調べてサーバへ申告する。
@@ -368,6 +371,8 @@ function clientMediaHints() {
     viewportHeight: window.innerHeight,
     devicePixelRatio: window.devicePixelRatio || 1,
     uiProfile: S.uiProfile,
+    // iPad/iPhoneではcanPlayTypeが肯定しても音声が出ないコーデックがある。
+    preferAacAudio: isIosFamily(),
     ...clientCodecSupport(),
   };
 }
@@ -426,6 +431,15 @@ $("modal-backdrop").addEventListener("click", (e) => {
 });
 
 /* ================= library ================= */
+const LIBRARY_MODE_STORAGE_KEY = "framedeck.libraryMode";
+let libraryNavigationEpoch = 0;
+
+// Mode preference is per browser; never let the default comic mode erase a choice.
+function restoreLibraryMode() {
+  const saved = localStorage.getItem(LIBRARY_MODE_STORAGE_KEY);
+  if (saved === "comic" || saved === "video") S.mode = saved;
+}
+
 function rootsForMode(mode = S.mode) {
   return S.roots.filter((root) => root.kind === mode || root.kind === "any");
 }
@@ -587,6 +601,8 @@ function restoreListPreferences() {
 async function loadFolder(folderId, { remember = true, includeVolume = false, deferRender = false,
                                       focusItemId = null } = {}) {
   if (!folderId) return;
+  const mode = S.mode;
+  const requestEpoch = ++libraryNavigationEpoch;
   rememberFolderScroll();
   const sort = $("sel-sort").value;
   const filter = $("sel-filter").value;
@@ -595,7 +611,7 @@ async function loadFolder(folderId, { remember = true, includeVolume = false, de
   const query = ($("library-search")?.value || "").trim();
   const params = new URLSearchParams({
     folder_id: folderId,
-    mode: S.mode,
+    mode,
     sort,
     filter,
   });
@@ -603,6 +619,8 @@ async function loadFolder(folderId, { remember = true, includeVolume = false, de
   if (includeVolume) params.set("include_volume", "true");
   try {
     const data = await api(`/api/library/items?${params.toString()}`);
+    // A slower reply from the previous mode/folder must not repaint the list.
+    if (requestEpoch !== libraryNavigationEpoch || mode !== S.mode) return null;
     const sameFolder = S.folderId === folderId;
     S.folderId = folderId;
     S.folderInfo = data.folder;
@@ -622,6 +640,7 @@ async function loadFolder(folderId, { remember = true, includeVolume = false, de
     updateNavButtons();
     return data;
   } catch (e) {
+    if (requestEpoch !== libraryNavigationEpoch || mode !== S.mode) return null;
     toast(`フォルダを読めません: ${e.message}`, true);
     return null;
   }
@@ -796,17 +815,20 @@ function showMissingLibraryRoot(mode) {
 }
 
 async function switchLibraryRoot(rootId, { closeDrawer = true } = {}) {
-  const root = rootsForMode().find((candidate) => candidate.id === rootId);
+  const mode = S.mode;
+  const root = rootsForMode(mode).find((candidate) => candidate.id === rootId);
   if (!root) {
     toast("ライブラリが見つかりません", true);
     return;
   }
-  S.activeRootIds[S.mode] = root.id;
-  saveActiveRootId(S.mode, root.id);
+  ++libraryNavigationEpoch;
+  S.activeRootIds[mode] = root.id;
+  saveActiveRootId(mode, root.id);
   resetNavigationState();
   clearCurrentViewer();
   renderRootSelectors();
-  await loadFolder(root.id, { remember: true });
+  const loaded = await loadFolder(root.id, { remember: true });
+  if (!loaded || S.mode !== mode) return;
   if (closeDrawer) closeMobileDrawer();
   toast(`ライブラリを切り替えました: ${root.display_name}`);
 }
@@ -823,17 +845,21 @@ async function resumeFolderForMode(mode = S.mode) {
 }
 
 async function switchToActiveRoot({ announceResume = false } = {}) {
-  const root = activeRootForMode();
+  const mode = S.mode;
+  const requestEpoch = ++libraryNavigationEpoch;
+  const root = activeRootForMode(mode);
   renderRootSelectors();
   if (!root) {
-    showMissingLibraryRoot(S.mode);
+    showMissingLibraryRoot(mode);
     return;
   }
-  const resume = await resumeFolderForMode();
-  if (resume && rootsForMode().some((r) => r.id === resume.root_id)) {
+  const resume = await resumeFolderForMode(mode);
+  // A mode/root/navigation change while restoring must invalidate this resume.
+  if (requestEpoch !== libraryNavigationEpoch || mode !== S.mode) return;
+  if (resume && rootsForMode(mode).some((r) => r.id === resume.root_id)) {
     if (resume.root_id !== root.id) {
-      S.activeRootIds[S.mode] = resume.root_id;
-      saveActiveRootId(S.mode, resume.root_id);
+      S.activeRootIds[mode] = resume.root_id;
+      saveActiveRootId(mode, resume.root_id);
       renderRootSelectors();
     }
     resetNavigationState();
@@ -1238,10 +1264,11 @@ function focusLibraryItem(itemId) {
 }
 
 async function syncLibraryToComicState(state) {
-  if (!state.root_item_id) return;
+  if (!state.root_item_id || S.mode !== "comic") return;
   if (!S.items.some((item) => item.id === state.root_item_id) && state.root_folder_id) {
     await loadFolder(state.root_folder_id, { remember: true });
   }
+  if (S.mode !== "comic" || S.comic.state?.session_id !== state.session_id) return;
   focusLibraryItem(state.root_item_id);
 }
 
@@ -1961,7 +1988,6 @@ async function openVideo(item) {
   S.video.transcodeFallback = false;
   S.video.hlsFallback = false;
   S.video.mobileStableOriginal = false;
-  S.video.desktopStableOriginal = false;
   try {
     const hints = clientMediaHints();
     if (S.video.quality && S.video.quality !== "auto") hints.requestedProfile = S.video.quality;
@@ -1992,21 +2018,7 @@ async function openVideo(item) {
     };
     S.video.mobileStableOriginal = true;
   }
-  if (playbackProfile && !playbackProfile.transcode && canDirectPlay &&
-      shouldStabilizeDesktopOriginal()) {
-    playbackProfile = {
-      name: "original",
-      transcode: true,
-      height: null,
-      width: null,
-      reason: "desktop-original-remux-stability",
-    };
-    // direct_play=trueなら端末は映像・音声の両方を再生可能。
-    // エンコードせずコンテナだけ連続配信向けに作り直す。
-    S.video.copyVideo = true;
-    S.video.copyAudio = true;
-    S.video.desktopStableOriginal = true;
-  }
+  // ブラウザで直接再生できる原版は、LinuxでもRemuxを強制しない。
   // 変換時の上限。原寸(null)ならスケーリングなしで配信する
   S.video.maxHeight = playbackProfile?.height || null;
   S.video.maxWidth = playbackProfile?.width || null;
@@ -2020,8 +2032,9 @@ async function openVideo(item) {
     S.video.maxHeight = null;
     S.video.maxWidth = null;
     S.video.copyVideo = true;
-    S.video.copyAudio = clientCodecSupport().audioCodecs.includes(
-      (detail.info.audio_codec || "").toLowerCase());
+    S.video.copyAudio = !isIosFamily() &&
+      clientCodecSupport().audioCodecs.includes(
+        (detail.info.audio_codec || "").toLowerCase());
   }
 
   // 画面との相性を先に判定する(なめらか変換を使うかの判断に必要)
@@ -2030,11 +2043,12 @@ async function openVideo(item) {
   if (token !== S.video.loadToken) return;
   S.video.smoothFps = detail.transcode_available ? smoothMotionTarget() : null;
 
-  const wantsTranscode = Boolean(playbackProfile?.transcode) || Boolean(S.video.smoothFps);
-  if (!wantsTranscode && canDirectPlay) {
+  if (usesRawDirectVideo(playbackProfile, canDirectPlay, S.video.smoothFps)) {
     S.video.transcode = false;
     S.video.hls = false;
     video.src = `/api/videos/${item.id}/stream`;
+    $("video-badge").textContent = "原版直接配信 (変換なし)";
+    $("video-badge").classList.remove("hidden");
     if (resume > 0) {
       video.addEventListener("loadedmetadata", () => {
         video.currentTime = resume;
@@ -2044,9 +2058,13 @@ async function openVideo(item) {
   } else if (detail.transcode_available) {
     const original = !S.video.maxHeight;
     if (shouldUseNativeHls()) {
-      const profile = original
-        ? hlsProfileForSource(detail.info.height)
-        : hlsProfileName(playbackProfile?.name || configuredVideoQuality());
+      // 音声のみ非対応なら映像を再エンコードせず、AAC音声付きHLSへ。
+      const audioOnlyFix = original && S.video.copyVideo &&
+        !S.video.copyAudio && !S.video.smoothFps;
+      const profile = audioOnlyFix ? "original-aac"
+        : (original
+          ? hlsProfileForSource(detail.info.height)
+          : hlsProfileName(playbackProfile?.name || configuredVideoQuality()));
       S.video.transcode = false;
       S.video.hls = true;
       S.video.hlsProfile = profile;
@@ -2054,9 +2072,11 @@ async function openVideo(item) {
       S.video.offset = resume;
       video.src = hlsMasterUrl(item.id, profile, resume);
       if (resume > 0) toast(`続きから再生: ${fmtTime(resume)}`);
-      $("video-badge").textContent = S.video.mobileStableOriginal
-        ? `原寸安定配信 HLS ${profile}`
-        : `HLS軽量配信 ${profile}`;
+      $("video-badge").textContent = audioOnlyFix
+        ? "原版映像 + AAC音声 (HLS)"
+        : (S.video.mobileStableOriginal
+          ? `原寸安定配信 HLS ${profile}`
+          : `HLS変換配信 ${profile}`);
     } else {
       S.video.transcode = true;
       S.video.hls = false;
@@ -2069,8 +2089,6 @@ async function openVideo(item) {
       } else if (S.video.smoothFps) {
         $("video-badge").textContent =
           `なめらか変換 ${S.video.smoothFps.toFixed(1)}fps (${detail.info.frame_rate.toFixed(2)}fps素材)`;
-      } else if (S.video.desktopStableOriginal) {
-        $("video-badge").textContent = "原寸安定配信 (無劣化・連続配信)";
       } else if (S.video.copyVideo) {
         // 映像は無変換。コンテナ(必要なら音声も)だけ入れ替えるので軽い
         $("video-badge").textContent =
@@ -2109,8 +2127,13 @@ async function openVideo(item) {
     return;
   }
   applyPlaybackRate();
-  video.volume = Number($("video-volume").value) / 100;
-  try { await video.play(); } catch (e) { /* 自動再生ブロックは無視 */ }
+  if (!isIosFamily()) video.volume = Number($("video-volume").value) / 100;
+  try {
+    await video.play();
+  } catch (e) {
+    // iPadOSでは非同期APIのあとに自動再生を開始できないことがある。
+    if (e.name === "NotAllowedError") toast("再生ボタンを押して動画を開始してください");
+  }
   startProgressTimer();
   startPlaybackWatchdog();
 }
@@ -2757,8 +2780,12 @@ $("btn-mute").onclick = () => {
   video.muted = !video.muted;
   updateVideoUi();
 };
+if (isIosFamily()) {
+  $("video-volume").disabled = true;
+  $("video-volume").title = "iPad/iPhoneでは端末の音量ボタンで調整してください";
+}
 $("video-volume").addEventListener("input", () => {
-  video.volume = Number($("video-volume").value) / 100;
+  if (!isIosFamily()) video.volume = Number($("video-volume").value) / 100;
   video.muted = false;
   updateVideoUi();
 });
@@ -3440,7 +3467,9 @@ $("btn-settings").onclick = openSettings;
 /* ================= top bar wiring ================= */
 async function setMode(mode) {
   if (S.mode === mode) return;
+  ++libraryNavigationEpoch;
   S.mode = mode;
+  localStorage.setItem(LIBRARY_MODE_STORAGE_KEY, mode);
   resetNavigationState();
   clearCurrentViewer();
   $("placeholder-icon").textContent = mode === "comic" ? "📖" : "▶";
@@ -3685,6 +3714,7 @@ window.addEventListener("pagehide", () => {
 async function init() {
   applyUiProfile();
   buildStarBar();
+  restoreLibraryMode();
   updateModeButtons();
   restoreListPreferences();
   setupLibraryResizer();

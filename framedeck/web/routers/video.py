@@ -147,6 +147,7 @@ def playback_profile(media_id: str, request: Request,
         video_codecs=_codec_list(payload, "videoCodecs"),
         audio_codecs=_codec_list(payload, "audioCodecs"),
         containers=_codec_list(payload, "containers"),
+        prefer_aac_audio=bool(payload.get("preferAacAudio", False)),
     )
     settings = services.settings.as_dict()
     requested = payload.get("requestedProfile")
@@ -224,7 +225,11 @@ async def hls_master(media_id: str,
     """
     item = _resolve_video(services, media_id)
     info = services.video_playback.get_info(item.path, media_id)
-    profiles = ([profile] if profile in {"360p", "480p", "720p"} else ["720p"]) if qnap_lite() else _hls_profiles(profile)
+    if profile == "original-aac":
+        # Compatible video is copied unchanged; only the soundtrack is AAC.
+        profiles = ["original-aac"]
+    else:
+        profiles = ([profile] if profile in {"360p", "480p", "720p"} else ["720p"]) if qnap_lite() else _hls_profiles(profile)
     try:
         # 旧ジョブの停止待ちを含むため、専用スレッド枠で実行する
         manifest = await anyio.to_thread.run_sync(
@@ -281,7 +286,7 @@ async def hls_master_file(media_id: str, key: str,
 @router.get("/{media_id}/hls/{key}/{profile}/{segment}")
 async def hls_media_file(media_id: str, key: str, profile: str, segment: str,
                          services: Services = Depends(get_services)):
-    if profile not in HLS_PROFILES:
+    if profile not in HLS_PROFILES and profile != "original-aac":
         raise HTTPException(status_code=404, detail="HLS profile が見つかりません")
     if "/" in segment or ".." in segment or segment.startswith("."):
         raise HTTPException(status_code=404, detail="HLS segment が見つかりません")
@@ -353,10 +358,14 @@ def _read_ahead(path: str, start: int, end: int, queue: "Queue", stop: threading
     except OSError as exc:
         logger.warning("配信元の読み出しに失敗しました: %s", exc)
     finally:
-        try:
-            queue.put_nowait(None)
-        except Full:
-            pass
+        # 終端通知が満杯のqueueで失われると、送出側は永久にqueue.getで待つ。
+        # 接続が切れた場合だけstopで抜け、通常終了時は必ず終端を届ける。
+        while not stop.is_set():
+            try:
+                queue.put(None, timeout=0.2)
+                break
+            except Full:
+                continue
 
 
 async def _aiter_file_range(path: str, start: int, end: int):
@@ -366,7 +375,7 @@ async def _aiter_file_range(path: str, start: int, end: int):
     一瞬でも遅延するとそのまま再生の途切れになる。先読みしておけば
     数百ms程度のスパイクは在庫で埋められる。
     """
-    queue: "Queue" = Queue(maxsize=2 if qnap_lite() else READAHEAD_CHUNKS)
+    queue: "Queue" = Queue(maxsize=4 if qnap_lite() else READAHEAD_CHUNKS)
     stop = threading.Event()
     reader = threading.Thread(
         target=_read_ahead, args=(path, start, end, queue, stop),

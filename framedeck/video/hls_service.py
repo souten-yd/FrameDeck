@@ -531,12 +531,20 @@ class HlsService:
             return ["720p"]
         result = []
         for name in profiles:
+            if name == "original-aac":
+                if name not in result:
+                    result.append(name)
+                continue
             canonical = canonical_video_profile(name)
             if canonical in VIDEO_PROFILES and canonical != "original" and canonical not in result:
                 result.append(canonical)
         return result or ["720p"]
 
     def _variant_for(self, name: str, source_height: int) -> HlsVariant:
+        if name == "original-aac":
+            # Source bitrate is not known here, omit its resolution.
+            return HlsVariant(name=name, width=0, height=0,
+                              bandwidth=20000000, playlist=f"{name}/playlist.m3u8")
         canonical = canonical_video_profile(name)
         profile = resolve_video_profile(canonical, source_height or None)
         width = int(profile.width or 0)
@@ -550,9 +558,10 @@ class HlsService:
     def _write_master(self, manifest: HlsManifest) -> None:
         lines = ["#EXTM3U", "#EXT-X-VERSION:7"]
         for variant in manifest.variants:
-            lines.append(
-                f"#EXT-X-STREAM-INF:BANDWIDTH={variant.bandwidth},RESOLUTION={variant.width}x{variant.height}"
-            )
+            attributes = f"BANDWIDTH={variant.bandwidth}"
+            if variant.width and variant.height:
+                attributes += f",RESOLUTION={variant.width}x{variant.height}"
+            lines.append(f"#EXT-X-STREAM-INF:{attributes}")
             lines.append(variant.playlist)
         manifest.master.write_text("\n".join(lines) + "\n", "utf-8")
 
@@ -566,13 +575,19 @@ class HlsService:
                     raise _HlsCancelled()
                 out_dir = manifest.cache_dir / variant.name
                 out_dir.mkdir(parents=True, exist_ok=True)
-                profile = resolve_video_profile(variant.name, variant.height)
-                cmd = self._ffmpeg_cmd(source_path, out_dir,
-                                       profile.width, profile.height,
-                                       profile.video_bitrate or "1800k",
-                                       profile.audio_bitrate or "96k",
-                                       profile.fps_limit,
-                                       start_seconds)
+                if variant.name == "original-aac":
+                    cmd = self._ffmpeg_cmd(
+                        source_path, out_dir, None, None,
+                        "0k", "192k", None, start_seconds, copy_video=True,
+                    )
+                else:
+                    profile = resolve_video_profile(variant.name, variant.height)
+                    cmd = self._ffmpeg_cmd(source_path, out_dir,
+                                           profile.width, profile.height,
+                                           profile.video_bitrate or "1800k",
+                                           profile.audio_bitrate or "96k",
+                                           profile.fps_limit,
+                                           start_seconds)
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                            stderr=subprocess.PIPE)
                 with job.lock:
@@ -606,10 +621,13 @@ class HlsService:
                     max_width: int | None, max_height: int | None,
                     video_bitrate: str, audio_bitrate: str,
                     fps_limit: int | None,
-                    start_seconds: float = 0.0) -> list[str]:
-        filters = [scale_filter_for_box(max_width, max_height)]
-        if fps_limit:
-            filters.append(f"fps=fps='min({fps_limit},source_fps)'")
+                    start_seconds: float = 0.0,
+                    copy_video: bool = False) -> list[str]:
+        filters = []
+        if not copy_video:
+            filters.append(scale_filter_for_box(max_width, max_height))
+            if fps_limit:
+                filters.append(f"fps=fps='min({fps_limit},source_fps)'")
         cmd = [
             resolve_ffmpeg(self.auto_download_ffmpeg).path or "ffmpeg",
             "-hide_banner", "-loglevel", "error", "-y",
@@ -623,16 +641,21 @@ class HlsService:
             "-readrate_initial_burst", str(HLS_INITIAL_BURST_SECONDS),
             "-i", source_path,
             "-map", "0:v:0", "-map", "0:a:0?",
-            "-c:v", "libx264", "-preset", "veryfast",
-            *(["-threads", str(self.encode_threads)] if self.encode_threads else []),
-            "-profile:v", "baseline", "-level", "4.0",
-            "-pix_fmt", "yuv420p", "-tag:v", "avc1", "-bf", "0",
-            "-b:v", video_bitrate,
-            # -hls_time はキーフレームでしか分割できない。境界を明示しないと
-            # 2秒設定でも素材やエンコーダ都合で初回送信が数秒遅れる。
-            "-force_key_frames",
-            f"expr:gte(t,n_forced*{self.segment_duration})",
-            "-vf", ",".join(filters),
+        ]
+        if copy_video:
+            cmd += ["-c:v", "copy"]
+        else:
+            cmd += [
+                "-c:v", "libx264", "-preset", "veryfast",
+                *(["-threads", str(self.encode_threads)] if self.encode_threads else []),
+                "-profile:v", "baseline", "-level", "4.0",
+                "-pix_fmt", "yuv420p", "-tag:v", "avc1", "-bf", "0",
+                "-b:v", video_bitrate,
+                "-force_key_frames",
+                f"expr:gte(t,n_forced*{self.segment_duration})",
+                "-vf", ",".join(filters),
+            ]
+        cmd += [
             "-c:a", "aac", "-b:a", audio_bitrate, "-ac", "2",
             "-f", "hls",
             "-hls_time", str(self.segment_duration),
