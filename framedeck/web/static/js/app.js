@@ -2062,7 +2062,7 @@ async function openVideo(item) {
     if (shouldUseNativeHls()) {
       // 音声のみ非対応なら映像を再エンコードせず、AAC音声付きHLSへ。
       const audioOnlyFix = original && S.video.copyVideo &&
-        !S.video.copyAudio && !S.video.smoothFps && S.video.quality !== "remux";
+        !S.video.copyAudio && !S.video.smoothFps;
       const profile = audioOnlyFix ? "original-aac"
         : (original
           ? hlsProfileForSource(detail.info.height)
