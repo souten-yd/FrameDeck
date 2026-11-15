@@ -458,14 +458,25 @@ def test_ios_original_uses_same_size_hls_for_stable_delivery():
     assert "原寸安定配信 HLS" in js
 
 
-def test_desktop_original_uses_lossless_continuous_remux():
-    """PCの明示的な原寸はRangeではなく無劣化連続配信にする。"""
+def test_supported_desktop_original_keeps_direct_range_without_remux():
+    """原版が直接再生できるなら、明示した原寸もFFmpeg経由にしない。"""
     js = (ROOT / "framedeck/web/static/js/app.js").read_text()
-    assert "function shouldStabilizeDesktopOriginal" in js
-    assert 'reason: "desktop-original-remux-stability"' in js
-    assert "S.video.copyVideo = true" in js
-    assert "S.video.copyAudio = true" in js
-    assert "原寸安定配信 (無劣化・連続配信)" in js
+    assert "function usesRawDirectVideo(" in js
+    assert "usesRawDirectVideo(playbackProfile, canDirectPlay, S.video.smoothFps)" in js
+    assert 'video.src = `/api/videos/${item.id}/stream`;' in js
+    assert "shouldStabilizeDesktopOriginal" not in js
+    assert "desktop-original-remux-stability" not in js
+    assert "原版直接配信 (変換なし)" in js
+
+
+def test_ipad_audio_is_not_muted_by_default():
+    html = (ROOT / "framedeck/web/templates/index.html").read_text()
+    js = (ROOT / "framedeck/web/static/js/app.js").read_text()
+    assert 'id="video-volume" min="0" max="100" value="100"' in html
+    assert "preferAacAudio: isIosFamily()" in js
+    assert 'const profile = audioOnlyFix ? "original-aac"' in js
+    assert 'if (!isIosFamily()) video.volume = ' in js
+    assert "再生ボタンを押して動画を開始してください" in js
 
 
 def test_network_starvation_does_not_change_quality():
