@@ -51,6 +51,8 @@ class VideoClientHints:
     video_codecs: tuple[str, ...] = ()
     audio_codecs: tuple[str, ...] = ()
     containers: tuple[str, ...] = ()
+    # iOS Safari may report support but play non-AAC soundtracks silently.
+    prefer_aac_audio: bool = False
 
 
 _WIRED_CONNECTION_TYPES = {"wifi", "ethernet", "wimax", "mixed", "other"}
@@ -191,11 +193,18 @@ def resolve_direct_play(info: VideoInfo,
     """
     hints = hints or VideoClientHints()
     if not hints.video_codecs:
-        # 申告なし(旧クライアント等)はサーバ側の推定を使う
+        # 旧端末もiOS音声制約の申告があれば先に保守的に判定する。
+        if hints.prefer_aac_audio and info.audio_codec not in ("", "aac", "mp3"):
+            return DirectPlayDecision(
+                False, copy_video=info.direct_play,
+                reason="iPad/iPhoneで音声互換性を確保するためAACへ変換します",
+            )
         return DirectPlayDecision(info.direct_play, reason=info.direct_play_reason)
 
     video_ok = not info.video_codec or info.video_codec in hints.video_codecs
     audio_ok = not info.audio_codec or info.audio_codec in hints.audio_codecs
+    if hints.prefer_aac_audio and info.audio_codec not in ("", "aac", "mp3"):
+        audio_ok = False
     container_ok = bool(info.container) and info.container in hints.containers
 
     if container_ok and video_ok and audio_ok:
