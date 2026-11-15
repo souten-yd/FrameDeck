@@ -98,3 +98,45 @@ def test_hls_copy_audio_route_is_exposed_to_ios():
     js = (Path(__file__).resolve().parents[1] /
           "framedeck/web/static/js/app.js").read_text("utf-8")
     assert 'audioOnlyFix ? "original-aac"' in js
+
+
+def test_hls_audio_conversion_produces_aac_without_reencoding_h264(tmp_path):
+    """FFmpegがあるCIでは、AAC音声が実際に生成されることも確認する。"""
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        pytest.skip("system ffmpeg/ffprobe not available")
+
+    source = tmp_path / "ac3-source.mp4"
+    make = subprocess.run([
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "color=c=black:s=320x180:r=25",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+        "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        "-g", "25", "-c:a", "ac3", "-b:a", "192k", str(source),
+    ], capture_output=True, text=True, timeout=20)
+    if make.returncode:
+        pytest.skip("ffmpeg lacks the synthetic H264/AC3 encoder")
+
+    service = HlsService(tmp_path / "cache", segment_duration=1)
+    manifest = service.ensure(str(source), profiles=["original-aac"], source_height=180)
+    assert manifest.ready
+    variant_dir = manifest.cache_dir / "original-aac"
+    init = variant_dir / "init.mp4"
+    first_segment = next(variant_dir.glob("segment_*.m4s"))
+    result_mp4 = tmp_path / "playable-fragment.mp4"
+    result_mp4.write_bytes(init.read_bytes() + first_segment.read_bytes())
+    probe = subprocess.run([
+        ffprobe, "-v", "error", "-show_entries", "stream=codec_name,codec_type",
+        "-of", "json", str(result_mp4),
+    ], capture_output=True, text=True, timeout=10, check=True)
+    streams = json.loads(probe.stdout)["streams"]
+    codecs = {stream["codec_type"]: stream["codec_name"] for stream in streams}
+    assert codecs["video"] == "h264"
+    assert codecs["audio"] == "aac"
