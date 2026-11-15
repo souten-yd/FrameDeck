@@ -40,7 +40,7 @@ const S = {
     reloadTimer: null,
     maxHeight: null, maxWidth: null,
     copyVideo: false, copyAudio: false, transcodeFallback: false,
-    mobileStableOriginal: false, desktopStableOriginal: false,
+    mobileStableOriginal: false,
     syncRate: 1, syncInfo: null,
     hlsFallback: false,
     watchdogTimer: null, watchdogPosition: 0, watchdogStrikes: 0,
@@ -1988,7 +1988,6 @@ async function openVideo(item) {
   S.video.transcodeFallback = false;
   S.video.hlsFallback = false;
   S.video.mobileStableOriginal = false;
-  S.video.desktopStableOriginal = false;
   try {
     const hints = clientMediaHints();
     if (S.video.quality && S.video.quality !== "auto") hints.requestedProfile = S.video.quality;
@@ -2044,7 +2043,6 @@ async function openVideo(item) {
   if (token !== S.video.loadToken) return;
   S.video.smoothFps = detail.transcode_available ? smoothMotionTarget() : null;
 
-  const wantsTranscode = Boolean(playbackProfile?.transcode) || Boolean(S.video.smoothFps);
   if (usesRawDirectVideo(playbackProfile, canDirectPlay, S.video.smoothFps)) {
     S.video.transcode = false;
     S.video.hls = false;
