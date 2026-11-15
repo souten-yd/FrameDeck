@@ -26,7 +26,7 @@ from .ffmpeg import resolve_ffmpeg
 from .profile_service import VIDEO_PROFILES, canonical_video_profile, resolve_video_profile, scale_filter_for_box
 from .transcode import TranscodeError
 
-HLS_VERSION = "hls-v4"
+HLS_VERSION = "hls-v3"
 HLS_PROFILES = ("360p", "480p", "720p", "1080p")
 COMPLETE_MARKER = "complete"
 HLS_READ_RATE = 1.0
