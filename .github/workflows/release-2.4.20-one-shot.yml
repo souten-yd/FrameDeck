@@ -1,0 +1,59 @@
+name: Release FrameDeck 2.4.20
+
+on:
+  push:
+    branches: [ci/release-2.4.20]
+    paths: [.github/workflows/release-2.4.20-one-shot.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 01c1c9eb17171b83ef832268f63a4bb32e98cdc8
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install FFmpeg and QDK prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg curl xz-utils libxml2-utils xmlstarlet pv dos2unix
+          curl -fsSL -o /tmp/qdk.deb https://github.com/qnap-dev/QDK/releases/download/v2.5.3/qdk_2.5.3_amd64.deb
+          sudo apt-get install -y /tmp/qdk.deb
+          command -v qbuild
+          command -v qpkg_encrypt
+          ffmpeg -version | head -1
+      - name: Install Python test dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Verify exact source version and JS syntax
+        run: |
+          python - <<'PY'
+          from framedeck import __version__
+          assert __version__ == '2.4.20', __version__
+          assert 'QPKG_VER="2.4.20"' in open('packaging/qnap/qpkg.cfg').read()
+          PY
+          python -m compileall -q framedeck
+          node --check framedeck/web/static/js/app.js
+          test "$(git rev-parse HEAD)" = '01c1c9eb17171b83ef832268f63a4bb32e98cdc8'
+      - name: Run full suite including FFmpeg integration
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q -rs tests/
+      - name: Build QNAP TS-253Be x86_64 QPKG
+        run: bash packaging/qnap/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameDeck-QPKG-2.4.20
+          path: dist/*.qpkg
+          if-no-files-found: error
+          retention-days: 3
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.4.20 dist/*.qpkg --target 01c1c9eb17171b83ef832268f63a4bb32e98cdc8 --latest --title "FrameDeck v2.4.20" --notes "正式版。PR #63 / #64: NAS原本・メタデータの正本を保ち、初回共有キー認証後のLAN自動検出、Linux読み取り専用動画マウントからのfMP4変換委譲・QNAPへ自動復帰を追加。PR #65: SQLite整合性バックアップ、日次7+週次4世代と正常な直近2世代保護を追加。変換委譲とバックアップは初期OFF。QNAP直接Range配信と既存iPad HLS/AAC経路は維持。Linux HLS委譲、双方向データ同期、別端末バックアップ複製は未実装。Actionsの全テストとQDKによるTS-253Be用QPKGビルドを実施。QNAP/Linux/iPad実機での速度・音声・切断復帰は未確認のため導入後に確認してください。"
