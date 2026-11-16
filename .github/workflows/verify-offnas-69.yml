@@ -1,5 +1,5 @@
 name: FrameDeck PR69 OFF-NAS one-shot safety validation
-# Repeat after fixing same-second backup ordering and remote mount safety
+# Final repeat after adding kernel mountinfo filesystem-type regression test
 
 on:
   push:
