@@ -237,7 +237,7 @@ def test_video_route_falls_back_to_local_when_worker_connect_fails(app_env, monk
         media_id, str(file), "video", None, file.stat().st_mtime, file.stat().st_size,
     )
 
-    monkeypatch.setattr(video_router, "offload_enabled", lambda: True)
+    monkeypatch.setattr(video_router, "offload_enabled", lambda *_: True)
     monkeypatch.setattr(video_router, "remote_eligible", lambda *args: True)
     def fail_connect(*args, **kwargs):
         raise WorkerOffloadError("network disconnected")
