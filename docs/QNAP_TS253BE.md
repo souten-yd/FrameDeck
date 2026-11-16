@@ -4,6 +4,18 @@ FrameDeck uses one application codebase on Ubuntu and QNAP. The QPKG launcher
 sets `FRAMEDECK_PROFILE=qnap-lite`; common features under `framedeck/` apply
 to both platforms without a fork. Linux keeps its original defaults and limits.
 
+## Optional Linux worker offload (experimental)
+
+A QNAP TS-253Be remains the always-on metadata/original-file server. An
+intermittently powered Linux PC may take **fMP4 encoding only** when explicitly
+paired, enabled and given an OS-level **read-only NAS share mount**. QNAP
+continues to expose the same browser URL and acts as the output stream proxy.
+Linux source mapping is an exact A-library-root to B-mounted-path allowlist.
+Worker failures fall back to the original QNAP FFmpeg path and QNAP's CPU and
+resolution caps. Direct Range, HLS/iPad AAC, metadata writes and QPKG startup
+remain unchanged. No source-copy or automatic software update is introduced.
+See [Linux worker](CLUSTER_WORKER.md) for security and setup.
+
 ## Opt-in SQLite generations (metadata only)
 
 QNAP stores optional online SQLite backups under

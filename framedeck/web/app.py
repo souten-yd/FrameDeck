@@ -12,8 +12,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..core.services import Services
+from ..cluster_worker import CAPABILITY_PATH, ReplayGuard
+from ..worker_offload import WORKER_FMP4_PATH
 from ..runtime_profile import qnap_lite
-from .routers import backups, comic, library, system, video, volume_view
+from .routers import backups, cluster, comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -35,6 +37,8 @@ def create_app(services: Services) -> FastAPI:
             anyio.to_thread.current_default_thread_limiter().total_tokens = 8 if qnap_lite() else 96
         except (RuntimeError, ValueError):  # pragma: no cover
             pass
+        services.cluster.start()
+        services.discovery.start()
         services.backups.start(services.settings)
         yield
         services.shutdown()
@@ -42,10 +46,16 @@ def create_app(services: Services) -> FastAPI:
     app = FastAPI(title="FrameDeck", lifespan=lifespan)
     app.state.services = services
     app.state.event_bus = event_bus
+    app.state.cluster_guard = ReplayGuard()
 
     @app.middleware("http")
     async def pin_guard(request: Request, call_next):
         """LANアクセス時の簡易PIN(設定時のみ)。localhostは常に許可。"""
+        # Worker health uses a separate HMAC challenge, even if this host
+        # also protects its browser UI with a PIN. The worker endpoint itself
+        # rejects all unsigned requests.
+        if request.url.path in (CAPABILITY_PATH, WORKER_FMP4_PATH):
+            return await call_next(request)
         pin = services.settings.get("web_pin", "")
         if pin:
             client_host = request.client.host if request.client else ""
@@ -69,6 +79,7 @@ def create_app(services: Services) -> FastAPI:
 
     app.include_router(system.router)
     app.include_router(backups.router)
+    app.include_router(cluster.router)
     app.include_router(library.router)
     app.include_router(volume_view.router)
     app.include_router(comic.router)

@@ -42,6 +42,10 @@ from ...video.profile_service import (
     select_video_profile,
 )
 from ...video.transcode import TranscodeError, video_thumbnail
+from ...worker_offload import (
+    WorkerOffloadError, offload_enabled, owner_source_ref,
+    remote_eligible, open_remote_fmp4,
+)
 from ..dependencies import get_services
 
 logger = logging.getLogger("framedeck")
@@ -112,6 +116,13 @@ def video_detail(media_id: str,
     if services.settings.get("resume_playback", True):
         resume = services.video_playback.resume_position(media_id)
     services.library.mark_opened(item)
+    remote_available = False
+    if offload_enabled(services.settings):
+        try:
+            root, _ = owner_source_ref(item.path, services.library.list_roots())
+            remote_available = remote_eligible(services.cluster, root, services.settings)
+        except WorkerOffloadError:
+            pass
     return {
         "item": {
             "id": item.id,
@@ -122,7 +133,8 @@ def video_detail(media_id: str,
         "info": info.to_dict(),
         "progress": progress,
         "resume_position": resume,
-        "transcode_available": services.transcode.available(),
+        "transcode_available": remote_available or services.transcode.available(),
+        "worker_transcode_available": remote_available,
         "ffmpeg_status": services.transcode.ffmpeg_status(),
     }
 
@@ -414,6 +426,35 @@ async def _aiter_transcode(stream):
         stream.close()
 
 
+async def _aiter_worker_fmp4(response, controller, initial: bytes):
+    """Bridge B -> A -> browser without buffering a complete video.
+
+    Browser origin and every URL remain on A.  A lost B connection marks the
+    worker unhealthy so the existing client playback watchdog will retry via
+    the local QNAP route, accepting a short interruption.
+    """
+    try:
+        if initial:
+            yield initial
+        while True:
+            # HTTPResponse.read(n) may wait until n bytes arrive, producing
+            # needless buffering. read1(n) yields as soon as data is ready.
+            reader = getattr(response, "read1", response.read)
+            chunk = await anyio.to_thread.run_sync(
+                reader, 128 * 1024,
+                abandon_on_cancel=True, limiter=_STREAM_LIMITER,
+            )
+            if not chunk:
+                break
+            yield chunk
+    except Exception as exc:
+        controller.mark_unhealthy()
+        logger.warning("Linux worker stream interrupted; next retry uses QNAP: %s",
+                       type(exc).__name__)
+    finally:
+        response.close()
+
+
 def file_validators(stat: os.stat_result) -> tuple[str, str]:
     """ETag と Last-Modified を作る。
 
@@ -496,6 +537,7 @@ async def stream_transcode(media_id: str,
                            copy_video: bool = Query(default=False),
                            copy_audio: bool = Query(default=False),
                            smooth_fps: float | None = Query(default=None, ge=20, le=240),
+                           force_local: bool = Query(default=False),
                            services: Services = Depends(get_services)):
     """ブラウザ非対応形式向けのfMP4変換ストリーミング(シークは?start=で再要求)。
 
@@ -505,6 +547,50 @@ async def stream_transcode(media_id: str,
     再エンコードせずコンテナだけ入れ替える(端末が再生できる形式のとき)。
     """
     item = _resolve_video(services, media_id)
+
+    # Explicitly opt-in; a missing/offline Linux worker never affects direct
+    # Range streaming, HLS or ordinary playback.  A does not need to expose
+    # source bytes to the worker: B uses the separately configured read-only
+    # mount of A's media share.
+    if not force_local and offload_enabled(services.settings):
+        try:
+            source_root, relative = owner_source_ref(
+                item.path, services.library.list_roots(),
+            )
+            if remote_eligible(services.cluster, source_root, services.settings):
+                def connect():
+                    return open_remote_fmp4(
+                        services.cluster, source_root, relative,
+                        settings=services.settings, start=start, max_height=max_height, max_width=max_width,
+                        session=session.strip()[:64], copy_video=copy_video,
+                        copy_audio=copy_audio, smooth_fps=smooth_fps,
+                    )
+                remote = await anyio.to_thread.run_sync(
+                    connect, limiter=_STREAM_LIMITER,
+                )
+                initial = b""
+                try:
+                    first_chunk = getattr(remote, "read1", remote.read)
+                    initial = await anyio.to_thread.run_sync(
+                        first_chunk, 4096, limiter=_STREAM_LIMITER,
+                    )
+                    if initial:
+                        return StreamingResponse(
+                            _aiter_worker_fmp4(remote, services.cluster, initial),
+                            media_type="video/mp4",
+                            headers={"Cache-Control": "no-store",
+                                     "X-FrameDeck-Processing-Node": "linux-worker"},
+                        )
+                    services.cluster.mark_unhealthy()
+                finally:
+                    if not initial:
+                        remote.close()
+        except (WorkerOffloadError, OSError, ValueError, TimeoutError) as exc:
+            services.cluster.mark_unhealthy()
+            logger.info("Worker unavailable before stream; using NAS fMP4: %s",
+                        type(exc).__name__)
+
+    # Hardware and CPU safety caps still apply whenever QNAP encodes locally.
     if qnap_lite() and not copy_video:
         max_height = min(max_height or QNAP_TRANSCODE_HEIGHT, QNAP_TRANSCODE_HEIGHT)
         max_width = min(max_width or QNAP_TRANSCODE_WIDTH, QNAP_TRANSCODE_WIDTH)
