@@ -3451,6 +3451,71 @@ async function openSettings() {
   wrap.appendChild(buildLibraryRootSection("comic", "漫画ライブラリ"));
   wrap.appendChild(buildLibraryRootSection("video", "動画ライブラリ"));
 
+  const backupHeading = document.createElement("h3");
+  backupHeading.textContent = "データ保全・世代バックアップ";
+  backupHeading.style.gridColumn = "1 / -1";
+  grid.appendChild(backupHeading);
+  settingRow(grid, "SQLiteの自動バックアップ", makeSelect("backup_enabled", [
+    ["false", "無効"], ["true", "有効（毎日・03時以降）"],
+  ]), "設定・履歴・評価などを7日次＋4週次で保持します。元の動画・漫画は対象外です。バックアップ先は同じQNAP内なので、物理故障対策は別途必要です。");
+  const backupStatus = document.createElement("div");
+  backupStatus.className = "hint";
+  backupStatus.style.gridColumn = "1 / -1";
+  backupStatus.textContent = "バックアップ状態を取得しています...";
+  grid.appendChild(backupStatus);
+  let latestBackupName = "";
+  const backupActions = document.createElement("div");
+  backupActions.style.display = "flex";
+  backupActions.style.gap = "8px";
+  backupActions.style.gridColumn = "1 / -1";
+  const backupNow = document.createElement("button");
+  backupNow.type = "button";
+  backupNow.className = "modal-btn primary";
+  backupNow.textContent = "今すぐバックアップ";
+  const verifyBackup = document.createElement("button");
+  verifyBackup.type = "button";
+  verifyBackup.className = "modal-btn";
+  verifyBackup.textContent = "最新世代を整合性検証";
+  backupActions.append(backupNow, verifyBackup);
+  grid.appendChild(backupActions);
+  async function refreshBackups() {
+    try {
+      const status = await api("/api/backups/status");
+      const snapshots = status.snapshots || [];
+      latestBackupName = snapshots[0]?.name || "";
+      verifyBackup.disabled = !latestBackupName;
+      const last = snapshots[0];
+      backupStatus.textContent = last
+        ? "保持中: " + snapshots.length + "世代 / 最新: " + last.created_at +
+          " / 自動実行: " + (status.enabled ? "有効" : "無効")
+        : "バックアップはまだありません（自動実行: " +
+          (status.enabled ? "有効" : "無効") + "）";
+    } catch (e) {
+      backupStatus.textContent = "バックアップ状態を取得できません: " + e.message;
+    }
+  }
+  backupNow.onclick = async () => {
+    backupNow.disabled = true;
+    backupStatus.textContent = "安全なSQLiteスナップショットを作成しています...";
+    try {
+      await api("/api/backups/create", { method: "POST" });
+      toast("バックアップの検証と保存が完了しました");
+      await refreshBackups();
+    } catch (e) { toast(e.message, true); await refreshBackups(); }
+    finally { backupNow.disabled = false; }
+  };
+  verifyBackup.onclick = async () => {
+    if (!latestBackupName) return;
+    verifyBackup.disabled = true;
+    try {
+      await api("/api/backups/" + encodeURIComponent(latestBackupName) + "/verify",
+        { method: "POST" });
+      toast("最新バックアップの整合性検証に成功しました");
+    } catch (e) { toast(e.message, true); }
+    finally { verifyBackup.disabled = false; }
+  };
+  refreshBackups();
+
   const note = document.createElement("div");
   note.className = "hint";
   note.style.marginTop = "12px";
