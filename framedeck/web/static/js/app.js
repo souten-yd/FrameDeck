@@ -43,6 +43,7 @@ const S = {
     mobileStableOriginal: false,
     syncRate: 1, syncInfo: null,
     hlsFallback: false,
+    forceLocal: false,
     watchdogTimer: null, watchdogPosition: 0, watchdogStrikes: 0,
     recovering: false,
     pauseStopTimer: null, pausedConversionStopped: false,
@@ -1942,6 +1943,7 @@ function transcodeStreamUrl(itemId, seconds) {
   if (S.video.copyVideo) params.set("copy_video", "1");
   if (S.video.copyAudio) params.set("copy_audio", "1");
   if (S.video.smoothFps) params.set("smooth_fps", String(S.video.smoothFps));
+  if (S.video.forceLocal) params.set("force_local", "1");
   return `/api/videos/${itemId}/stream-transcode?${params.toString()}`;
 }
 
@@ -1987,6 +1989,7 @@ async function openVideo(item) {
   S.video.copyAudio = false;
   S.video.transcodeFallback = false;
   S.video.hlsFallback = false;
+  S.video.forceLocal = false;
   S.video.mobileStableOriginal = false;
   try {
     const hints = clientMediaHints();
@@ -2288,6 +2291,8 @@ async function recoverPlayback(position) {
   toast("再生が止まったため読み直します");
   try {
     if (S.video.transcode && !S.video.hls) {
+      // A remote Linux worker may be unreachable; retry directly on A.
+      if (S.settings?.cluster_offload_enabled === true) S.video.forceLocal = true;
       S.video.offset = position;
       video.src = transcodeStreamUrl(item.id, position);
     } else if (S.video.hls) {
@@ -2699,6 +2704,15 @@ video.addEventListener("error", () => {
   // すぐエラー表示せず少し待ってから読み直す
   if ((S.video.hls || S.video.transcode) &&
       S.video.errorRetryCount < VIDEO_ERROR_MAX_RETRIES) {
+    // If the Linux worker vanished, retry fMP4 from the latest confirmed
+    // playback time, not the beginning of the old transcode segment.
+    if (S.video.transcode && S.settings?.cluster_offload_enabled === true) {
+      S.video.forceLocal = true;
+      const resume = currentPosition();
+      if (Number.isFinite(resume) && resume > S.video.offset) {
+        S.video.offset = resume;
+      }
+    }
     S.video.errorRetryCount += 1;
     $("video-spinner").classList.remove("hidden");
     toast(`変換の準備中です… 再試行します (${S.video.errorRetryCount}/${VIDEO_ERROR_MAX_RETRIES})`);
@@ -2727,6 +2741,15 @@ video.addEventListener("error", () => {
   $("video-msg").classList.remove("hidden");
 });
 video.addEventListener("ended", () => {
+  // A dropped worker stream can appear as a clean EOF in some browsers.
+  // Never advance to the next video before the known source duration.
+  if (S.video.item && S.video.transcode &&
+      S.settings?.cluster_offload_enabled === true && !S.video.forceLocal &&
+      S.video.duration > 0 && currentPosition() + 5 < S.video.duration) {
+    S.video.forceLocal = true;
+    recoverPlayback(currentPosition());
+    return;
+  }
   saveVideoProgress();
   if ((S.video.hls || S.video.transcode) && S.video.item) {
     requestTranscodeStop(S.video.item.id);
@@ -3288,6 +3311,9 @@ async function openSettings() {
   videoHead.style.gridColumn = "1 / -1";
   videoHead.style.margin = "14px 0 0";
   grid.appendChild(videoHead);
+  settingRow(grid, "Linux高速変換を使用", makeSelect("cluster_offload_enabled", [
+    ["false", "無効（QNAPのみ）"], ["true", "有効（Linuxが利用可能なら使用）"],
+  ]), "Linux側にQNAPの動画フォルダを読み取り専用マウントして登録した場合、fMP4変換だけを委譲します。HLS/iPadは現時点でQNAPのままです。");
   settingRow(grid, "動画軽量配信", makeSelect("video_stream_mode", [
     ["original", "無効"], ["auto", "自動"], ["transcode", "常に有効"],
   ]));
@@ -3455,12 +3481,12 @@ async function openSettings() {
   const clusterSection = document.createElement("section");
   clusterSection.className = "library-root-section";
   const clusterHeading = document.createElement("h3");
-  clusterHeading.textContent = "Linux高速変換サーバー（準備段階）";
+  clusterHeading.textContent = "Linux高速変換サーバー（fMP4試験運用）";
   clusterHeading.style.margin = "16px 0 8px";
   clusterSection.appendChild(clusterHeading);
   const clusterHint = document.createElement("p");
   clusterHint.className = "hint";
-  clusterHint.textContent = "接続認証・稼働確認のみ対応。動画の変換委譲は次の更新で有効になります。QNAPは引き続きすべての動画を配信します。";
+  clusterHint.textContent = "読み取り専用でQNAPをマウントしたLinuxへ、fMP4変換のみを委譲できます。iPadのHLS・元動画の直接Range配信はQNAPのままです。";
   clusterSection.appendChild(clusterHint);
   const clusterStatus = document.createElement("p");
   clusterStatus.className = "hint";
@@ -3580,7 +3606,7 @@ async function openSettings() {
       clusterStatus.textContent = !peer.configured
         ? "未登録（QNAP単体で動作中）"
         : peer.online
-          ? "接続済み: " + peer.url + " / FFmpeg: " + (peer.capabilities?.transcode_available ? "利用可" : "利用不可")
+          ? "接続済み: " + peer.url + " / FFmpeg: " + (peer.capabilities?.transcode_available ? "利用可" : "利用不可") + " / fMP4委譲: " + (peer.offload_active ? "有効" : "無効・待機中")
           : "登録済み・オフライン: " + peer.url + "（Linux停止中もQNAPは利用できます）";
       workerRemove.disabled = !peer.configured;
     } catch (e) {

@@ -8,10 +8,10 @@ Tracking: https://github.com/souten-yd/FrameDeck/issues/62
   library metadata, ratings and reading/playback state.
 - **B: Linux PC** is an optional, intermittently powered processing worker.
   Users always access A's URL, and A works normally if B is off.
-- This PR implements **manual pairing, capability/availability checking,
-  request signing and status UI only**. **Video transcoding, comic processing,
-  media sharing, session failover, database synchronization, replication and
-  backups have not been enabled by this PR.** The UI explicitly reflects that.
+- Stage 1 implements registration, signed capability checks and health monitoring.
+- Stage 2 adds **opt-in Linux fMP4 transcoding** from an explicitly mapped,
+  read-only NAS share. A proxies B's encoded stream, falling back to QNAP.
+  HLS/iPad, comic offload, metadata synchronization and backups remain future work.
 - Both hosts run the **same** FrameDeck codebase. Default is standalone mode.
   No LAN scanning, WOL, uploads, source sharing, automatic installs,
   remote execution, or scheduled backups are introduced.
@@ -86,6 +86,78 @@ paired worker until explicitly unpaired.
 When the B-side secret is rotated, update it on A too. Removing the pairing
 from A deletes its saved config but does not rotate the secret on B.
 
+## Stage 2: Linux fMP4 transcoding (opt-in)
+
+FrameDeck A is always the QNAP data authority and browser entrypoint.
+Linux B is intermittently powered and reads QNAP files through a separate,
+**read-only** NFS/SMB mount. No media uploads, automatic share mounts, shell
+operations, or second metadata writer are introduced.
+
+1. Identify the exact QNAP absolute path of each video library root.
+   An administrator can inspect the library_roots table in the persistent
+   framedeck.db, under /share/<volume>/.framedeck/data on QNAP.
+2. Mount each corresponding QNAP share on Linux B, e.g. /mnt/qnap-video.
+   Use a dedicated account without write/delete permission. Verify that
+   normal files can be read and that a test write fails. The worker checks
+   the Linux mount's OS-level read-only flag; writable mounts are rejected
+   even if directory permissions appear restrictive.
+3. Configure Linux B with both service environment variables. The secret is
+   the same 64-hex-value used during Stage 1 pairing, and the map key is the
+   **exact** registered QNAP library root. Example:
+
+       FRAMEDECK_CLUSTER_WORKER_SECRET=<secret>
+       FRAMEDECK_CLUSTER_WORKER_MOUNTS_JSON='{"/share/Download/Video":"/mnt/qnap-video"}'
+
+   Multiple roots can be included as keys in this JSON mapping. Only paths
+   under an explicitly mapped mount can be encoded. Symlink escapes, '..',
+   absolute relative paths and non-video extensions are rejected. Never store
+   a plaintext SMB password in an environment variable or a command argument.
+4. On QNAP A, open Settings > Linux高速変換サーバー and register B with its
+   LAN IP + port and the matching secret. Confirm status is connected.
+   Turn on **Linux高速変換を使用**. The default is OFF. Alternatively, an
+   administrator may opt in with FRAMEDECK_CLUSTER_ENABLE_OFFLOAD=1 in A's
+   service environment, but UI opt-in is preferred.
+5. Start a video requiring fMP4 conversion on a desktop browser. The browser
+   continues using A's /api/videos/{id}/stream-transcode URL. A checks B's
+   signed health, FFmpeg availability and mapped source root, sends an
+   authenticated conversion request to B and streams the **encoded** output
+   to the browser in bounded chunks. A's response includes the diagnostic
+   header X-FrameDeck-Processing-Node: linux-worker.
+6. Stop B during playback. The A-side worker connection fails and is placed
+   into a short cooldown; existing browser recovery retries the request from
+   the most recently known video position and routes it to A's local FFmpeg.
+   A short pause or buffering interval is allowed. Retry requests may set
+   force_local=1 on A's fMP4 route, preventing a repeated attempt to use
+   an unreliable worker for that playback. The QNAP CPU/resolution limits
+   still apply whenever QNAP performs the actual conversion.
+
+### Limits and data safety
+
+- Only fMP4 conversion is delegated in Stage 2. Browser-compatible original
+  files still use A's direct HTTP Range path. iOS/iPad native HLS, AAC audio
+  conversion, comic pages and HLS segment serving remain on A.
+- Real encode-FPS monitoring and continuous best-node scoring are **not yet
+  implemented**. Stage 2 prefers B if healthy, mapped and enabled. A stable
+  in-progress playback is not moved to B when it comes online.
+- HMAC-SHA256 authenticates each worker request and the response handshake,
+  with bounded nonce/replay protection. This does **not** provide per-byte
+  end-to-end content integrity or confidentiality on plaintext HTTP.
+  Use correctly validated HTTPS when the LAN cannot be trusted. Initial
+  browser-to-A registration also transmits the secret in JSON.
+- B-side concurrent fMP4 sessions are capped at 2. Source access is limited
+  to explicitly mapped file roots; there are no arbitrary URL fetches,
+  execution APIs, write/delete endpoints or generic filesystem browsing.
+- Neither B nor its filesystem mount may modify A's original files or SQLite.
+  Persistent playback state still belongs to A. If A loses power, B cannot
+  access any originals that existed **only** on A.
+- Backup and metadata synchronization are not present in Stage 2. Follow-up
+  work must provide SQLite online snapshots, integrity checks, safe restore,
+  and initially **7 daily + 4 weekly generations** before claiming data
+  corruption protection.
+- Do not merge/release Stage 2 until the new worker tests and existing API,
+  direct Range, HLS, iPad AAC and QNAP constraints pass. Real QNAP/Linux/iPad
+  testing remains separate from local synthetic tests.
+
 ## Security / implementation notes
 
 - Only explicit literal LAN private IPv4, 100.64/10 (Tailscale/CGNAT) or IPv6
@@ -111,9 +183,8 @@ from A deletes its saved config but does not rotate the secret on B.
 
 ## Subsequent PRs required to deliver the approved feature
 
-1. **Processing offload**: choose NAS direct Range vs Linux conversion,
-   safely provide read-only source data to the worker, handle backpressure,
-   HLS/iPad audio, cancellation and encoder capability decisions.
+1. **Complete processing offload**: Stage 2 adds opt-in fMP4 only. Add
+   HLS/iPad audio offload, actual speed measurement, and better node scoring.
 2. **Automatic failback**: recover worker interruption on A with the
    video position or comic page retained as far as possible. A short pause
    is acceptable. B cannot read originals that exist only on a dead A.
