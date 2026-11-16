@@ -100,6 +100,24 @@ def test_original_id_stays_on_a(mounted_video):
     assert len(root_fingerprint(root)) == 64
 
 
+def test_qnap_symlink_library_root_mapping_stays_stable(tmp_path):
+    from framedeck.worker_offload import owner_source_ref, root_fingerprint
+    real_root = tmp_path / "CACHEDEV1_DATA" / "Download" / "Video"
+    real_root.mkdir(parents=True)
+    source = real_root / "episode.mp4"
+    source.write_bytes(b"fake-video")
+    qnap_alias = tmp_path / "share"
+    qnap_alias.symlink_to(real_root, target_is_directory=True)
+    # A's configured root can be a QNAP-only symlink. Keep that original
+    # spelling when matching B's explicit source mapping.
+    root, relative = owner_source_ref(
+        str(source), [{"path": str(qnap_alias), "kind": "video"}],
+    )
+    assert root == str(qnap_alias)
+    assert relative == "episode.mp4"
+    assert root_fingerprint(root) == root_fingerprint(str(qnap_alias))
+
+
 def test_eligibility_requires_opt_in_fresh_health_and_matching_mount(app_env, monkeypatch):
     services, _, _ = app_env
     controller = services.cluster
