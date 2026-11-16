@@ -104,9 +104,12 @@ tool should implement a dry-run, pre-restore snapshot and explicit selection.
 - There is no incremental revision/event synchronization between QNAP A and
   Linux B yet. The NAS remains authoritative; the worker is a processing
   node, not a second database writer.
-- Automatic snapshot before every schema migration/update is future work.
-  Until then, trigger and verify a manual snapshot before installing a new
-  QPKG or applying a schema-changing update.
+- Applying updates through FrameDeck's own Web UI now creates and verifies
+  an online SQLite/settings snapshot BEFORE launching the updater, even when
+  the scheduled daily-backup toggle is OFF. Failure blocks the update.
+  This does NOT apply to a manual QTS App Center QPKG installation or to
+  arbitrary schema migrations started outside the Web updater; create a
+  manual snapshot before either of those operations.
 - Hardware verification, low-disk failure, power-cut injection and QNAP
   disk-I/O measurements remain required before merging and releasing.
   Python unit tests alone cannot prove crash durability on every filesystem.
