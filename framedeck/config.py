@@ -96,6 +96,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "video_display_sync": "auto",            # auto | strong | off
     # 速度補正では均等化できない場合に中間フレームを生成する(実験)
     "video_smooth_motion": "off",            # off | auto
+    # Linux worker (opt-in; standalone QNAP unchanged by default)
+    "cluster_offload_enabled": False,
     # 動画配信
     "video_stream_mode": "auto",             # original | auto | transcode
     # auto = 原寸 (回線状況による画質変更なし)
