@@ -1,4 +1,4 @@
 """FrameDeck - ローカルメディアサーバ兼ビューア"""
 
-__version__ = "2.4.19"
+__version__ = "2.4.20"
 APP_NAME = "FrameDeck"
