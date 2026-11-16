@@ -27,6 +27,15 @@ def test_online_backup_verifies_and_preserves_progress(app_env):
     for name in ("framedeck.db", "settings.json", "manifest.json"):
         assert (snapshot / name).exists()
         assert ((snapshot / name).stat().st_mode & 0o077) == 0
+    # Source remains in WAL mode, but the sealed snapshot must be a single
+    # self-contained SQLite DB with no dangling -wal/-shm sidecars.
+    assert (snapshot / "framedeck.db-wal").exists() is False
+    assert (snapshot / "framedeck.db-shm").exists() is False
+    with sqlite3.connect(str(snapshot / "framedeck.db")) as immutable_copy:
+        assert immutable_copy.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    assert set(p.name for p in snapshot.iterdir()) == {
+        "framedeck.db", "settings.json", "manifest.json"
+    }
     assert services.backups.verify(result["name"])["verified"]
     with sqlite3.connect(str(snapshot / "framedeck.db")) as backup_db:
         pos = backup_db.execute(
