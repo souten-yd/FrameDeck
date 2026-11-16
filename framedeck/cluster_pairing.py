@@ -7,7 +7,6 @@ resulting shared secret is persisted only after approvals on both hosts.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import ipaddress
@@ -377,8 +376,11 @@ class PairingManager:
             raise PairingError("Linux acknowledgment authentication failed")
         # No QNAP automatic worker registration without both explicit
         # approvals. Persist the shared derived secret, never publish it.
-        self.cluster.configure(url, secret)
+        # Install discovery trust before the controller is marked configured;
+        # otherwise a previous unpaired discovery key looks like a conflicting
+        # trusted peer and blocks successful bilateral enrollment.
         self.discovery.install_secret(secret)
+        self.cluster.configure(url, secret)
         with self._lock:
             self._nas = None
             self._window = 0
