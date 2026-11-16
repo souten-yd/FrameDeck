@@ -124,6 +124,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "delete_to_trash": True,
     # Data safety (off by default until reviewed and enabled)
     "backup_enabled": False,
+    "backup_replica_enabled": False,
+    "backup_replica_target": "",
     # Web
     "web_pin": "",
 }
