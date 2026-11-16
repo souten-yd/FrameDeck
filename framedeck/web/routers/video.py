@@ -117,10 +117,10 @@ def video_detail(media_id: str,
         resume = services.video_playback.resume_position(media_id)
     services.library.mark_opened(item)
     remote_available = False
-    if offload_enabled():
+    if offload_enabled(services.settings):
         try:
             root, _ = owner_source_ref(item.path, services.library.list_roots())
-            remote_available = remote_eligible(services.cluster, root)
+            remote_available = remote_eligible(services.cluster, root, services.settings)
         except WorkerOffloadError:
             pass
     return {
@@ -548,16 +548,16 @@ async def stream_transcode(media_id: str,
     # Range streaming, HLS or ordinary playback.  A does not need to expose
     # source bytes to the worker: B uses the separately configured read-only
     # mount of A's media share.
-    if offload_enabled():
+    if offload_enabled(services.settings):
         try:
             source_root, relative = owner_source_ref(
                 item.path, services.library.list_roots(),
             )
-            if remote_eligible(services.cluster, source_root):
+            if remote_eligible(services.cluster, source_root, services.settings):
                 def connect():
                     return open_remote_fmp4(
                         services.cluster, source_root, relative,
-                        start=start, max_height=max_height, max_width=max_width,
+                        settings=services.settings, start=start, max_height=max_height, max_width=max_width,
                         session=session.strip()[:64], copy_video=copy_video,
                         copy_audio=copy_audio, smooth_fps=smooth_fps,
                     )
