@@ -57,7 +57,9 @@ def enable_auto_discovery(request: Request,
                           services: Services = Depends(get_services)) -> dict:
     """Enable trusted LAN discovery and reveal the shared key ONCE to admin."""
     _require_pairing_permission(request, services)
-    return {"enabled": True, "secret": services.discovery.enable(),
+    already_enabled = services.discovery.enabled()
+    secret = services.discovery.enable() if not already_enabled else None
+    return {"enabled": True, "secret": secret,
             "udp_port": 31964}
 
 
