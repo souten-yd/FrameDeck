@@ -8,13 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import ipaddress
 import json
 import logging
 import os
-import re
 import socket
-import time
 from pathlib import Path
 from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
@@ -33,7 +30,6 @@ logger = logging.getLogger("framedeck")
 WORKER_FMP4_PATH = "/api/cluster/worker/fmp4"
 _MAP_ENV = "FRAMEDECK_CLUSTER_WORKER_MOUNTS_JSON"
 _ENABLED_ENV = "FRAMEDECK_CLUSTER_ENABLE_OFFLOAD"
-_HEX_SHA = re.compile(r"^[0-9a-f]{64}$")
 
 
 class WorkerOffloadError(Exception):
@@ -56,6 +52,11 @@ def _canonical_root(path: str) -> str:
 
 def root_fingerprint(path: str) -> str:
     return hashlib.sha256(_canonical_root(path).encode("utf-8")).hexdigest()
+
+
+def _is_read_only_mount(folder: Path) -> bool:
+    """Enforce an OS-level read-only mount, not just read-only code paths."""
+    return bool(os.statvfs(folder).f_flag & os.ST_RDONLY)
 
 
 def worker_source_map() -> dict[str, Path]:
@@ -86,6 +87,8 @@ def worker_source_map() -> dict[str, Path]:
         folder = Path(target).resolve()
         if not folder.is_dir():
             raise ClusterConfigError("worker mount does not exist")
+        if not _is_read_only_mount(folder):
+            raise ClusterConfigError("worker source mount must be read-only")
         result[root] = folder
     return result
 
