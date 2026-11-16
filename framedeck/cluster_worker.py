@@ -367,8 +367,19 @@ class ClusterController:
             self._wake.clear()
 
 
+_runtime_worker_secret: str | None = None
+
+
+def set_runtime_worker_secret(value: str | None) -> None:
+    """Process-local credentials obtained by Web pairing, not by CLI input."""
+    global _runtime_worker_secret
+    _runtime_worker_secret = validate_secret(value) if value else None
+
+
 def worker_secret() -> str | None:
-    value = os.environ.get("FRAMEDECK_CLUSTER_WORKER_SECRET", "")
+    value = os.environ.get("FRAMEDECK_CLUSTER_WORKER_SECRET", "") or (
+        _runtime_worker_secret or ""
+    )
     try:
         return validate_secret(value) if value else None
     except ClusterConfigError:
