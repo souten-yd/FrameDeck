@@ -82,7 +82,11 @@ def cluster_status(services: Services = Depends(get_services)) -> dict:
         "web_pin_configured": bool(services.settings.get("web_pin", "")),
         "peer": peer,
         "hls_performance": services.remote_hls.status(),
-        "secure_pairing": services.pairing.status(),
+        "secure_pairing": {
+            key: value for key, value in services.pairing.status().items()
+            if key not in ("confirmation_code", "candidates",
+                           "selected_url", "request_from")
+        },
     }
 
 
