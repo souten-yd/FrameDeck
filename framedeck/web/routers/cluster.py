@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from ... import __version__
+from ...cluster_pairing import PairingError
 from ...cluster_worker import (
     CAPABILITY_PATH,
     PROTOCOL_VERSION,
@@ -81,6 +82,11 @@ def cluster_status(services: Services = Depends(get_services)) -> dict:
         "web_pin_configured": bool(services.settings.get("web_pin", "")),
         "peer": peer,
         "hls_performance": services.remote_hls.status(),
+        "secure_pairing": {
+            key: value for key, value in services.pairing.status().items()
+            if key not in ("confirmation_code", "candidates",
+                           "selected_url", "request_from")
+        },
     }
 
 
@@ -306,3 +312,122 @@ async def worker_hls_file(
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@router.post("/pairing/start")
+def pairing_start(request: Request,
+                  services: Services = Depends(get_services)) -> dict:
+    """Admin permits a strictly time-limited, no-secret LAN pairing window."""
+    _require_pairing_permission(request, services)
+    try:
+        return services.pairing.arm()
+    except PairingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/pairing/status")
+def pairing_status(request: Request,
+                   services: Services = Depends(get_services)) -> dict:
+    _require_pairing_permission(request, services)
+    return services.pairing.status()
+
+
+@router.post("/pairing/join")
+def pairing_join(request: Request, data: dict = Body(...),
+                 services: Services = Depends(get_services)) -> dict:
+    """QNAP contacts ONLY an observed LAN candidate chosen in its UI."""
+    _require_pairing_permission(request, services)
+    if set(data) != {"id"} or not isinstance(data.get("id"), str):
+        raise HTTPException(status_code=422, detail="Invalid candidate")
+    try:
+        return services.pairing.join(data["id"])
+    except PairingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/pairing/revoke")
+def pairing_revoke(request: Request,
+                   services: Services = Depends(get_services)) -> dict:
+    """Admin explicitly resets Linux-only trust for a new bilateral pairing."""
+    _require_pairing_permission(request, services)
+    try:
+        return services.pairing.reset_linux()
+    except (PairingError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/pairing/approve")
+def pairing_approve(request: Request,
+                    services: Services = Depends(get_services)) -> dict:
+    """Linux operator confirms the same short code shown on QNAP."""
+    _require_pairing_permission(request, services)
+    try:
+        return services.pairing.approve_worker()
+    except PairingError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/pairing/finish")
+def pairing_finish(request: Request,
+                   services: Services = Depends(get_services)) -> dict:
+    """QNAP admin confirms the code and saves derived HMAC without seeing it."""
+    _require_pairing_permission(request, services)
+    try:
+        return services.pairing.finish()
+    except (PairingError, ClusterConfigError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+async def _small_pairing_payload(request: Request) -> dict:
+    if request.headers.get("content-type", "").split(";")[0].strip() != (
+        "application/json"
+    ):
+        raise HTTPException(status_code=415, detail="JSON required")
+    try:
+        declared = int(request.headers.get("content-length", "0") or "0")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid content length") from exc
+    if declared < 0 or declared > 512:
+        raise HTTPException(status_code=413, detail="Oversize pairing request")
+    raw = await request.body()
+    if len(raw) > 512:
+        raise HTTPException(status_code=413, detail="Oversize pairing request")
+    try:
+        value = json.loads(raw)
+    except (ValueError, UnicodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="Expected JSON object")
+    return value
+
+
+@router.post("/pairing/hello")
+async def pairing_hello(request: Request,
+                        services: Services = Depends(get_services)) -> dict:
+    """Bounded anonymous handshake ONLY while a Linux admin opened pairing."""
+    data = await _small_pairing_payload(request)
+    if set(data) != {"id", "nas_pub"}:
+        raise HTTPException(status_code=422, detail="Unexpected pairing fields")
+    try:
+        return services.pairing.hello(
+            data["id"], data["nas_pub"],
+            request.client.host if request.client else "",
+        )
+    except (PairingError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=403, detail="Pairing unavailable") from exc
+
+
+@router.post("/pairing/commit")
+async def pairing_commit(request: Request,
+                         services: Services = Depends(get_services)) -> dict:
+    """HMAC proof, two local approvals, then no-key Linux persistence."""
+    data = await _small_pairing_payload(request)
+    if set(data) != {"id", "proof"}:
+        raise HTTPException(status_code=422, detail="Unexpected pairing fields")
+    try:
+        return services.pairing.commit(
+            data["id"], data["proof"],
+            request.client.host if request.client else "",
+        )
+    except (PairingError, KeyError, TypeError, OSError) as exc:
+        raise HTTPException(status_code=403, detail="Pairing unavailable") from exc
