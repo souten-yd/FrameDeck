@@ -125,6 +125,7 @@ def test_worker_capabilities_signed_and_replay_rejected(app_env, monkeypatch):
     monkeypatch.setenv("FRAMEDECK_CLUSTER_WORKER_SECRET", SECRET)
     client = TestClient(create_app(services))
     assert client.get(CAPABILITY_PATH).status_code == 403
+    services.settings.set("web_pin", "123456")
     headers = signed_headers(SECRET, "GET", CAPABILITY_PATH)
     result = client.get(CAPABILITY_PATH, headers=headers)
     assert result.status_code == 200
