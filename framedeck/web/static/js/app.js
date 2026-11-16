@@ -2699,6 +2699,14 @@ video.addEventListener("error", () => {
   // すぐエラー表示せず少し待ってから読み直す
   if ((S.video.hls || S.video.transcode) &&
       S.video.errorRetryCount < VIDEO_ERROR_MAX_RETRIES) {
+    // If the Linux worker vanished, retry fMP4 from the latest confirmed
+    // playback time, not the beginning of the old transcode segment.
+    if (S.video.transcode && S.settings?.cluster_offload_enabled === true) {
+      const resume = currentPosition();
+      if (Number.isFinite(resume) && resume > S.video.offset) {
+        S.video.offset = resume;
+      }
+    }
     S.video.errorRetryCount += 1;
     $("video-spinner").classList.remove("hidden");
     toast(`変換の準備中です… 再試行します (${S.video.errorRetryCount}/${VIDEO_ERROR_MAX_RETRIES})`);
