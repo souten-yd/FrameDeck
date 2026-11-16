@@ -20,6 +20,8 @@ def test_one_tap_prerequisites_can_be_set_from_web_ui(app_env):
     assert updated.status_code == 200
     assert "web_pin" not in updated.json()
     assert services.settings.get("web_pin") == pin
+    assert paths.settings_file.stat().st_mode & 0o077 == 0
+    assert (paths.settings_file.parent / "settings.json.tmp").exists() is False
 
     wrong = client.post("/api/auth/pin", json={"pin": "wrong"})
     assert wrong.status_code == 401
