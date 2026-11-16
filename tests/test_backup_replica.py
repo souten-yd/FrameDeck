@@ -29,6 +29,26 @@ def offnas(app_env, tmp_path, monkeypatch):
     return services, target
 
 
+def test_remote_filesystem_proof_comes_from_kernel_mountinfo(monkeypatch):
+    from framedeck.core import backup_replica
+    original = Path.read_text
+    mountinfo = (
+        "41 23 0:4 / / rw - ext4 /dev/root rw\\n"
+        "42 23 0:22 / /tmp rw - tmpfs tmpfs rw\\n"
+        "43 23 0:88 / /mnt/linux-backup rw - cifs //linux/backup rw\\n"
+        "44 23 0:89 / /mnt/unencrypted-usb rw - ext4 /dev/sdb1 rw\\n"
+    )
+    def fake_read(path, *args, **kwargs):
+        if str(path) == "/proc/self/mountinfo":
+            return mountinfo
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", fake_read)
+    assert backup_replica._is_remote_filesystem(Path("/mnt/linux-backup"))
+    assert not backup_replica._is_remote_filesystem(Path("/"))
+    assert not backup_replica._is_remote_filesystem(Path("/tmp"))
+    assert not backup_replica._is_remote_filesystem(Path("/mnt/unencrypted-usb"))
+
+
 def test_default_disabled_and_no_disk_activity(app_env):
     services, _, _ = app_env
     assert services.backup_replica.status()["enabled"] is False
