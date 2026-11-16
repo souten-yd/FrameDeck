@@ -163,6 +163,7 @@ class ClusterController:
         self._peer: dict | None = None
         self._capabilities: dict | None = None
         self._last_seen: float | None = None
+        self._retry_after: float = 0.0
         self._error = "not_configured"
         self._load()
 
@@ -244,6 +245,7 @@ class ClusterController:
             self._peer = peer
             self._capabilities = None
             self._last_seen = None
+            self._retry_after = 0.0
             self._error = "not_checked"
         self._wake.set()
 
@@ -257,6 +259,23 @@ class ClusterController:
             self._last_seen = None
             self._error = "not_configured"
         self._wake.set()
+
+    def verified_peer(self) -> dict | None:
+        """Return internal peer credentials only when health is fresh."""
+        with self._lock:
+            if (not self._peer or self._last_seen is None or
+                    time.time() - self._last_seen > MAX_STALE_SECONDS or
+                    time.monotonic() < self._retry_after):
+                return None
+            return dict(self._peer)
+
+    def mark_unhealthy(self) -> None:
+        """Cool down failed jobs; next playback attempt uses local ffmpeg."""
+        with self._lock:
+            self._last_seen = None
+            self._capabilities = None
+            self._retry_after = time.monotonic() + 20.0
+            self._error = "worker_stream_failed"
 
     def status(self) -> dict:
         with self._lock:
@@ -272,7 +291,12 @@ class ClusterController:
                 "last_seen": self._last_seen,
                 "error": None if online else self._error,
                 "capabilities": dict(self._capabilities) if online and self._capabilities else None,
-                "offload_active": False,  # enabled in a subsequent, separately tested PR
+                "offload_active": bool(
+                    online and self._capabilities and
+                    self._capabilities.get("remote_fmp4") is True and
+                    os.environ.get("FRAMEDECK_CLUSTER_ENABLE_OFFLOAD", "").lower() in
+                    ("1", "true", "yes", "on")
+                ),
             }
 
     def probe_once(self) -> None:
@@ -301,10 +325,19 @@ class ClusterController:
                         data.get("worker") is not True or
                         not isinstance(data.get("transcode_available"), bool)):
                     raise ValueError("incompatible worker")
+                roots = data.get("source_roots", [])
+                if (not isinstance(roots, list) or len(roots) > 64 or
+                        any(not isinstance(root, str) or
+                                not re.fullmatch(r"[0-9a-f]{64}", root)
+                                for root in roots) or
+                        not isinstance(data.get("remote_fmp4", False), bool)):
+                    raise ValueError("invalid worker capabilities")
                 capabilities = {
                     "protocol_version": PROTOCOL_VERSION,
                     "version": str(data.get("version", ""))[:40],
                     "transcode_available": data["transcode_available"],
+                    "remote_fmp4": data.get("remote_fmp4", False),
+                    "source_roots": roots,
                 }
         except (HTTPError, URLError, OSError, ValueError, TypeError) as exc:
             # No secrets or detailed server response in logs / status.
