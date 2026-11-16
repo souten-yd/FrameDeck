@@ -44,8 +44,10 @@ creation timestamp, local day and ISO week.
 - If free disk space is too low or verification fails, the incomplete new
   copy is discarded and older completed generations are left untouched.
 - Retention maintains the newest **7 daily dates + 4 distinct ISO weeks**
-  (overlapping generations counted once); there can be fewer generations
-  until enough days/weeks have passed.
+  (overlapping generations counted once), and **always keeps at least the
+  two most recent verified snapshots**, even if created on the same day.
+  This can retain one extra generation to protect the previous known-good
+  recovery point. There can be fewer generations until sufficient dates pass.
 - Daily schedule: when enabled, the NAS checks after local 03:00 and makes
   at most one automatic attempt per local calendar day. It does not retry a
   failing backup every 10 minutes and constantly write to the NAS.
