@@ -437,8 +437,11 @@ async def _aiter_worker_fmp4(response, controller, initial: bytes):
         if initial:
             yield initial
         while True:
+            # HTTPResponse.read(n) may wait until n bytes arrive, producing
+            # needless buffering. read1(n) yields as soon as data is ready.
+            reader = getattr(response, "read1", response.read)
             chunk = await anyio.to_thread.run_sync(
-                response.read, 128 * 1024,
+                reader, 128 * 1024,
                 abandon_on_cancel=True, limiter=_STREAM_LIMITER,
             )
             if not chunk:
@@ -567,8 +570,9 @@ async def stream_transcode(media_id: str,
                 )
                 initial = b""
                 try:
+                    first_chunk = getattr(remote, "read1", remote.read)
                     initial = await anyio.to_thread.run_sync(
-                        remote.read, 4096, limiter=_STREAM_LIMITER,
+                        first_chunk, 4096, limiter=_STREAM_LIMITER,
                     )
                     if initial:
                         return StreamingResponse(
