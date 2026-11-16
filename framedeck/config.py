@@ -461,10 +461,23 @@ class Settings:
         with self._lock:
             self._paths.settings_file.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._paths.settings_file.with_suffix(".json.tmp")
-            tmp.write_text(
-                json.dumps(self._values, ensure_ascii=False, indent=2), "utf-8"
-            )
-            tmp.replace(self._paths.settings_file)
+            # Settings may contain the Web PIN. It must not be readable by
+            # unrelated QNAP/Linux users, including during atomic replacement.
+            if tmp.is_symlink():
+                raise OSError("Unsafe settings temporary path")
+            flags = os.O_CREAT | os.O_TRUNC | os.O_WRONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(str(tmp), flags, 0o600)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                    os.fchmod(stream.fileno(), 0o600)
+                    json.dump(self._values, stream, ensure_ascii=False, indent=2)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(tmp, self._paths.settings_file)
+            finally:
+                tmp.unlink(missing_ok=True)
 
     def get(self, key: str, default: Any = None) -> Any:
         with self._lock:
