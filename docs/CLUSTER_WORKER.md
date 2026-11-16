@@ -19,7 +19,21 @@ Tracking: https://github.com/souten-yd/FrameDeck/issues/62
   are introduced. Optional LAN discovery uses authenticated UDP beacons.
   SQLite backups are independently opt-in and OFF by default.
 
-## LAN auto-discovery (preferred)
+## Recommended: browser-only pairing (no user-managed keys)
+
+Follow [KEYLESS_LAN_PAIRING.md](KEYLESS_LAN_PAIRING.md).
+Open FrameDeck in both Linux and QNAP browsers, start a 2-minute pairing
+window, compare the same 6-digit verification code and approve at both ends.
+Both servers derive and persist the shared HMAC key internally using ephemeral
+X25519/HKDF. Users never need to see, enter or copy the worker key, edit
+environment variables, run QNAP SSH or manually register an IP address.
+Subsequent authenticated UDP discovery/reconnect is automatic.
+
+The manual workflow below remains only for legacy installations that
+explicitly configure FRAMEDECK_CLUSTER_WORKER_SECRET. It is not the
+recommended first-time onboarding process.
+
+## Legacy: manual LAN discovery and shared-secret enrollment
 
 QNAP no longer requires manually entering the Linux worker IP address or port.
 B broadcasts a signed UDP beacon every eight seconds to UDP port 31964.
@@ -69,7 +83,7 @@ or a local protected administrative channel where possible. Disabling
 auto-discovery stops new address registration but retains a previously
 paired worker until explicitly unpaired.
 
-## First-time configuration
+## Legacy manual first-time configuration (not required for Web pairing)
 
 1. Install the same FrameDeck version on A and B. B must have working FFmpeg
    for fMP4/HLS processing. Offload is OFF until explicitly enabled.
