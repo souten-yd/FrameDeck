@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..core.services import Services
 from ..runtime_profile import qnap_lite
-from .routers import comic, library, system, video, volume_view
+from .routers import backups, comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -35,6 +35,7 @@ def create_app(services: Services) -> FastAPI:
             anyio.to_thread.current_default_thread_limiter().total_tokens = 8 if qnap_lite() else 96
         except (RuntimeError, ValueError):  # pragma: no cover
             pass
+        services.backups.start(services.settings)
         yield
         services.shutdown()
 
@@ -67,6 +68,7 @@ def create_app(services: Services) -> FastAPI:
         return response
 
     app.include_router(system.router)
+    app.include_router(backups.router)
     app.include_router(library.router)
     app.include_router(volume_view.router)
     app.include_router(comic.router)
