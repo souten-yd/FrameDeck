@@ -297,7 +297,8 @@ class ClusterController:
                 if not hmac.compare_digest(signature, expected):
                     raise ValueError("bad response signature")
                 data = json.loads(payload)
-                if (data.get("protocol_version") != PROTOCOL_VERSION or
+                if (not isinstance(data, dict) or
+                        data.get("protocol_version") != PROTOCOL_VERSION or
                         data.get("worker") is not True or
                         not isinstance(data.get("transcode_available"), bool)):
                     raise ValueError("incompatible worker")
