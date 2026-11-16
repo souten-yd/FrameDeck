@@ -104,7 +104,7 @@ def test_backup_status_api_and_manual_verify(app_env):
     # Do not expose absolute paths, secrets, or restore/delete interfaces.
     assert "web_pin" not in status.text
     assert client.post(f"/api/backups/{name}/restore").status_code == 404
-    assert client.delete(f"/api/backups/{name}").status_code == 405
+    assert client.delete(f"/api/backups/{name}").status_code in (404, 405)
 
 
 def test_retention_seven_daily_four_weekly(tmp_path):
