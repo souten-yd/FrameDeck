@@ -57,8 +57,14 @@ from A deletes its saved config but does not rotate the secret on B.
   digest. Validation uses constant-time comparisons, a 30-second clock
   window and a bounded one-use nonce cache.
 - Responses are separately signed and bound to the request's nonce.
-- HTTP is **not encrypted**. Use a trusted LAN/Tailscale or properly validated
-  HTTPS. Unverified TLS certificates are not accepted.
+- HTTP is **not encrypted**. **During initial pairing, the browser sends the
+  shared secret to A in a JSON request**; anyone able to observe that HTTP
+  connection could capture it. Worker heartbeats send only HMAC signatures,
+  not the raw secret. Prefer properly validated HTTPS for the browser-to-A
+  pairing step, or configure the owner-only file locally on the NAS using a
+  protected administrative channel. A trusted LAN/Tailscale reduces exposure
+  but does not encrypt plain HTTP by itself. Unverified TLS certificates are
+  not accepted for worker polling.
 - Credentials are not logged, and the status API never emits secrets.
   Reject unexpected protocol versions or malformed/unsigned responses.
 - The existing original Range streaming, HLS, QNAP CPU constraints and
