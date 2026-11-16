@@ -112,6 +112,8 @@ def update_apply(request: Request,
     """Download, validate and install the latest compatible stable Release."""
     _require_same_origin(request)
     try:
-        return get_update_manager(services.paths).start_update()
+        return get_update_manager(services.paths).start_update(
+            preflight_snapshot=services.backups.create_snapshot,
+        )
     except UpdateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
