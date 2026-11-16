@@ -372,7 +372,11 @@ async def _small_pairing_payload(request: Request) -> dict:
         "application/json"
     ):
         raise HTTPException(status_code=415, detail="JSON required")
-    if int(request.headers.get("content-length", "0") or "0") > 512:
+    try:
+        declared = int(request.headers.get("content-length", "0") or "0")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid content length") from exc
+    if declared < 0 or declared > 512:
         raise HTTPException(status_code=413, detail="Oversize pairing request")
     raw = await request.body()
     if len(raw) > 512:
