@@ -92,7 +92,9 @@ def create_app(services: Services) -> FastAPI:
         # rejects all unsigned requests.
         if request.url.path in (CAPABILITY_PATH, WORKER_FMP4_PATH,
                                  WORKER_HLS_START, WORKER_HLS_FILE,
-                                 "/api/auth/pin") or (
+                                 "/api/auth/pin",
+                                 "/api/cluster/pairing/hello",
+                                 "/api/cluster/pairing/commit") or (
                 request.url.path in ("/", "/sw.js", "/manifest.webmanifest")
                 or request.url.path.startswith("/static/")
         ):
