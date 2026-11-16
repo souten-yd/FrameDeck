@@ -132,15 +132,22 @@ def owner_source_ref(video_path: str, library_roots: list[dict]) -> tuple[str, s
     except OSError as exc:
         raise WorkerOffloadError("source unavailable") from exc
     best: tuple[str, str] | None = None
+    longest_resolved_root = -1
     for entry in library_roots:
         try:
-            root = Path(entry["path"]).resolve(strict=True)
+            # Use realpaths only for confinement checks.  The worker mapping
+            # key must retain the *registered* path: QNAP /share/... roots
+            # may be symlinks to CACHEDEV1_DATA and Linux cannot resolve the
+            # QNAP-only symlink while comparing its configured mapping key.
+            configured = _canonical_root(entry["path"])
+            root = Path(configured).resolve(strict=True)
             relative = video.relative_to(root)
             if not relative.parts:
                 continue
-            candidate = (str(root), relative.as_posix())
-            if best is None or len(candidate[0]) > len(best[0]):
+            candidate = (configured, relative.as_posix())
+            if len(str(root)) > longest_resolved_root:
                 best = candidate
+                longest_resolved_root = len(str(root))
         except (KeyError, TypeError, ValueError, OSError):
             continue
     if best is None:
