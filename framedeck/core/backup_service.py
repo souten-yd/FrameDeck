@@ -108,6 +108,17 @@ class BackupService:
             with closing(sqlite3.connect(str(destination), timeout=10)) as dst:
                 src.backup(dst, pages=64, sleep=0.05)
                 dst.commit()
+                # SQLite online backup inherits the source's journal mode.
+                # A WAL-mode destination can create -wal/-shm while the
+                # integrity check opens it, producing a multi-file snapshot.
+                # Checkpoint and switch the completed *copy* to DELETE mode
+                # so each generation contains one self-contained DB file.
+                mode = dst.execute("PRAGMA journal_mode=DELETE").fetchone()
+                if not mode or mode[0].lower() != "delete":
+                    raise BackupError("Snapshot could not leave WAL mode")
+        if (Path(str(destination) + "-wal").exists() or
+                Path(str(destination) + "-shm").exists()):
+            raise BackupError("Snapshot has unexpected SQLite sidecars")
         os.chmod(destination, 0o600)
         _check_database(destination)
         _sync_file(destination)
@@ -158,6 +169,11 @@ class BackupService:
                 self._copy_private(peer_config, temp / "cluster-worker.json")
 
             metadata = self._make_metadata(temp)
+            expected_files = {"framedeck.db", "settings.json"}
+            if peer_config.exists():
+                expected_files.add("cluster-worker.json")
+            if set(metadata["files"]) != expected_files:
+                raise BackupError("Unexpected backup files; aborting publish")
             name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
             name += "-" + os.urandom(4).hex()
             manifest = temp / "manifest.json"
