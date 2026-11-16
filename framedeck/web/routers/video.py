@@ -534,6 +534,7 @@ async def stream_transcode(media_id: str,
                            copy_video: bool = Query(default=False),
                            copy_audio: bool = Query(default=False),
                            smooth_fps: float | None = Query(default=None, ge=20, le=240),
+                           force_local: bool = Query(default=False),
                            services: Services = Depends(get_services)):
     """ブラウザ非対応形式向けのfMP4変換ストリーミング(シークは?start=で再要求)。
 
@@ -548,7 +549,7 @@ async def stream_transcode(media_id: str,
     # Range streaming, HLS or ordinary playback.  A does not need to expose
     # source bytes to the worker: B uses the separately configured read-only
     # mount of A's media share.
-    if offload_enabled(services.settings):
+    if not force_local and offload_enabled(services.settings):
         try:
             source_root, relative = owner_source_ref(
                 item.path, services.library.list_roots(),
