@@ -276,12 +276,15 @@ class BackupService:
         if self._thread is not None:
             return
         def worker() -> None:
+            last_auto_attempt: str | None = None
             while not self._stop.is_set():
                 if settings.get("backup_enabled", False) is True:
                     now = datetime.now().astimezone()
-                    if now.hour >= 3:
+                    day = now.date().isoformat()
+                    if now.hour >= 3 and last_auto_attempt != day:
                         latest = self.list_snapshots()
-                        if not any(x["local_date"] == now.date().isoformat() for x in latest):
+                        if not any(x["local_date"] == day for x in latest):
+                            last_auto_attempt = day  # one attempt/day, even if storage is full
                             try:
                                 self.create_snapshot()
                             except BackupError as exc:
