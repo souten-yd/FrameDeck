@@ -3561,10 +3561,10 @@ async function openSettings() {
   autoBox.style.marginBottom = "12px";
   const autoHint = document.createElement("p");
   autoHint.className = "hint";
-  autoHint.textContent = "ボタンを1回押すと、QNAPのWeb PINを必要に応じて自動設定し、LAN検出を開始します。初回はLinux側に共有キーを1回だけ設定してください。その後の起動・IP変更・再接続は自動です（UDP 31964）。";
+  autoHint.textContent = "QNAPとLinuxのブラウザだけで安全に登録します。認証情報は内部で生成・保存され、ユーザーによるキーのコピーや環境変数編集は不要です。初回は両画面の番号を照合して承認してください。";
   const autoEnable = document.createElement("button");
   autoEnable.className = "modal-btn primary";
-  autoEnable.textContent = "LANワーカーをワンタップ登録";
+  autoEnable.textContent = "Linuxとの接続を開始";
   autoEnable.type = "button";
   const autoDisable = document.createElement("button");
   autoDisable.className = "modal-btn";
@@ -3616,6 +3616,162 @@ async function openSettings() {
   autoButtons.append(autoEnable, autoDisable);
   autoBox.append(autoHint, autoButtons, pinKeyBox, autoKeyBox);
   clusterSection.appendChild(autoBox);
+  // The initial pair is approved in BOTH browsers. Shared HMAC keys
+  // never appear in the DOM, URL, localStorage or a user-visible field.
+  const pairingPanel = document.createElement("div");
+  pairingPanel.style.display = "grid";
+  pairingPanel.style.gap = "9px";
+  pairingPanel.style.marginBottom = "16px";
+  const pairingExplanation = document.createElement("p");
+  pairingExplanation.className = "hint";
+  pairingExplanation.textContent = "共有キーの入力・コピーは不要です。初回だけLinuxとQNAPの両画面で6桁の確認番号が同じことを確認して接続を承認します。";
+  const pairingStatusText = document.createElement("p");
+  pairingStatusText.className = "hint";
+  const linuxPairStart = document.createElement("button");
+  linuxPairStart.className = "modal-btn primary";
+  linuxPairStart.textContent = "このLinuxを接続待機にする";
+  linuxPairStart.type = "button";
+  const pairingCandidates = document.createElement("div");
+  pairingCandidates.style.display = "grid";
+  pairingCandidates.style.gap = "5px";
+  const pairingCode = document.createElement("div");
+  pairingCode.style.fontWeight = "bold";
+  pairingCode.style.letterSpacing = "0.18em";
+  pairingCode.style.fontSize = "1.5em";
+  pairingCode.hidden = true;
+  const pairingCheckboxLabel = document.createElement("label");
+  pairingCheckboxLabel.style.display = "flex";
+  pairingCheckboxLabel.style.gap = "8px";
+  const pairingCheckbox = document.createElement("input");
+  pairingCheckbox.type = "checkbox";
+  pairingCheckboxLabel.append(pairingCheckbox, document.createTextNode("両画面の6桁の確認番号が一致している"));
+  pairingCheckboxLabel.hidden = true;
+  const linuxPairApprove = document.createElement("button");
+  linuxPairApprove.className = "modal-btn primary";
+  linuxPairApprove.textContent = "Linuxから接続を承認";
+  linuxPairApprove.type = "button";
+  linuxPairApprove.hidden = true;
+  const nasPairFinish = document.createElement("button");
+  nasPairFinish.className = "modal-btn primary";
+  nasPairFinish.textContent = "QNAPで接続を確定";
+  nasPairFinish.type = "button";
+  nasPairFinish.hidden = true;
+  pairingPanel.append(pairingExplanation, pairingStatusText, linuxPairStart,
+                      pairingCandidates, pairingCode, pairingCheckboxLabel,
+                      linuxPairApprove, nasPairFinish);
+  clusterSection.appendChild(pairingPanel);
+  let pairingPollActive = false;
+  let pairingPreviousCode = "";
+  async function refreshPairingStatus() {
+    const info = await api("/api/cluster/pairing/status");
+    const linux = info.role === "linux";
+    pairingPanel.hidden = !info.available;
+    linuxPairStart.hidden = !linux;
+    if (!info.available) {
+      pairingStatusText.textContent = "このサーバーにペアリング用の暗号化モジュールがありません";
+      return info;
+    }
+    if (linux) {
+      pairingStatusText.textContent = info.worker_key_configured
+        ? "認証設定済み。QNAPから自動検出されます。"
+        : info.open ? "QNAPからの申請を待機中（残り" + info.expires_in + "秒）"
+                    : "Linuxのブラウザで「接続待機」を押してください（共有キーは不要）。";
+      if (info.request_from) pairingStatusText.textContent += " / 申請元: " + info.request_from;
+      linuxPairStart.disabled = info.open || info.worker_key_configured;
+    } else {
+      pairingStatusText.textContent = info.open
+        ? "Linux候補を検出中（残り" + info.expires_in + "秒）。Linux側でも接続待機を押してください。"
+        : "QNAPで登録を開始すると2分間だけ候補を検出します。";
+    }
+    pairingCandidates.replaceChildren();
+    if (!linux && info.open && !info.confirmation_code) {
+      for (const candidate of info.candidates || []) {
+        const candidateButton = document.createElement("button");
+        candidateButton.type = "button";
+        candidateButton.className = "modal-btn";
+        candidateButton.textContent = "このLinuxへ接続申請: " + candidate.url;
+        candidateButton.onclick = async () => {
+          candidateButton.disabled = true;
+          try {
+            await api("/api/cluster/pairing/join", {
+              method: "POST", json: { id: candidate.id },
+            });
+            await refreshPairingStatus();
+          } catch (e) { toast(e.message, true); }
+          finally { candidateButton.disabled = false; }
+        };
+        pairingCandidates.appendChild(candidateButton);
+      }
+    }
+    if (info.confirmation_code !== pairingPreviousCode) {
+      pairingCheckbox.checked = false;
+      pairingPreviousCode = info.confirmation_code || "";
+    }
+    pairingCode.hidden = !info.confirmation_code;
+    pairingCode.textContent = info.confirmation_code
+      ? "確認番号 " + info.confirmation_code : "";
+    pairingCheckboxLabel.hidden = !info.confirmation_code;
+    linuxPairApprove.hidden = !linux || !info.confirmation_code || info.approved;
+    nasPairFinish.hidden = linux || !info.confirmation_code;
+    linuxPairApprove.disabled = !pairingCheckbox.checked;
+    nasPairFinish.disabled = !pairingCheckbox.checked;
+    if (info.approved) pairingStatusText.textContent += " / Linux側で承認済み。QNAPで確定してください。";
+    return info;
+  }
+  pairingCheckbox.onchange = () => {
+    linuxPairApprove.disabled = !pairingCheckbox.checked;
+    nasPairFinish.disabled = !pairingCheckbox.checked;
+  };
+  function watchPairingStatus() {
+    if (pairingPollActive) return;
+    pairingPollActive = true;
+    (async () => {
+      try {
+        for (let i = 0; i < 60; i++) {
+          if (!clusterSection.isConnected) break;
+          const info = await refreshPairingStatus();
+          if (!info.open) break;
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      } catch (e) {
+        pairingStatusText.textContent = "接続状態を確認できません: " + e.message;
+      } finally { pairingPollActive = false; }
+    })();
+  }
+  linuxPairStart.onclick = async () => {
+    linuxPairStart.disabled = true;
+    try {
+      const result = await api("/api/cluster/pairing/start", { method: "POST" });
+      if (result.already_paired) {
+        toast("Linuxの認証設定はすでに有効です");
+      } else {
+        toast("Linuxで接続待機を開始しました");
+        watchPairingStatus();
+      }
+      await refreshPairingStatus();
+    } catch (e) {
+      toast(e.message + "（Linux本体の localhost で開くか、Web PINでログインしてください）", true);
+    } finally { linuxPairStart.disabled = false; }
+  };
+  linuxPairApprove.onclick = async () => {
+    if (!pairingCheckbox.checked) return;
+    try {
+      await api("/api/cluster/pairing/approve", { method: "POST" });
+      await refreshPairingStatus();
+      toast("Linux側で承認しました。QNAP側で「接続を確定」を押してください");
+    } catch (e) { toast(e.message, true); }
+  };
+  nasPairFinish.onclick = async () => {
+    if (!pairingCheckbox.checked) return;
+    nasPairFinish.disabled = true;
+    try {
+      await api("/api/cluster/pairing/finish", { method: "POST" });
+      toast("共有キーの入力なしでペアリングが完了しました");
+      await refreshWorkerStatus();
+      await refreshPairingStatus();
+    } catch (e) { toast(e.message, true); }
+    finally { nasPairFinish.disabled = !pairingCheckbox.checked; }
+  };
   let connectionPolling = false;
   async function watchAutoWorker() {
     if (connectionPolling) return;
@@ -3660,20 +3816,16 @@ async function openSettings() {
         generatedPin.value = pin;
         pinKeyBox.hidden = false;
       }
-      if (!status.auto_discovery_enabled) {
-        const result = await api("/api/cluster/discovery/enable", { method: "POST" });
-        if (result.secret) {
-          autoKey.value = result.secret;
-          autoKeyBox.hidden = false;
-        }
-      }
       if (status.peer?.configured) {
         await api("/api/cluster/probe", { method: "POST" });
+        toast("登録済みLinuxワーカーを再確認しました");
+      } else {
+        await api("/api/cluster/pairing/start", { method: "POST" });
+        toast("QNAP側の接続準備ができました。Linux側でも接続待機を押してください");
+        watchPairingStatus();
       }
-      const current = await refreshWorkerStatus();
-      if (!current?.peer?.online) watchAutoWorker();
-      toast(current?.peer?.online ? "Linuxワーカーの接続を確認しました"
-                                 : "LAN検出を開始しました。Linuxの認証キー設定後、自動で接続します");
+      await refreshWorkerStatus();
+      await refreshPairingStatus();
     } catch (e) { toast(e.message, true); }
     finally { autoEnable.disabled = false; }
   };
@@ -3726,16 +3878,23 @@ async function openSettings() {
     try {
       const result = await api("/api/cluster/status");
       const peer = result.peer;
-      if (result.worker_mode) {
-        clusterStatus.textContent = "このサーバーはLinuxワーカーとして待機しています。";
+      const linuxRole = result.secure_pairing?.role === "linux";
+      if (linuxRole) {
+        clusterStatus.textContent = result.secure_pairing.worker_key_configured
+          ? "Linuxワーカー: 認証済み、QNAPの検出待ち"
+          : "Linuxワーカー: Web画面から初回登録できます";
+        autoBox.style.display = "none";
         clusterForm.style.display = "none";
-        return;
+        pairingPanel.hidden = false;
+        refreshPairingStatus().then((info) => { if (info.open) watchPairingStatus(); })
+          .catch((e) => { pairingStatusText.textContent = e.message; });
+        return result;
       }
+      pairingPanel.hidden = false;
       workerUrl.value = workerUrl.value || peer.url || "";
       autoEnable.disabled = false;
-      autoEnable.textContent = peer.online ? "接続状態を再確認"
-        : result.auto_discovery_enabled ? "LANワーカーを再検出"
-        : "LANワーカーをワンタップ登録";
+      autoEnable.textContent = peer.configured ? "接続状態を再確認"
+        : "Linuxとの接続を開始";
       autoDisable.disabled = !result.auto_discovery_enabled;
       const hlsPerf = result.hls_performance || {};
       const workerHls = peer.capabilities?.remote_hls === true;
