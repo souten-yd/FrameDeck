@@ -3451,6 +3451,177 @@ async function openSettings() {
   wrap.appendChild(buildLibraryRootSection("comic", "漫画ライブラリ"));
   wrap.appendChild(buildLibraryRootSection("video", "動画ライブラリ"));
 
+  // Optional Linux transcode worker pairing (foundation; actual offload follows).
+  const clusterSection = document.createElement("section");
+  clusterSection.className = "library-root-section";
+  const clusterHeading = document.createElement("h3");
+  clusterHeading.textContent = "Linux高速変換サーバー（準備段階）";
+  clusterHeading.style.margin = "16px 0 8px";
+  clusterSection.appendChild(clusterHeading);
+  const clusterHint = document.createElement("p");
+  clusterHint.className = "hint";
+  clusterHint.textContent = "接続認証・稼働確認のみ対応。動画の変換委譲は次の更新で有効になります。QNAPは引き続きすべての動画を配信します。";
+  clusterSection.appendChild(clusterHint);
+  const clusterStatus = document.createElement("p");
+  clusterStatus.className = "hint";
+  clusterStatus.textContent = "ワーカーの状態を確認しています...";
+  clusterSection.appendChild(clusterStatus);
+  const autoBox = document.createElement("div");
+  autoBox.style.display = "grid";
+  autoBox.style.gap = "8px";
+  autoBox.style.marginBottom = "12px";
+  const autoHint = document.createElement("p");
+  autoHint.className = "hint";
+  autoHint.textContent = "LAN内のLinuxワーカーを自動検出します。初回だけ信頼する共有キーをLinuxのサービス環境に設定してください。以後は起動・IP変更・停止時の切り替えを自動で処理します（UDP 31964）。";
+  const autoEnable = document.createElement("button");
+  autoEnable.className = "modal-btn primary";
+  autoEnable.textContent = "LAN自動検出を有効化";
+  autoEnable.type = "button";
+  const autoDisable = document.createElement("button");
+  autoDisable.className = "modal-btn";
+  autoDisable.textContent = "自動検出を無効化";
+  autoDisable.type = "button";
+  const autoKeyBox = document.createElement("div");
+  autoKeyBox.hidden = true;
+  const autoKeyHint = document.createElement("p");
+  autoKeyHint.className = "hint";
+  autoKeyHint.textContent = "この共有キーをLinux側の FRAMEDECK_CLUSTER_WORKER_SECRET に一度設定してください。安全な管理経路で転送し、端末に残さないでください。";
+  const autoKey = document.createElement("input");
+  autoKey.readOnly = true;
+  autoKey.style.width = "100%";
+  autoKey.autocomplete = "off";
+  const autoCopy = document.createElement("button");
+  autoCopy.className = "modal-btn";
+  autoCopy.type = "button";
+  autoCopy.textContent = "共有キーをコピー";
+  autoCopy.onclick = async () => {
+    if (!autoKey.value) return;
+    try { await navigator.clipboard.writeText(autoKey.value); toast("共有キーをコピーしました"); }
+    catch (e) { toast("コピーできませんでした", true); }
+  };
+  autoKeyBox.append(autoKeyHint, autoKey, autoCopy);
+  const autoButtons = document.createElement("div");
+  autoButtons.style.display = "flex";
+  autoButtons.style.flexWrap = "wrap";
+  autoButtons.style.gap = "8px";
+  autoButtons.append(autoEnable, autoDisable);
+  autoBox.append(autoHint, autoButtons, autoKeyBox);
+  clusterSection.appendChild(autoBox);
+  autoEnable.onclick = async () => {
+    autoEnable.disabled = true;
+    try {
+      const result = await api("/api/cluster/discovery/enable", { method: "POST" });
+      if (result.secret) {
+        autoKey.value = result.secret;
+        autoKeyBox.hidden = false;
+      }
+      toast("LAN自動検出を有効化しました");
+      await refreshWorkerStatus();
+    } catch (e) { toast(e.message, true); }
+    finally { autoEnable.disabled = false; }
+  };
+  autoDisable.onclick = async () => {
+    try {
+      await api("/api/cluster/discovery", { method: "DELETE" });
+      autoKey.value = "";
+      autoKeyBox.hidden = true;
+      await refreshWorkerStatus();
+      toast("LAN自動検出を停止しました");
+    } catch (e) { toast(e.message, true); }
+  };
+  const clusterForm = document.createElement("div");
+  clusterForm.style.display = "grid";
+  clusterForm.style.gap = "8px";
+  const workerUrl = document.createElement("input");
+  workerUrl.placeholder = "LinuxのURL 例: http://192.168.1.20:9000";
+  workerUrl.type = "url";
+  const workerSecret = document.createElement("input");
+  workerSecret.placeholder = "Linuxで設定した共有キー（64桁の16進数）";
+  workerSecret.type = "password";
+  workerSecret.autocomplete = "new-password";
+  for (const el of [workerUrl, workerSecret]) {
+    el.style.background = "var(--surface)";
+    el.style.border = "1px solid var(--border)";
+    el.style.borderRadius = "8px";
+    el.style.color = "var(--text)";
+    el.style.padding = "8px";
+    el.style.minWidth = "0";
+  }
+  const workerButtons = document.createElement("div");
+  workerButtons.style.display = "flex";
+  workerButtons.style.flexWrap = "wrap";
+  workerButtons.style.gap = "8px";
+  const workerPair = document.createElement("button");
+  workerPair.className = "modal-btn primary";
+  workerPair.textContent = "ワーカーを登録・更新";
+  const workerRemove = document.createElement("button");
+  workerRemove.className = "modal-btn danger";
+  workerRemove.textContent = "登録解除";
+  const workerRefresh = document.createElement("button");
+  workerRefresh.className = "modal-btn";
+  workerRefresh.textContent = "状態を更新";
+  workerButtons.append(workerPair, workerRemove, workerRefresh);
+  clusterForm.append(workerUrl, workerSecret, workerButtons);
+  clusterSection.appendChild(clusterForm);
+  wrap.appendChild(clusterSection);
+
+  async function refreshWorkerStatus() {
+    try {
+      const result = await api("/api/cluster/status");
+      const peer = result.peer;
+      if (result.worker_mode) {
+        clusterStatus.textContent = "このサーバーはLinuxワーカーとして待機しています。";
+        clusterForm.style.display = "none";
+        return;
+      }
+      workerUrl.value = workerUrl.value || peer.url || "";
+      autoEnable.disabled = result.auto_discovery_enabled;
+      autoDisable.disabled = !result.auto_discovery_enabled;
+      clusterStatus.textContent = !peer.configured
+        ? "未登録（QNAP単体で動作中）"
+        : peer.online
+          ? "接続済み: " + peer.url + " / FFmpeg: " + (peer.capabilities?.transcode_available ? "利用可" : "利用不可")
+          : "登録済み・オフライン: " + peer.url + "（Linux停止中もQNAPは利用できます）";
+      workerRemove.disabled = !peer.configured;
+    } catch (e) {
+      clusterStatus.textContent = "状態を取得できません: " + e.message;
+    }
+  }
+  workerPair.onclick = async () => {
+    workerPair.disabled = true;
+    try {
+      await api("/api/cluster/peer", {
+        method: "PUT",
+        json: { url: workerUrl.value.trim(), secret: workerSecret.value.trim() },
+      });
+      workerSecret.value = "";
+      toast("ワーカーを登録しました");
+      await api("/api/cluster/probe", { method: "POST" });
+      await refreshWorkerStatus();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      workerPair.disabled = false;
+    }
+  };
+  workerRemove.onclick = async () => {
+    if (!confirm("Linuxワーカーの登録と自動検出を解除しますか？ 元ファイルは削除されません。")) return;
+    try {
+      await api("/api/cluster/peer", { method: "DELETE" });
+      workerSecret.value = "";
+      workerUrl.value = "";
+      await refreshWorkerStatus();
+      toast("ワーカーの登録を解除しました");
+    } catch (e) { toast(e.message, true); }
+  };
+  workerRefresh.onclick = async () => {
+    try {
+      await api("/api/cluster/probe", { method: "POST" });
+      await refreshWorkerStatus();
+    } catch (e) { toast(e.message, true); }
+  };
+  refreshWorkerStatus();
+
   const note = document.createElement("div");
   note.className = "hint";
   note.style.marginTop = "12px";
