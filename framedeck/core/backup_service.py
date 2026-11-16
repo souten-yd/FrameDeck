@@ -219,6 +219,11 @@ class BackupService:
                     {"framedeck.db", "settings.json", "cluster-worker.json"},
                 )):
             raise BackupError("Incomplete backup manifest")
+        # The snapshot must be self-contained; an unexpected WAL/SHM or any
+        # extra file could change what SQLite reads during integrity_check.
+        present = {entry.name for entry in folder.iterdir()}
+        if present != set(files) | {"manifest.json"}:
+            raise BackupError("Unexpected files in sealed backup generation")
         for name, file_info in files.items():
             if (not isinstance(file_info, dict) or
                     not isinstance(file_info.get("size"), int) or
