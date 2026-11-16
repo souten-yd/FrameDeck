@@ -266,7 +266,19 @@ class BackupService:
         keep: set[str] = set()
         dates: set[str] = set()
         weeks: set[str] = set()
+        invalid: set[str] = set()
+        # IMPORTANT: an intact-looking manifest is NOT proof that its SQLite
+        # data is valid. Verify a candidate before it can displace an older
+        # good generation. Preserve invalid generations for manual diagnosis.
         for snap in snapshots:
+            folder = self.root / snap["name"]
+            try:
+                self.verify_directory(folder)
+            except (BackupError, OSError, ValueError, KeyError, TypeError):
+                invalid.add(snap["name"])
+                logger.warning("Backup generation %s failed retention verification; preserved",
+                               snap["name"])
+                continue
             if snap["local_date"] not in dates and len(dates) < DAILY_GENERATIONS:
                 dates.add(snap["local_date"])
                 keep.add(snap["name"])
@@ -274,7 +286,7 @@ class BackupService:
                 weeks.add(snap["iso_week"])
                 keep.add(snap["name"])
         for snap in snapshots:
-            if snap["name"] not in keep:
+            if snap["name"] not in keep and snap["name"] not in invalid:
                 folder = self.root / snap["name"]
                 if folder.is_dir() and not folder.is_symlink() and _NAME.fullmatch(folder.name):
                     shutil.rmtree(folder)
