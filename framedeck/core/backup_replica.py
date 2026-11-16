@@ -26,6 +26,38 @@ def _separate_device(folder: Path, local: Path) -> bool:
     return folder.stat().st_dev != local.stat().st_dev
 
 
+def _is_remote_filesystem(folder: Path) -> bool:
+    """Reject local root, RAM disk, USB and arbitrary NAS mountpoints.
+
+    st_dev inequality alone is NOT evidence of off-NAS storage: /, /tmp or
+    another internal QNAP volume can also be a different device. Use the
+    kernel's actual mount filesystem type; never guess from the path name.
+    """
+    allowed = {"nfs", "nfs4", "cifs", "smb3", "fuse.sshfs"}
+    try:
+        # /proc/self/mountinfo: mountpoint is column 5; after ' - ' comes
+        # filesystem type. Backslash escapes are as specified by Linux.
+        target = str(folder.absolute())
+        for line in Path("/proc/self/mountinfo").read_text("utf-8").splitlines():
+            before, sep, after = line.partition(" - ")
+            if not sep:
+                continue
+            fields, tail = before.split(), after.split()
+            if len(fields) < 5 or not tail:
+                continue
+            point = fields[4]
+            for encoded, decoded in (
+                (r"\040", " "), (r"\011", "\t"),
+                (r"\012", "\n"), (r"\134", "\\"),
+            ):
+                point = point.replace(encoded, decoded)
+            if point == target:
+                return tail[0].lower() in allowed
+    except (OSError, ValueError, UnicodeError):
+        pass
+    return False
+
+
 class BackupReplicaService:
     """Bounded, opt-in snapshot copy. No remove or restore endpoint."""
 
@@ -53,6 +85,8 @@ class BackupReplicaService:
             raise BackupError("Backup replica destination is not an OS mountpoint")
         if not _separate_device(mount, self.paths.base):
             raise BackupError("Backup replica must be on a different filesystem")
+        if not _is_remote_filesystem(mount):
+            raise BackupError("Replica destination must be a remote NFS/SMB/SSHFS mount")
         root = mount / "FrameDeck-Metadata-Backups"
         if root.is_symlink():
             raise BackupError("Symlinked backup replica directory is forbidden")
