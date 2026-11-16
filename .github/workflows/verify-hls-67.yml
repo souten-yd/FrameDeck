@@ -1,0 +1,31 @@
+name: FrameDeck PR67 HLS one-shot verification
+
+on:
+  push:
+    branches: [ci/verify-hls-67]
+    paths: [.github/workflows/verify-hls-67.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/cluster-hls-ipad-offload-62
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install pinned test dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Python and browser script syntax
+        run: |
+          python -m compileall -q framedeck
+          node --check framedeck/web/static/js/app.js
+      - name: Run full regression suite
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q -rs tests/
