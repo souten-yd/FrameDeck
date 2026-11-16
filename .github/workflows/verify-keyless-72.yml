@@ -1,4 +1,5 @@
 name: FrameDeck PR72 secure keyless pairing full validation
+# Final retest: two FastAPI apps, worker credential revocation, default no-key UI
 
 on:
   push:
