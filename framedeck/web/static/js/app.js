@@ -3725,9 +3725,29 @@ async function openSettings() {
       } finally { pairingPollActive = false; }
     })();
   }
+  async function ensureLocalAdminSession(status, linuxSide = false) {
+    if (status.web_pin_configured) return;
+    if (!window.crypto?.getRandomValues) {
+      throw new Error("このブラウザでは安全な管理PINを生成できません");
+    }
+    const bytes = window.crypto.getRandomValues(new Uint8Array(20));
+    const pin = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    await api("/api/settings", { method: "PUT", json: { web_pin: pin } });
+    const response = await fetch("/api/auth/pin", {
+      method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    });
+    if (!response.ok) throw new Error("管理PIN設定後のログインに失敗しました");
+    generatedPin.value = pin;
+    if (linuxSide) pairingPanel.appendChild(pinKeyBox);
+    pinKeyBox.hidden = false;
+  }
   linuxPairStart.onclick = async () => {
     linuxPairStart.disabled = true;
     try {
+      const status = await api("/api/cluster/status");
+      await ensureLocalAdminSession(status, true);
       const result = await api("/api/cluster/pairing/start", { method: "POST" });
       if (result.already_paired) {
         toast("Linuxの認証設定はすでに有効です");
@@ -3777,23 +3797,7 @@ async function openSettings() {
         toast("Linux側では登録できません。QNAPの画面で操作してください", true);
         return;
       }
-      if (!status.web_pin_configured) {
-        if (!window.crypto?.getRandomValues) {
-          throw new Error("このブラウザでは安全なPINを生成できません");
-        }
-        const bytes = window.crypto.getRandomValues(new Uint8Array(20));
-        const pin = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-        // Explicit button action; first-run only. Do not replace an existing PIN.
-        await api("/api/settings", { method: "PUT", json: { web_pin: pin } });
-        const auth = await fetch("/api/auth/pin", {
-          method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pin }),
-        });
-        if (!auth.ok) throw new Error("Web PINは設定されましたが、ログインに失敗しました");
-        generatedPin.value = pin;
-        pinKeyBox.hidden = false;
-      }
+      await ensureLocalAdminSession(status);
       if (status.peer?.configured) {
         await api("/api/cluster/probe", { method: "POST" });
         toast("登録済みLinuxワーカーを再確認しました");
