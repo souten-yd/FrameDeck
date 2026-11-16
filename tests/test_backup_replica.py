@@ -23,6 +23,7 @@ def offnas(app_env, tmp_path, monkeypatch):
         lambda path: True if path == target else real(path),
     )
     monkeypatch.setattr(backup_replica, "_separate_device", lambda a, b: True)
+    monkeypatch.setattr(backup_replica, "_is_remote_filesystem", lambda _: True)
     services.settings.set("backup_replica_target", str(target))
     services.settings.set("backup_replica_enabled", True)
     return services, target
@@ -120,6 +121,17 @@ def test_nonmounted_and_symlink_targets_refused(app_env, tmp_path):
     link.symlink_to(target, target_is_directory=True)
     services.settings.set("backup_replica_target", str(link))
     with pytest.raises(BackupError, match="mountpoint"):
+        services.backup_replica.replicate()
+
+
+def test_local_root_or_tmpfs_mount_cannot_masquerade_as_offnas(offnas, monkeypatch):
+    from framedeck.core import backup_replica
+    services, _ = offnas
+    services.backups.create_snapshot()
+    # Simulates an OS-mounted local filesystem on a different device.
+    # This must never count as disaster-recovery storage.
+    monkeypatch.setattr(backup_replica, "_is_remote_filesystem", lambda _: False)
+    with pytest.raises(BackupError, match="remote NFS/SMB/SSHFS"):
         services.backup_replica.replicate()
 
 
