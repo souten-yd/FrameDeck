@@ -345,6 +345,17 @@ def test_two_web_apps_pair_without_ever_sending_secret(app_env, tmp_path, monkey
     b.shutdown()
 
 
+def test_new_browser_pin_bootstrap_rejects_cross_site_origin(app_env):
+    services, _, _ = app_env
+    client = TestClient(create_app(services))
+    response = client.put(
+        "/api/settings", json={"web_pin": "generated-test-pin"},
+        headers={"sec-fetch-site": "cross-site"},
+    )
+    assert response.status_code == 403
+    assert services.settings.get("web_pin", "") == ""
+
+
 def test_browser_pairing_mutations_reject_cross_site(app_env):
     services, _, _ = app_env
     client = TestClient(create_app(services))
