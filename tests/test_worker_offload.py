@@ -250,7 +250,9 @@ def test_video_route_falls_back_to_local_when_worker_connect_fails(app_env, monk
 
     monkeypatch.setattr(video_router, "offload_enabled", lambda *_: True)
     monkeypatch.setattr(video_router, "remote_eligible", lambda *args: True)
+    remote_attempts = []
     def fail_connect(*args, **kwargs):
+        remote_attempts.append(True)
         raise WorkerOffloadError("network disconnected")
     monkeypatch.setattr(video_router, "open_remote_fmp4", fail_connect)
     closed = []
@@ -271,4 +273,42 @@ def test_video_route_falls_back_to_local_when_worker_connect_fails(app_env, monk
     )
     assert response.status_code == 200
     assert response.content == b"LOCAL"
+    assert remote_attempts == [True]
+    forced = TestClient(create_app(services)).get(
+        f"/api/videos/{media_id}/stream-transcode?start=12&force_local=1",
+    )
+    assert forced.status_code == 200
+    assert forced.content == b"LOCAL"
+    assert remote_attempts == [True]  # bypass B, even if health still looks good
     assert closed
+
+
+def test_midstream_worker_disconnect_marks_unhealthy(app_env):
+    import asyncio
+    import framedeck.web.routers.video as video_router
+    services, _, _ = app_env
+    services.cluster.configure(B_URL, SECRET)
+    with services.cluster._lock:
+        services.cluster._last_seen = time.time()
+        services.cluster._capabilities = {
+            "remote_fmp4": True, "transcode_available": True,
+            "source_roots": [root_fingerprint(A_ROOT)],
+        }
+    assert services.cluster.verified_peer() is not None
+    class BrokenResponse:
+        closed = False
+        def read(self, n):
+            raise ConnectionResetError("worker lost power")
+        def close(self):
+            self.closed = True
+    response = BrokenResponse()
+    async def consume():
+        chunks = []
+        async for chunk in video_router._aiter_worker_fmp4(
+            response, services.cluster, b"fmp4-init",
+        ):
+            chunks.append(chunk)
+        return chunks
+    assert asyncio.run(consume()) == [b"fmp4-init"]
+    assert response.closed
+    assert services.cluster.verified_peer() is None
