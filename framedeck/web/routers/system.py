@@ -100,6 +100,10 @@ def get_settings(services: Services = Depends(get_services)) -> dict:
 @router.put("/settings")
 def put_settings(values: dict[str, Any], request: Request,
                  services: Services = Depends(get_services)) -> dict:
+    # First-use Web PIN bootstrap is a security-sensitive mutation. Reject
+    # cross-site forms/requests even before a PIN has been installed.
+    if "web_pin" in values:
+        _require_same_origin(request)
     if "backup_enabled" in values:
         # Turning on scheduled disk writes requires a protected local/admin
         # request. Existing ordinary settings keep their current semantics.
