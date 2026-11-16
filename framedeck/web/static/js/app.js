@@ -3616,6 +3616,25 @@ async function openSettings() {
   autoButtons.append(autoEnable, autoDisable);
   autoBox.append(autoHint, autoButtons, pinKeyBox, autoKeyBox);
   clusterSection.appendChild(autoBox);
+  let connectionPolling = false;
+  async function watchAutoWorker() {
+    if (connectionPolling) return;
+    connectionPolling = true;
+    try {
+      for (let poll = 0; poll < 9; poll++) {
+        await new Promise((resolve) => setTimeout(resolve, 8000));
+        // If settings dialog has been closed, do not poll a dead UI.
+        if (!clusterSection.isConnected) break;
+        const status = await refreshWorkerStatus();
+        if (status?.peer?.online) { toast("Linuxワーカーに接続できました"); break; }
+      }
+    } catch (e) {
+      // Network loss leaves the NAS standalone, not an endless retry loop.
+    } finally {
+      connectionPolling = false;
+    }
+  }
+
   autoEnable.onclick = async () => {
     autoEnable.disabled = true;
     try {
@@ -3651,9 +3670,10 @@ async function openSettings() {
       if (status.peer?.configured) {
         await api("/api/cluster/probe", { method: "POST" });
       }
-      await refreshWorkerStatus();
-      toast(status.peer?.online ? "Linuxワーカーの接続を確認しました"
-                               : "LAN検出を開始しました。未接続の場合はLinux側の認証キーを設定してください");
+      const current = await refreshWorkerStatus();
+      if (!current?.peer?.online) watchAutoWorker();
+      toast(current?.peer?.online ? "Linuxワーカーの接続を確認しました"
+                                 : "LAN検出を開始しました。Linuxの認証キー設定後、自動で接続します");
     } catch (e) { toast(e.message, true); }
     finally { autoEnable.disabled = false; }
   };
@@ -3733,6 +3753,7 @@ async function openSettings() {
           ? "接続済み: " + peer.url + " / FFmpeg: " + (peer.capabilities?.transcode_available ? "利用可" : "利用不可") + " / fMP4委譲: " + (peer.offload_active ? "有効" : "無効・待機中") + hlsInfo + rateInfo + cooldownInfo
           : "登録済み・オフライン: " + peer.url + "（Linux停止中もQNAPは利用できます）";
       workerRemove.disabled = !peer.configured;
+      return result;
     } catch (e) {
       clusterStatus.textContent = "状態を取得できません: " + e.message;
     }
