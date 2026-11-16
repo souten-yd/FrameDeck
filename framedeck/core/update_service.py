@@ -20,7 +20,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -390,7 +390,7 @@ class UpdateManager:
         )
         return result
 
-    def start_update(self) -> dict[str, Any]:
+    def start_update(self, preflight_snapshot: Callable[[], Any] | None = None) -> dict[str, Any]:
         with self._lock:
             if self._thread and self._thread.is_alive():
                 raise UpdateError("更新処理はすでに実行中です")
@@ -399,6 +399,17 @@ class UpdateManager:
                 raise UpdateError("利用可能な更新はありません")
             if not check["can_update"] or not self._last_release or not self._last_target:
                 raise UpdateError(check.get("reason") or "この環境では自動更新できません")
+            if preflight_snapshot is not None:
+                # The update worker may replace code and schema soon after
+                # start. Seal an independent SQLite online snapshot BEFORE
+                # queuing any download/install operation. Fail closed when
+                # backup verification or free-space checks fail.
+                try:
+                    preflight_snapshot()
+                except Exception as exc:
+                    raise UpdateError(
+                        "更新前のSQLite・設定バックアップを検証できませんでした"
+                    ) from exc
             target_version = str(check["latest_version"])
             release = dict(self._last_release)
             target = dict(self._last_target)
