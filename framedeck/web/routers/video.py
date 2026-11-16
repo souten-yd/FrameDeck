@@ -444,7 +444,7 @@ async def _aiter_worker_fmp4(response, controller, initial: bytes):
             if not chunk:
                 break
             yield chunk
-    except (OSError, TimeoutError, ConnectionError) as exc:
+    except Exception as exc:
         controller.mark_unhealthy()
         logger.warning("Linux worker stream interrupted; next retry uses QNAP: %s",
                        type(exc).__name__)
@@ -567,7 +567,7 @@ async def stream_transcode(media_id: str,
                 initial = b""
                 try:
                     initial = await anyio.to_thread.run_sync(
-                        remote.read, 65536, limiter=_STREAM_LIMITER,
+                        remote.read, 4096, limiter=_STREAM_LIMITER,
                     )
                     if initial:
                         return StreamingResponse(
