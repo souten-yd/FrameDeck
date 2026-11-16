@@ -8,16 +8,20 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import hmac
 import logging
 import os
 import secrets
 import socket
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request
 import threading
 import time
 
 from .cluster_worker import (
-    ClusterConfigError, ReplayGuard, signed_headers, validate_secret, validate_worker_url,
+    CAPABILITY_PATH, ClusterConfigError, ReplayGuard, _secure_opener,
+    response_signature, signed_headers, validate_secret, validate_worker_url,
     worker_secret,
 )
 
@@ -129,12 +133,44 @@ class LanDiscovery:
             self._secret = None
             self.controller._sync_config_dir()
 
+    def _verify_candidate(self, url: str, secret: str) -> bool:
+        """Confirm the announced address actually serves the keyed worker.
+
+        A spoofed/captured UDP beacon alone must never change QNAP's saved
+        target. The candidate must prove possession of the secret over TCP.
+        """
+        headers = signed_headers(secret, "GET", CAPABILITY_PATH)
+        try:
+            with _secure_opener().open(
+                Request(url + CAPABILITY_PATH, headers=headers, method="GET"),
+                timeout=1.5,
+            ) as response:
+                if response.status != 200:
+                    return False
+                payload = response.read(8193)
+                if len(payload) > 8192:
+                    return False
+                proof = response.headers.get("X-FrameDeck-Response-Signature", "")
+                expected = response_signature(secret, headers["X-FrameDeck-Nonce"], payload)
+                if not hmac.compare_digest(proof, expected):
+                    return False
+                data = json.loads(payload)
+                return (
+                    isinstance(data, dict) and data.get("worker") is True and
+                    data.get("protocol_version") == 1 and
+                    isinstance(data.get("transcode_available"), bool)
+                )
+        except (HTTPError, URLError, ValueError, OSError, TypeError):
+            return False
+
     def accept_discovered_worker(self, url: str, secret: str) -> bool:
         try:
             url = validate_worker_url(url)
             secret = validate_secret(secret)
         except ClusterConfigError:
             return False
+        if worker_secret() is not None:
+            return False  # worker B must never register A as its worker
         with self._lock:
             if self._secret != secret:
                 return False
@@ -144,6 +180,13 @@ class LanDiscovery:
                     return False
                 if peer is not None and peer["url"] == url:
                     return True  # recurring beacons never write to disk
+            if not self._verify_candidate(url, secret):
+                return False
+            with self.controller._lock:
+                # Repeat permission check after the network round trip.
+                peer = self.controller._peer
+                if self._secret != secret or (peer and peer["secret"] != secret):
+                    return False
                 try:
                     self.controller.configure(url, secret)
                 except (ValueError, OSError) as exc:
@@ -204,7 +247,7 @@ class LanDiscovery:
 
     def _listen(self) -> None:
         while not self._stop.is_set():
-            if self.discovery_secret() is None:
+            if self.discovery_secret() is None or worker_secret() is not None:
                 self._stop.wait(2)
                 continue
             try:
