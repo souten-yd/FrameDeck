@@ -1,4 +1,5 @@
 name: FrameDeck 2.4.20 RC - one-shot QNAP test release
+# RC2 validation rerun: preserve two most recent verified SQLite snapshots.
 
 # This file exists ONLY on the isolated RC branch, not on main.
 # Only an explicit edit to THIS file triggers a build; ordinary pushes
