@@ -84,6 +84,7 @@ class LanDiscovery:
         self._stop = threading.Event()
         self._guard = ReplayGuard()
         self._threads: list[threading.Thread] = []
+        self.pairing = None  # injected by Services before discovery threads start
 
     def _load(self) -> None:
         if not self._file.exists():
@@ -126,6 +127,31 @@ class LanDiscovery:
                 temp.unlink(missing_ok=True)
             self._secret = secret
             return secret
+
+    def install_secret(self, secret: str) -> None:
+        """Persist a key derived by TWO approved hosts, never supplied by UI."""
+        secret = validate_secret(secret)
+        with self._lock:
+            existing = self.discovery_secret()
+            if existing and existing != secret and self.controller.status()["configured"]:
+                raise ClusterConfigError("Refusing to replace an existing trusted peer")
+            self._file.parent.mkdir(parents=True, exist_ok=True)
+            if self._file.is_symlink():
+                raise ClusterConfigError("Unsafe discovery configuration")
+            temp = self._file.with_name(
+                self._file.name + "." + secrets.token_hex(8) + ".tmp"
+            )
+            try:
+                fd = os.open(str(temp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(json.dumps({"secret": secret}).encode("ascii"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp, self._file)
+                self.controller._sync_config_dir()
+            finally:
+                temp.unlink(missing_ok=True)
+            self._secret = secret
 
     def disable(self) -> None:
         with self._lock:
@@ -216,6 +242,11 @@ class LanDiscovery:
         Called from the bounded UDP listener; contains no disk writes for
         repeated beacons from the same registered address.
         """
+        # Unsigned offers are never registered; they only appear temporarily
+        # in the admin UI during the controller's pairing window.
+        pairing = self.pairing
+        if pairing is not None and pairing.accept_offer(packet, source_ip):
+            return True
         secret = self.discovery_secret()
         if secret is None or not isinstance(packet, bytes) or len(packet) > _MAX_FRAME_BYTES:
             return False
@@ -247,14 +278,21 @@ class LanDiscovery:
 
     def _listen(self) -> None:
         while not self._stop.is_set():
-            if self.discovery_secret() is None or worker_secret() is not None:
+            waiting = bool(self.pairing and self.pairing.active() and
+                           not self.pairing.linux)
+            if (self.discovery_secret() is None and not waiting) or (
+                    worker_secret() is not None):
                 self._stop.wait(2)
                 continue
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                     sock.bind(("0.0.0.0", DISCOVERY_PORT))
                     sock.settimeout(1.5)
-                    while not self._stop.is_set() and self.discovery_secret():
+                    while not self._stop.is_set() and (
+                            self.discovery_secret() or (
+                                self.pairing and self.pairing.active()
+                                and not self.pairing.linux
+                            )):
                         try:
                             packet, addr = sock.recvfrom(_MAX_FRAME_BYTES + 1)
                         except socket.timeout:
@@ -271,9 +309,12 @@ class LanDiscovery:
         while not self._stop.is_set():
             secret = worker_secret()
             port = _worker_port()
-            if secret is not None and port is not None:
+            pair_offer = self.pairing.offer_packet(port) if (
+                self.pairing is not None and port is not None
+            ) else None
+            if (secret is not None or pair_offer is not None) and port is not None:
                 try:
-                    packet = make_beacon(secret, port)
+                    packet = make_beacon(secret, port) if secret is not None else pair_offer
                     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                         # Limited LAN broadcast; no internet multicast/cloud API.
