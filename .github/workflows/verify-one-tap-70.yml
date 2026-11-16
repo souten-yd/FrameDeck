@@ -1,4 +1,5 @@
 name: FrameDeck PR70 one-tap worker enrollment validation
+# Repeat after counting malformed PIN logins as 401/failed attempts
 
 on:
   push:
