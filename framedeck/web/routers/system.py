@@ -67,7 +67,8 @@ def get_settings(services: Services = Depends(get_services)) -> dict:
 @router.put("/settings")
 def put_settings(values: dict[str, Any], request: Request,
                  services: Services = Depends(get_services)) -> dict:
-    if "backup_enabled" in values:
+    if any(key in values for key in (
+            "backup_enabled", "backup_replica_enabled", "backup_replica_target")):
         # Turning on scheduled disk writes requires a protected local/admin
         # request. Existing ordinary settings keep their current semantics.
         _require_same_origin(request)
@@ -111,6 +112,8 @@ def update_apply(request: Request,
     """Download, validate and install the latest compatible stable Release."""
     _require_same_origin(request)
     try:
-        return get_update_manager(services.paths).start_update()
+        return get_update_manager(services.paths).start_update(
+            preflight_snapshot=services.backups.create_snapshot,
+        )
     except UpdateError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -6,7 +6,7 @@ FrameDeck 2.2.0 以降は、Web UI の **設定 → アプリ更新** から Git
 
 更新確認は設定画面を開いただけでは GitHub へアクセスしません。`更新を確認` を押した時だけ `souten-yd/FrameDeck` の latest stable Release を取得し、現在のバージョンと比較します。prerelease / draft は対象外です。
 
-更新を実行する前に確認ダイアログを表示します。ダウンロードは永続データ領域の `runtime/updates/` に `.part` として保存し、完了後に置き換えます。Release asset に SHA-256 digest がある場合は照合します。更新ログは `logs/update.log` に保存されます。
+更新を実行する前に確認ダイアログを表示します。さらに「更新を適用」を実行した際は、日次バックアップが無効でも、現在のSQLite・設定をオンラインでスナップショット化し、SHA-256とSQLite整合性を検証します。検証に失敗した場合は更新処理を開始しません（容量不足・保存権限などを確認してください）。これはWeb管理画面からの更新に適用され、QTS App Centerからの直接インストールには適用されません。ダウンロードは永続データ領域の `runtime/updates/` に `.part` として保存し、完了後に置き換えます。Release asset に SHA-256 digest がある場合は照合します。更新ログは `logs/update.log` に保存されます。
 
 ## QNAP QTS
 

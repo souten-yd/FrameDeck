@@ -133,7 +133,7 @@ class BackupService:
         }
         return {
             "format_version": 1,
-            "created_at": now.isoformat(timespec="seconds"),
+            "created_at": now.isoformat(timespec="microseconds"),
             "local_date": local.date().isoformat(),
             "iso_week": f"{local.isocalendar().year}-W{local.isocalendar().week:02d}",
             "files": files,
@@ -260,6 +260,10 @@ class BackupService:
         if not self.root.is_dir() or self.root.is_symlink():
             return []
         snapshots = []
+        # Manifest creation timestamp is primary. Directory mtime in
+        # nanoseconds disambiguates legacy snapshots created in the same
+        # second; the random identifier suffix is NOT chronological.
+        directory_mtimes: dict[str, int] = {}
         for folder in self.root.iterdir():
             if not _NAME.fullmatch(folder.name) or folder.is_symlink() or not folder.is_dir():
                 continue
@@ -277,6 +281,7 @@ class BackupService:
                         not isinstance(metadata.get("iso_week"), str) or
                         not re.fullmatch(r"\d{4}-W\d{2}", metadata["iso_week"])):
                     continue
+                directory_mtimes[folder.name] = folder.stat().st_mtime_ns
                 snapshots.append({
                     "name": folder.name,
                     "created_at": metadata["created_at"],
@@ -286,7 +291,13 @@ class BackupService:
                 })
             except (OSError, ValueError, KeyError, TypeError):
                 continue
-        return sorted(snapshots, key=lambda x: x["name"], reverse=True)
+        return sorted(
+            snapshots,
+            key=lambda x: (
+                x["created_at"], directory_mtimes.get(x["name"], 0), x["name"],
+            ),
+            reverse=True,
+        )
 
     def prune(self) -> None:
         """Keep seven daily and four weekly checkpoints, counting overlap once."""

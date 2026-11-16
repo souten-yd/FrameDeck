@@ -3665,6 +3665,59 @@ async function openSettings() {
   settingRow(grid, "SQLiteの自動バックアップ", makeSelect("backup_enabled", [
     ["false", "無効"], ["true", "有効（毎日・03時以降）"],
   ]), "設定・履歴・評価などを7日次＋4週次で保持します。元の動画・漫画は対象外です。バックアップ先は同じQNAP内なので、物理故障対策は別途必要です。");
+  const replicaEnabledControl = makeSelect("backup_replica_enabled", [
+    ["false", "無効"], ["true", "有効（別ストレージへコピー）"],
+  ]);
+  const priorReplicaEnableChange = replicaEnabledControl.onchange;
+  replicaEnabledControl.onchange = async () => {
+    await priorReplicaEnableChange();
+    await refreshBackups();
+  };
+  settingRow(grid, "Linuxへの世代バックアップ複製", replicaEnabledControl,
+    "Linux側の別ディスクをQNAPに明示的にマウントしてください。接続・保存先の暗号化はNFS/SMB/SSHFSとLinuxの暗号化ファイルシステムで別途設定してください。QNAP上の元データは削除されません。");
+  const replicaPath = document.createElement("input");
+  replicaPath.type = "text";
+  replicaPath.maxLength = 1024;
+  replicaPath.className = "tb-input";
+  replicaPath.value = S.settings.backup_replica_target || "";
+  replicaPath.placeholder = "Linuxの暗号化共有のマウントポイント（例: /mnt/linux-backup）";
+  replicaPath.autocomplete = "off";
+  replicaPath.style.gridColumn = "1 / -1";
+  grid.appendChild(replicaPath);
+  const saveReplicaPath = document.createElement("button");
+  saveReplicaPath.className = "modal-btn";
+  saveReplicaPath.type = "button";
+  saveReplicaPath.textContent = "複製先のマウントパスを保存";
+  saveReplicaPath.onclick = async () => {
+    try {
+      S.settings = await api("/api/settings", {
+        method: "PUT", json: { backup_replica_target: replicaPath.value.trim() },
+      });
+      toast("複製先を保存しました。Linuxのマウントと権限を別途確認してください");
+    } catch (e) { toast(e.message, true); }
+  };
+  grid.appendChild(saveReplicaPath);
+  const replicaNow = document.createElement("button");
+  replicaNow.className = "modal-btn";
+  replicaNow.type = "button";
+  replicaNow.textContent = "最新世代をLinux側へ複製・検証";
+  grid.appendChild(replicaNow);
+  const replicaStatus = document.createElement("div");
+  replicaStatus.className = "hint";
+  replicaStatus.style.gridColumn = "1 / -1";
+  replicaStatus.textContent = "Linux複製は初期無効です";
+  grid.appendChild(replicaStatus);
+  replicaNow.onclick = async () => {
+    replicaNow.disabled = true;
+    replicaStatus.textContent = "最新世代をNAS外へ安全にコピーしています...";
+    try {
+      const result = await api("/api/backups/replicate", { method: "POST" });
+      toast(result.copied ? "NAS外への複製が完了しました" : "既存の複製を検証しました");
+      await refreshBackups();
+    } catch (e) { toast(e.message, true); await refreshBackups(); }
+    finally { replicaNow.disabled = false; }
+  };
+
   const backupStatus = document.createElement("div");
   backupStatus.className = "hint";
   backupStatus.style.gridColumn = "1 / -1";
@@ -3691,6 +3744,13 @@ async function openSettings() {
       const snapshots = status.snapshots || [];
       latestBackupName = snapshots[0]?.name || "";
       verifyBackup.disabled = !latestBackupName;
+      const replica = status.offnas || {};
+      replicaNow.disabled = !latestBackupName || !replica.enabled;
+      const previous = replica.last_result;
+      replicaStatus.textContent = "NAS外複製: " +
+        (replica.enabled ? "有効" : "無効") + (previous
+          ? " / 最終確認: " + previous.name + (previous.copied ? "（複製完了）" : "（検証済み）")
+          : " / 未実行");
       const last = snapshots[0];
       backupStatus.textContent = last
         ? "保持中: " + snapshots.length + "世代 / 最新: " + last.created_at +

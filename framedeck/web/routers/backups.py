@@ -39,6 +39,7 @@ def backup_status(services: Services = Depends(get_services)) -> dict:
         "weekly_generations": WEEKLY_GENERATIONS,
         "scope": "sqlite_and_configuration_only",
         "snapshots": services.backups.list_snapshots(),
+        "offnas": services.backup_replica.status(),
     }
 
 
@@ -48,6 +49,20 @@ def create_backup(request: Request,
     _require_backup_admin(request, services)
     try:
         return services.backups.create_snapshot()
+    except BackupError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/replicate")
+def replicate_backup(request: Request,
+                     services: Services = Depends(get_services)) -> dict:
+    """Copy only latest verified generation to an admin-configured OS mount.
+
+    No arbitrary URL, path or deletion parameter is accepted by this API.
+    """
+    _require_backup_admin(request, services)
+    try:
+        return services.backup_replica.replicate()
     except BackupError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

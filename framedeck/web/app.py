@@ -41,6 +41,7 @@ def create_app(services: Services) -> FastAPI:
         services.cluster.start()
         services.discovery.start()
         services.backups.start(services.settings)
+        services.backup_replica.start()
         yield
         services.shutdown()
 

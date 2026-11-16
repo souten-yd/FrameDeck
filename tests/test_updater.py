@@ -206,3 +206,41 @@ def test_restart_reconciliation_does_not_claim_unconfirmed_completion(
     updater._atomic_json(manager.state_file, saved)
     assert manager.job_status()["status"] == status
     assert updater._load_json(manager.state_file) == saved
+
+
+def test_preupgrade_snapshot_failure_prevents_updater_start(tmp_path, monkeypatch):
+    manager = updater.UpdateManager(resolve_app_paths(tmp_path))
+    def checked():
+        manager._last_release = {"tag_name": "v9.0.0"}
+        manager._last_target = {"kind": "qpkg", "url": "https://example.invalid/a.qpkg"}
+        return {"update_available": True, "can_update": True, "latest_version": "9.0.0"}
+    monkeypatch.setattr(manager, "check", checked)
+    calls = []
+    def failing_snapshot():
+        calls.append(True)
+        raise RuntimeError("disk full")
+    with pytest.raises(updater.UpdateError, match="バックアップ"):
+        manager.start_update(preflight_snapshot=failing_snapshot)
+    assert calls == [True]
+    assert manager._thread is None
+    assert not manager.state_file.exists()
+
+
+def test_preupgrade_snapshot_completes_before_download_worker(tmp_path, monkeypatch):
+    manager = updater.UpdateManager(resolve_app_paths(tmp_path))
+    def checked():
+        manager._last_release = {"tag_name": "v9.0.0"}
+        manager._last_target = {"kind": "qpkg", "url": "https://example.invalid/a.qpkg"}
+        return {"update_available": True, "can_update": True, "latest_version": "9.0.0"}
+    monkeypatch.setattr(manager, "check", checked)
+    calls = []
+    def sealed_snapshot():
+        calls.append("snapshot")
+    def fake_download_worker(*args):
+        assert calls == ["snapshot"]
+        calls.append("worker")
+    monkeypatch.setattr(manager, "_worker", fake_download_worker)
+    result = manager.start_update(preflight_snapshot=sealed_snapshot)
+    assert result["status"] == "queued"
+    manager._thread.join(timeout=2)
+    assert calls == ["snapshot", "worker"]

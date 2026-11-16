@@ -24,6 +24,7 @@ from ..video.capabilities import EncoderCapabilityService
 from ..video.hls_service import HlsService
 from ..video.job_manager import TranscodeJobManager
 from .backup_service import BackupService
+from .backup_replica import BackupReplicaService
 from .library_service import LibraryService
 from .rating_service import RatingService
 from .security import ConfirmTokenBox
@@ -40,6 +41,7 @@ class Services:
         self.paths = paths
         self.backups = BackupService(paths, storage)
         self.cluster = ClusterController(paths.config_dir)
+        self.backup_replica = BackupReplicaService(paths, self.backups, self.cluster, settings)
         self.remote_hls = RemoteHlsSessions()
         self.discovery = LanDiscovery(self.cluster, paths.config_dir)
 
@@ -163,6 +165,7 @@ class Services:
             logger.exception("ffmpeg検出に失敗しました")
 
     def shutdown(self) -> None:
+        self.backup_replica.shutdown()
         self.backups.shutdown()
         self.discovery.shutdown()
         self.cluster.shutdown()

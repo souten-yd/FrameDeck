@@ -59,6 +59,17 @@ def test_online_backup_verifies_and_preserves_progress(app_env):
         assert pos[0] == pytest.approx(61.5)
 
 
+def test_same_second_snapshots_sort_by_creation_not_random_suffix(app_env):
+    services, _, _ = app_env
+    first = services.backups.create_snapshot()
+    second = services.backups.create_snapshot()
+    latest = services.backups.list_snapshots()[0]
+    assert latest["name"] == second["name"]
+    assert latest["created_at"] >= first["created_at"]
+    assert services.backups.verify(first["name"])["verified"]
+    assert services.backups.verify(second["name"])["verified"]
+
+
 def test_checksum_prevents_using_corrupted_generation(app_env):
     services, paths, _ = app_env
     saved = services.backups.create_snapshot()
