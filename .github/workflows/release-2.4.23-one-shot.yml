@@ -1,0 +1,61 @@
+name: Release FrameDeck 2.4.23
+
+on:
+  push:
+    branches: [ci/release-2.4.23]
+    paths: [.github/workflows/release-2.4.23-one-shot.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 491a7fdc56b5db6a957eefdf0b1af886502bd9d1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install FFmpeg and QDK prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg curl xz-utils libxml2-utils xmlstarlet pv dos2unix
+          curl -fsSL -o /tmp/qdk.deb https://github.com/qnap-dev/QDK/releases/download/v2.5.3/qdk_2.5.3_amd64.deb
+          sudo apt-get install -y /tmp/qdk.deb
+          command -v qbuild
+          command -v qpkg_encrypt
+          ffmpeg -version | head -1
+      - name: Install Python test dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Verify exact source version and JS syntax
+        run: |
+          python - <<'PY'
+          from framedeck import __version__
+          assert __version__ == '2.4.23', __version__
+          assert 'QPKG_VER="2.4.23"' in open('packaging/qnap/qpkg.cfg').read()
+          PY
+          python -m compileall -q framedeck
+          node --check framedeck/web/static/js/app.js
+          test "$(git rev-parse HEAD)" = '491a7fdc56b5db6a957eefdf0b1af886502bd9d1'
+      - name: Run full suite including FFmpeg integration
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q -rs tests/
+      - name: Build QNAP TS-253Be x86_64 QPKG
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash packaging/qnap/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameDeck-QPKG-2.4.23
+          path: dist/*.qpkg
+          if-no-files-found: error
+          retention-days: 3
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.4.23 dist/*.qpkg --target 491a7fdc56b5db6a957eefdf0b1af886502bd9d1 --latest --title "FrameDeck v2.4.23" --notes "正式版。PR #72: QNAPとLinuxの両Web画面で接続候補を選び、同じ6桁の番号を照合して承認する安全な初回ペアリングを実装。共通認証キーの表示・コピー・環境変数編集・QNAP SSHが不要。双方でX25519/HKDFによりHMACキーを導出し、再起動後も所有者専用設定ファイル0600から復元。Linux再登録の解除もWebから可能。後続のLAN自動検出、fMP4/HLS/AAC処理、QNAP authoritative SQLite、直接Range配信は従来通り。UbuntuのPython環境ではcryptographyライブラリが必要（QNAP QPKGは同梱）。確認番号の一致を両端で必ず確認すること。暗号化ペイロード配信や一切の操作不要な自動信頼を保証しない。NAS外バックアップPR #69は未同梱。Actions全テスト/QDKビルド合格、実機のQNAPとUbuntuとiPadの接続検証はまだ未実施。"
