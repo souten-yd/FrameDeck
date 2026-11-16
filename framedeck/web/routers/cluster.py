@@ -31,8 +31,11 @@ def _require_pairing_permission(request: Request, services: Services) -> None:
     # Existing web_pin middleware authenticates all remote requests when set.
     # Require that protection before accepting a remotely supplied secret.
     host = request.client.host if request.client else ""
-    if (host not in ("127.0.0.1", "::1", "localhost", "testclient") and
-            not services.settings.get("web_pin", "")):
+    local = host == "testclient" or (
+        host in ("127.0.0.1", "::1", "localhost") and
+        request.url.hostname in ("127.0.0.1", "::1", "localhost")
+    )
+    if not local and not services.settings.get("web_pin", ""):
         raise HTTPException(
             status_code=403,
             detail="LANからワーカーを登録する前にWeb PINを設定してください",
@@ -64,6 +67,15 @@ def remove_cluster_peer(request: Request,
                         services: Services = Depends(get_services)) -> dict:
     _require_pairing_permission(request, services)
     services.cluster.clear()
+    return services.cluster.status()
+
+
+@router.post("/probe")
+def probe_worker(request: Request,
+                 services: Services = Depends(get_services)) -> dict:
+    """Explicit bounded health check from settings UI, not a media request."""
+    _require_pairing_permission(request, services)
+    services.cluster.probe_once()
     return services.cluster.status()
 
 
