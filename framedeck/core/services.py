@@ -22,6 +22,7 @@ from ..video.transcode import TranscodeService
 from ..video.capabilities import EncoderCapabilityService
 from ..video.hls_service import HlsService
 from ..video.job_manager import TranscodeJobManager
+from .backup_service import BackupService
 from .library_service import LibraryService
 from .rating_service import RatingService
 from .security import ConfirmTokenBox
@@ -36,6 +37,7 @@ class Services:
         self.storage = storage
         storage.reading_flush_seconds = float(settings.get("comic_progress_save_seconds", 5))
         self.paths = paths
+        self.backups = BackupService(paths, storage)
         self.cluster = ClusterController(paths.config_dir)
         self.discovery = LanDiscovery(self.cluster, paths.config_dir)
 
@@ -159,6 +161,7 @@ class Services:
             logger.exception("ffmpeg検出に失敗しました")
 
     def shutdown(self) -> None:
+        self.backups.shutdown()
         self.discovery.shutdown()
         self.cluster.shutdown()
         try:

@@ -15,7 +15,7 @@ from ..core.services import Services
 from ..cluster_worker import CAPABILITY_PATH, ReplayGuard
 from ..worker_offload import WORKER_FMP4_PATH
 from ..runtime_profile import qnap_lite
-from .routers import cluster, comic, library, system, video, volume_view
+from .routers import backups, cluster, comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -39,6 +39,7 @@ def create_app(services: Services) -> FastAPI:
             pass
         services.cluster.start()
         services.discovery.start()
+        services.backups.start(services.settings)
         yield
         services.shutdown()
 
@@ -77,6 +78,7 @@ def create_app(services: Services) -> FastAPI:
         return response
 
     app.include_router(system.router)
+    app.include_router(backups.router)
     app.include_router(cluster.router)
     app.include_router(library.router)
     app.include_router(volume_view.router)
