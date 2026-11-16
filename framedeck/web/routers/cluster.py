@@ -24,7 +24,7 @@ from ...cluster_worker import (
 from ...core.services import Services
 from ...worker_offload import (
     WORKER_FMP4_PATH, WorkerOffloadError, resolve_mounted_video,
-    worker_root_fingerprints,
+    worker_root_fingerprints, root_fingerprint,
 )
 from ...video.ffmpeg import resolve_ffmpeg
 from ..dependencies import get_services
@@ -54,9 +54,18 @@ def _require_pairing_permission(request: Request, services: Services) -> None:
 @router.get("/status")
 def cluster_status(services: Services = Depends(get_services)) -> dict:
     peer = services.cluster.status()
+    capabilities = peer["capabilities"] or {}
+    roots = capabilities.get("source_roots", [])
+    matching_video_root = any(
+        root_fingerprint(root["path"]) in roots
+        for root in services.library.list_roots()
+        if root.get("kind") in ("video", "any")
+    )
     peer["offload_active"] = bool(
-        peer["online"] and peer["capabilities"] and
-        peer["capabilities"].get("remote_fmp4") is True and
+        services.cluster.verified_peer() is not None and
+        capabilities.get("remote_fmp4") is True and
+        capabilities.get("transcode_available") is True and
+        matching_video_root and
         (services.settings.get("cluster_offload_enabled", False) is True or
          peer["offload_active"])
     )
