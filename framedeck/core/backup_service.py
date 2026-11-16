@@ -295,6 +295,7 @@ class BackupService:
         dates: set[str] = set()
         weeks: set[str] = set()
         invalid: set[str] = set()
+        latest_good: list[str] = []
         # IMPORTANT: an intact-looking manifest is NOT proof that its SQLite
         # data is valid. Verify a candidate before it can displace an older
         # good generation. Preserve invalid generations for manual diagnosis.
@@ -307,6 +308,12 @@ class BackupService:
                 logger.warning("Backup generation %s failed retention verification; preserved",
                                snap["name"])
                 continue
+            # Always preserve the two most recent VERIFIED snapshots, even
+            # if both were taken on one day. Otherwise a new snapshot can
+            # immediately delete the only known-good recovery point.
+            if len(latest_good) < 2:
+                latest_good.append(snap["name"])
+                keep.add(snap["name"])
             if snap["local_date"] not in dates and len(dates) < DAILY_GENERATIONS:
                 dates.add(snap["local_date"])
                 keep.add(snap["name"])
