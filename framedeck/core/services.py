@@ -17,6 +17,7 @@ from ..config import AppPaths, Settings
 from ..runtime_profile import qnap_lite
 from ..cluster_worker import ClusterController
 from ..cluster_discovery import LanDiscovery
+from ..worker_hls import RemoteHlsSessions
 from ..video.playback_service import VideoPlaybackService
 from ..video.transcode import TranscodeService
 from ..video.capabilities import EncoderCapabilityService
@@ -39,6 +40,7 @@ class Services:
         self.paths = paths
         self.backups = BackupService(paths, storage)
         self.cluster = ClusterController(paths.config_dir)
+        self.remote_hls = RemoteHlsSessions()
         self.discovery = LanDiscovery(self.cluster, paths.config_dir)
 
         self.rating = RatingService(storage)
