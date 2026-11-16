@@ -53,10 +53,17 @@ def _require_pairing_permission(request: Request, services: Services) -> None:
 
 @router.get("/status")
 def cluster_status(services: Services = Depends(get_services)) -> dict:
+    peer = services.cluster.status()
+    peer["offload_active"] = bool(
+        peer["online"] and peer["capabilities"] and
+        peer["capabilities"].get("remote_fmp4") is True and
+        (services.settings.get("cluster_offload_enabled", False) is True or
+         peer["offload_active"])
+    )
     return {
         "protocol_version": PROTOCOL_VERSION,
         "worker_mode": worker_secret() is not None,
-        "peer": services.cluster.status(),
+        "peer": peer,
     }
 
 
