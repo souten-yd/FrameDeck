@@ -331,13 +331,15 @@ class ClusterController:
                         any(not isinstance(root, str) or
                                 not re.fullmatch(r"[0-9a-f]{64}", root)
                                 for root in roots) or
-                        not isinstance(data.get("remote_fmp4", False), bool)):
+                        not isinstance(data.get("remote_fmp4", False), bool) or
+                        not isinstance(data.get("remote_hls", False), bool)):
                     raise ValueError("invalid worker capabilities")
                 capabilities = {
                     "protocol_version": PROTOCOL_VERSION,
                     "version": str(data.get("version", ""))[:40],
                     "transcode_available": data["transcode_available"],
                     "remote_fmp4": data.get("remote_fmp4", False),
+                    "remote_hls": data.get("remote_hls", False),
                     "source_roots": roots,
                 }
         except (HTTPError, URLError, OSError, ValueError, TypeError) as exc:
