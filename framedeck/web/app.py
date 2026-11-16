@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..core.services import Services
-from ..cluster_worker import ReplayGuard
+from ..cluster_worker import CAPABILITY_PATH, ReplayGuard
 from ..runtime_profile import qnap_lite
 from .routers import cluster, comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
@@ -48,6 +48,11 @@ def create_app(services: Services) -> FastAPI:
     @app.middleware("http")
     async def pin_guard(request: Request, call_next):
         """LANアクセス時の簡易PIN(設定時のみ)。localhostは常に許可。"""
+        # Worker health uses a separate HMAC challenge, even if this host
+        # also protects its browser UI with a PIN. The worker endpoint itself
+        # rejects all unsigned requests.
+        if request.url.path == CAPABILITY_PATH:
+            return await call_next(request)
         pin = services.settings.get("web_pin", "")
         if pin:
             client_host = request.client.host if request.client else ""
