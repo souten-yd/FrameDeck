@@ -20,8 +20,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-from .. import __version__
-
 logger = logging.getLogger("framedeck")
 PROTOCOL_VERSION = 1
 CAPABILITY_PATH = "/api/cluster/worker/capabilities"
@@ -206,6 +204,21 @@ class ClusterController:
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.5)
 
+    def _sync_config_dir(self) -> None:
+        if not hasattr(os, "O_DIRECTORY"):
+            return
+        try:
+            dir_fd = os.open(str(self._file.parent), os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            # Some QNAP-backed filesystems may not support directory fsync.
+            # Do not leave in-memory state out of sync with an already renamed
+            # file merely because its parent directory could not be synced.
+            logger.warning("Cluster configuration directory fsync unavailable")
+
     def configure(self, url: str, secret: str) -> None:
         peer = {"url": validate_worker_url(url),
                 "secret": validate_secret(secret)}
@@ -219,12 +232,7 @@ class ClusterController:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp, self._file)
-            if hasattr(os, "O_DIRECTORY"):
-                dir_fd = os.open(str(self._file.parent), os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(dir_fd)
-                finally:
-                    os.close(dir_fd)
+            self._sync_config_dir()
         finally:
             try:
                 temp.unlink(missing_ok=True)
@@ -241,6 +249,7 @@ class ClusterController:
         with self._lock:
             # Do not leave a saved secret behind if the process is terminated.
             self._file.unlink(missing_ok=True)
+            self._sync_config_dir()
             self._peer = None
             self._capabilities = None
             self._last_seen = None
