@@ -258,12 +258,10 @@ async def hls_master(media_id: str,
                 item.path, services.library.list_roots(),
             )
             if hls_eligible(services.cluster, source_root, services.settings):
-                # Explicit quality choices can be honored by the Linux worker;
-                # no change to the existing QNAP-limited local fallback.
-                worker_profiles = (
-                    [profile] if profile in HLS_PROFILES or profile == "original-aac"
-                    else profiles
-                )
+                # Keep the QNAP-lite resolution caps even for a Linux
+                # session. If B dies, A must not silently start a 1080p
+                # encode that the NAS safety profile would otherwise reject.
+                worker_profiles = profiles
                 worker_key = await anyio.to_thread.run_sync(
                     lambda: start_remote_hls(
                         services.cluster, source_root, relative,
