@@ -51,7 +51,8 @@ def authenticate_web_pin(payload: dict[str, Any], request: Request,
         raise HTTPException(status_code=429, detail="PIN試行回数が多すぎます")
     provided = payload.get("pin")
     saved = services.settings.get("web_pin", "")
-    if not isinstance(provided, str) or not isinstance(saved, str) or not saved:
+    if (not isinstance(provided, str) or not 1 <= len(provided) <= 256 or
+            not isinstance(saved, str) or not saved):
         raise HTTPException(status_code=403, detail="Web PINが設定されていません")
     if not hmac.compare_digest(provided.encode("utf-8"), saved.encode("utf-8")):
         limiter.failed(client)
