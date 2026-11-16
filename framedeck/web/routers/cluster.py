@@ -10,7 +10,7 @@ import json
 import threading
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from ... import __version__
@@ -27,9 +27,14 @@ from ...worker_offload import (
     worker_root_fingerprints, root_fingerprint,
 )
 from ...video.ffmpeg import resolve_ffmpeg
+from ...worker_hls import (
+    WORKER_HLS_FILE, WORKER_HLS_START, HLS_ALLOWED, valid_hls_file,
+)
+from ...video.hls_service import HLS_PROFILES
+from ...video.transcode import TranscodeError
 from ..dependencies import get_services
 from .system import _require_same_origin
-from .video import _aiter_transcode
+from .video import _aiter_transcode, _hls_wait_file
 
 router = APIRouter(prefix="/api/cluster", tags=["cluster"])
 _WORKER_TRANSCODE_GATE = threading.BoundedSemaphore(2)
@@ -143,6 +148,7 @@ def worker_capabilities(request: Request,
         "version": __version__,
         "transcode_available": bool(ffmpeg.available),
         "remote_fmp4": bool(ffmpeg.available and roots),
+        "remote_hls": bool(ffmpeg.available and roots),
         "source_roots": roots,
     }, separators=(",", ":")).encode("utf-8")
     signature = response_signature(
@@ -213,6 +219,87 @@ def worker_fmp4(request: Request,
         background=BackgroundTask(release_stream),
         headers={
             "X-FrameDeck-Stream-Proof": signature,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _require_worker_hls(request: Request) -> str:
+    """Every worker read is HMAC authenticated, including files and playlists."""
+    secret = worker_secret()
+    resource = request.url.path + (
+        ("?" + request.url.query) if request.url.query else ""
+    )
+    if secret is None or not request.app.state.cluster_guard.verify(
+        secret, "GET", resource, request.headers,
+    ):
+        raise HTTPException(status_code=403, detail="worker authentication required")
+    return secret
+
+
+@router.get("/worker/hls/start")
+def worker_hls_start(
+    request: Request,
+    source_root: str = Query(..., min_length=1, max_length=2048),
+    relative_path: str = Query(..., min_length=1, max_length=4096),
+    profiles: str = Query(..., min_length=1, max_length=80),
+    height: int = Query(0, ge=0, le=4320),
+    start: float = Query(0.0, ge=0.0, le=1000000.0),
+    session: str = Query("", max_length=64),
+    services: Services = Depends(get_services),
+) -> Response:
+    """Start bounded existing HlsService on a read-only mapped NAS video."""
+    secret = _require_worker_hls(request)
+    requested = profiles.split(",")
+    if not requested or len(requested) > 4 or any(p not in HLS_ALLOWED for p in requested):
+        raise HTTPException(status_code=422, detail="invalid HLS profiles")
+    try:
+        source = resolve_mounted_video(source_root, relative_path)
+        if not resolve_ffmpeg(False).available:
+            raise WorkerOffloadError("ffmpeg unavailable")
+        manifest = services.hls.ensure_async(
+            str(source), profiles=requested, source_height=height,
+            start_seconds=start, owner=session or None,
+        )
+    except (WorkerOffloadError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="HLS worker unavailable") from exc
+    except TranscodeError as exc:
+        raise HTTPException(status_code=503, detail="HLS worker busy") from exc
+    payload = json.dumps({"key": manifest.key}, separators=(",", ":")).encode("utf-8")
+    return Response(payload, media_type="application/json", headers={
+        "X-FrameDeck-Response-Signature": response_signature(
+            secret, request.headers["x-framedeck-nonce"], payload,
+        ),
+        "Cache-Control": "no-store",
+    })
+
+
+@router.get("/worker/hls/file")
+async def worker_hls_file(
+    request: Request,
+    key: str = Query(..., min_length=64, max_length=64),
+    relative: str = Query(..., min_length=1, max_length=100),
+    services: Services = Depends(get_services),
+):
+    """Serve ONLY a previously generated HLS playlist/init/segment, not raw media."""
+    secret = _require_worker_hls(request)
+    if not valid_hls_file(relative):
+        raise HTTPException(status_code=404, detail="invalid HLS relative file")
+    try:
+        path = await _hls_wait_file(
+            services, key, relative, timeout=7.0,
+        )
+    except HTTPException:
+        raise
+    return FileResponse(
+        path,
+        media_type=("application/vnd.apple.mpegurl"
+                    if relative.endswith(".m3u8") else "video/mp4"),
+        headers={
+            "X-FrameDeck-Stream-Proof": response_signature(
+                secret, request.headers["x-framedeck-nonce"], b"",
+            ),
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",
         },
