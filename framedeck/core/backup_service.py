@@ -114,7 +114,7 @@ class BackupService:
 
     def _make_metadata(self, tmp: Path) -> dict:
         now = datetime.now(timezone.utc)
-        local = datetime.now().astimezone()
+        local = now.astimezone()
         files = {
             file.name: {"sha256": _sha256(file), "size": file.stat().st_size}
             for file in sorted(tmp.iterdir())
@@ -194,7 +194,7 @@ class BackupService:
             metadata = json.loads(manifest.read_text("utf-8"))
         except (ValueError, UnicodeError) as exc:
             raise BackupError("Unreadable backup manifest") from exc
-        if metadata.get("format_version") != 1:
+        if not isinstance(metadata, dict) or metadata.get("format_version") != 1:
             raise BackupError("Unsupported backup format")
         files = metadata.get("files")
         if (not isinstance(files, dict) or
@@ -240,10 +240,14 @@ class BackupService:
                 if manifest.is_symlink() or manifest.stat().st_size > 16384:
                     continue
                 metadata = json.loads(manifest.read_text("utf-8"))
-                if metadata.get("format_version") != 1:
+                if not isinstance(metadata, dict) or metadata.get("format_version") != 1:
                     continue
                 files = metadata.get("files", {})
-                if not isinstance(files, dict):
+                if (not isinstance(files, dict) or
+                        not isinstance(metadata.get("local_date"), str) or
+                        not re.fullmatch(r"\d{4}-\d{2}-\d{2}", metadata["local_date"]) or
+                        not isinstance(metadata.get("iso_week"), str) or
+                        not re.fullmatch(r"\d{4}-W\d{2}", metadata["iso_week"])):
                     continue
                 snapshots.append({
                     "name": folder.name,
