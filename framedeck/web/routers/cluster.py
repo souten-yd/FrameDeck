@@ -78,6 +78,7 @@ def cluster_status(services: Services = Depends(get_services)) -> dict:
         "protocol_version": PROTOCOL_VERSION,
         "worker_mode": worker_secret() is not None,
         "auto_discovery_enabled": services.discovery.enabled(),
+        "web_pin_configured": bool(services.settings.get("web_pin", "")),
         "peer": peer,
         "hls_performance": services.remote_hls.status(),
     }

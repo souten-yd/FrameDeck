@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import shutil
+import hmac
+from fastapi.responses import JSONResponse
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -31,6 +33,37 @@ def _require_same_origin(request: Request) -> None:
             origin_host = ""
         if not origin_host or origin_host.lower() != host.lower():
             raise HTTPException(status_code=403, detail="更新要求のOriginが一致しません")
+
+
+@router.post("/auth/pin")
+def authenticate_web_pin(payload: dict[str, Any], request: Request,
+                         services: Services = Depends(get_services)):
+    """Authenticate a browser without placing the PIN in URL, JS storage or logs.
+
+    The existing FrameDeck middleware uses an HttpOnly cookie containing the
+    configured Web PIN. The login endpoint alone must bypass that middleware
+    and is protected by same-origin checks and a bounded memory-only limiter.
+    """
+    _require_same_origin(request)
+    limiter = request.app.state.pin_login_limiter
+    client = request.client.host if request.client else "unknown"
+    if not limiter.allow(client):
+        raise HTTPException(status_code=429, detail="PIN試行回数が多すぎます")
+    provided = payload.get("pin")
+    saved = services.settings.get("web_pin", "")
+    if not isinstance(saved, str) or not saved:
+        raise HTTPException(status_code=403, detail="Web PINが設定されていません")
+    if (not isinstance(provided, str) or not 1 <= len(provided) <= 256 or
+            not hmac.compare_digest(provided.encode("utf-8"), saved.encode("utf-8"))):
+        limiter.failed(client)
+        raise HTTPException(status_code=401, detail="Web PINが違います")
+    limiter.success(client)
+    result = JSONResponse({"authenticated": True})
+    result.set_cookie(
+        "framedeck_pin", saved, httponly=True, samesite="strict",
+        secure=request.url.scheme == "https", max_age=7 * 24 * 3600,
+    )
+    return result
 
 
 @router.get("/health")

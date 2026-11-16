@@ -378,6 +378,65 @@ function clientMediaHints() {
   };
 }
 
+/* Web PIN is never kept in JS storage or placed in a URL. Login is shared
+   across concurrent requests, and the server issues an HttpOnly cookie. */
+let webPinLoginTask = null;
+function requireWebPinLogin() {
+  if (webPinLoginTask) return webPinLoginTask;
+  webPinLoginTask = new Promise((resolve, reject) => {
+    const box = document.createElement("div");
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "QNAPで設定済みのWeb PINを入力してください。PINはURLやブラウザ保存領域には残しません。";
+    const input = document.createElement("input");
+    input.type = "password";
+    input.autocomplete = "current-password";
+    input.placeholder = "Web PIN";
+    input.style.width = "100%";
+    const feedback = document.createElement("p");
+    feedback.className = "hint";
+    box.append(hint, input, feedback);
+    let settled = false;
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      input.value = "";
+      closeModal();
+      reject(new Error("Web PINの入力をキャンセルしました"));
+    };
+    const submit = async () => {
+      if (settled) return;
+      const pin = input.value;
+      if (!pin) { feedback.textContent = "Web PINを入力してください"; return; }
+      const response = await fetch("/api/auth/pin", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
+      input.value = "";
+      if (!response.ok) {
+        feedback.textContent = response.status === 429
+          ? "入力回数制限中です。しばらくしてからお試しください。"
+          : "Web PINが違います";
+        return;
+      }
+      settled = true;
+      closeModal();
+      resolve();
+    };
+    showModal("Web PINでログイン", box, [
+      { label: "中止", onClick: cancel },
+      { label: "ログイン", kind: "primary", onClick: submit },
+    ]);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submit().catch(() => { feedback.textContent = "ログインに失敗しました"; });
+    });
+    input.focus();
+  }).finally(() => { webPinLoginTask = null; });
+  return webPinLoginTask;
+}
+
 /* ================= api ================= */
 async function api(path, options = {}) {
   const opts = { ...options };
@@ -387,7 +446,11 @@ async function api(path, options = {}) {
     opts.body = JSON.stringify(opts.json);
     delete opts.json;
   }
-  const response = await fetch(path, opts);
+  let response = await fetch(path, opts);
+  if (response.status === 401 && path !== "/api/auth/pin") {
+    await requireWebPinLogin();
+    response = await fetch(path, opts);
+  }
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
     try { detail = (await response.json()).detail || detail; } catch (e) {}
@@ -3498,10 +3561,10 @@ async function openSettings() {
   autoBox.style.marginBottom = "12px";
   const autoHint = document.createElement("p");
   autoHint.className = "hint";
-  autoHint.textContent = "LAN内のLinuxワーカーを自動検出します。初回だけ信頼する共有キーをLinuxのサービス環境に設定してください。以後は起動・IP変更・停止時の切り替えを自動で処理します（UDP 31964）。";
+  autoHint.textContent = "ボタンを1回押すと、QNAPのWeb PINを必要に応じて自動設定し、LAN検出を開始します。初回はLinux側に共有キーを1回だけ設定してください。その後の起動・IP変更・再接続は自動です（UDP 31964）。";
   const autoEnable = document.createElement("button");
   autoEnable.className = "modal-btn primary";
-  autoEnable.textContent = "LAN自動検出を有効化";
+  autoEnable.textContent = "LANワーカーをワンタップ登録";
   autoEnable.type = "button";
   const autoDisable = document.createElement("button");
   autoDisable.className = "modal-btn";
@@ -3525,24 +3588,92 @@ async function openSettings() {
     try { await navigator.clipboard.writeText(autoKey.value); toast("共有キーをコピーしました"); }
     catch (e) { toast("コピーできませんでした", true); }
   };
+  const pinKeyBox = document.createElement("div");
+  pinKeyBox.hidden = true;
+  const pinKeyHint = document.createElement("p");
+  pinKeyHint.className = "hint";
+  pinKeyHint.textContent = "Web PINを自動作成しました。ほかの端末から使うため、今ここで安全な場所へ保存してください。自動的には再表示されません。";
+  const generatedPin = document.createElement("input");
+  generatedPin.type = "password";
+  generatedPin.readOnly = true;
+  generatedPin.autocomplete = "off";
+  generatedPin.style.width = "100%";
+  const copyPin = document.createElement("button");
+  copyPin.className = "modal-btn";
+  copyPin.type = "button";
+  copyPin.textContent = "作成したWeb PINをコピー";
+  copyPin.onclick = async () => {
+    if (!generatedPin.value) return;
+    try { await navigator.clipboard.writeText(generatedPin.value); toast("Web PINをコピーしました"); }
+    catch (e) { toast("コピーに失敗しました", true); }
+  };
+  pinKeyBox.append(pinKeyHint, generatedPin, copyPin);
   autoKeyBox.append(autoKeyHint, autoKey, autoCopy);
   const autoButtons = document.createElement("div");
   autoButtons.style.display = "flex";
   autoButtons.style.flexWrap = "wrap";
   autoButtons.style.gap = "8px";
   autoButtons.append(autoEnable, autoDisable);
-  autoBox.append(autoHint, autoButtons, autoKeyBox);
+  autoBox.append(autoHint, autoButtons, pinKeyBox, autoKeyBox);
   clusterSection.appendChild(autoBox);
+  let connectionPolling = false;
+  async function watchAutoWorker() {
+    if (connectionPolling) return;
+    connectionPolling = true;
+    try {
+      for (let poll = 0; poll < 9; poll++) {
+        await new Promise((resolve) => setTimeout(resolve, 8000));
+        // If settings dialog has been closed, do not poll a dead UI.
+        if (!clusterSection.isConnected) break;
+        const status = await refreshWorkerStatus();
+        if (status?.peer?.online) { toast("Linuxワーカーに接続できました"); break; }
+      }
+    } catch (e) {
+      // Network loss leaves the NAS standalone, not an endless retry loop.
+    } finally {
+      connectionPolling = false;
+    }
+  }
+
   autoEnable.onclick = async () => {
     autoEnable.disabled = true;
     try {
-      const result = await api("/api/cluster/discovery/enable", { method: "POST" });
-      if (result.secret) {
-        autoKey.value = result.secret;
-        autoKeyBox.hidden = false;
+      const status = await api("/api/cluster/status");
+      if (status.worker_mode) {
+        toast("Linux側では登録できません。QNAPの画面で操作してください", true);
+        return;
       }
-      toast("LAN自動検出を有効化しました");
-      await refreshWorkerStatus();
+      if (!status.web_pin_configured) {
+        if (!window.crypto?.getRandomValues) {
+          throw new Error("このブラウザでは安全なPINを生成できません");
+        }
+        const bytes = window.crypto.getRandomValues(new Uint8Array(20));
+        const pin = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+        // Explicit button action; first-run only. Do not replace an existing PIN.
+        await api("/api/settings", { method: "PUT", json: { web_pin: pin } });
+        const auth = await fetch("/api/auth/pin", {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin }),
+        });
+        if (!auth.ok) throw new Error("Web PINは設定されましたが、ログインに失敗しました");
+        generatedPin.value = pin;
+        pinKeyBox.hidden = false;
+      }
+      if (!status.auto_discovery_enabled) {
+        const result = await api("/api/cluster/discovery/enable", { method: "POST" });
+        if (result.secret) {
+          autoKey.value = result.secret;
+          autoKeyBox.hidden = false;
+        }
+      }
+      if (status.peer?.configured) {
+        await api("/api/cluster/probe", { method: "POST" });
+      }
+      const current = await refreshWorkerStatus();
+      if (!current?.peer?.online) watchAutoWorker();
+      toast(current?.peer?.online ? "Linuxワーカーの接続を確認しました"
+                                 : "LAN検出を開始しました。Linuxの認証キー設定後、自動で接続します");
     } catch (e) { toast(e.message, true); }
     finally { autoEnable.disabled = false; }
   };
@@ -3601,7 +3732,10 @@ async function openSettings() {
         return;
       }
       workerUrl.value = workerUrl.value || peer.url || "";
-      autoEnable.disabled = result.auto_discovery_enabled;
+      autoEnable.disabled = false;
+      autoEnable.textContent = peer.online ? "接続状態を再確認"
+        : result.auto_discovery_enabled ? "LANワーカーを再検出"
+        : "LANワーカーをワンタップ登録";
       autoDisable.disabled = !result.auto_discovery_enabled;
       const hlsPerf = result.hls_performance || {};
       const workerHls = peer.capabilities?.remote_hls === true;
@@ -3619,6 +3753,7 @@ async function openSettings() {
           ? "接続済み: " + peer.url + " / FFmpeg: " + (peer.capabilities?.transcode_available ? "利用可" : "利用不可") + " / fMP4委譲: " + (peer.offload_active ? "有効" : "無効・待機中") + hlsInfo + rateInfo + cooldownInfo
           : "登録済み・オフライン: " + peer.url + "（Linux停止中もQNAPは利用できます）";
       workerRemove.disabled = !peer.configured;
+      return result;
     } catch (e) {
       clusterStatus.textContent = "状態を取得できません: " + e.message;
     }
