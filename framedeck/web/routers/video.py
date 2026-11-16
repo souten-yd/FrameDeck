@@ -116,6 +116,13 @@ def video_detail(media_id: str,
     if services.settings.get("resume_playback", True):
         resume = services.video_playback.resume_position(media_id)
     services.library.mark_opened(item)
+    remote_available = False
+    if offload_enabled():
+        try:
+            root, _ = owner_source_ref(item.path, services.library.list_roots())
+            remote_available = remote_eligible(services.cluster, root)
+        except WorkerOffloadError:
+            pass
     return {
         "item": {
             "id": item.id,
@@ -126,7 +133,8 @@ def video_detail(media_id: str,
         "info": info.to_dict(),
         "progress": progress,
         "resume_position": resume,
-        "transcode_available": services.transcode.available(),
+        "transcode_available": remote_available or services.transcode.available(),
+        "worker_transcode_available": remote_available,
         "ffmpeg_status": services.transcode.ffmpeg_status(),
     }
 
@@ -556,6 +564,7 @@ async def stream_transcode(media_id: str,
                 remote = await anyio.to_thread.run_sync(
                     connect, limiter=_STREAM_LIMITER,
                 )
+                initial = b""
                 try:
                     initial = await anyio.to_thread.run_sync(
                         remote.read, 65536, limiter=_STREAM_LIMITER,
