@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import stat
 import tempfile
 import threading
 import time
@@ -40,6 +39,7 @@ class BackupReplicaService:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_result: dict | None = None
+        self._verified_names: set[str] = set()
 
     def _destination(self) -> Path:
         target = self.settings.get("backup_replica_target", "")
@@ -109,6 +109,7 @@ class BackupReplicaService:
                 result = {"name": name, "copied": False, "verified": True,
                           "bytes": size}
                 self._last_result = result
+                self._verified_names.add(name)
                 return result
             free = os.statvfs(root)
             if free.f_bavail * free.f_frsize < size + 16 * 1024 * 1024:
@@ -127,6 +128,7 @@ class BackupReplicaService:
             result = {"name": name, "copied": True, "verified": True,
                       "bytes": size}
             self._last_result = result
+            self._verified_names.add(name)
             return result
         except (OSError, ValueError) as exc:
             raise BackupError(f"Off-NAS backup failed: {type(exc).__name__}") from exc
@@ -148,18 +150,27 @@ class BackupReplicaService:
         if self._thread is not None:
             return
         def worker() -> None:
-            # Run only when explicitly enabled and the paired Linux worker
-            # is online. The first check is delayed to avoid startup I/O.
-            while not self._stop.wait(1800):
-                if self.settings.get("backup_replica_enabled", False) is not True:
+            # Poll only memory-resident worker health every 30s; never stat
+            # network paths while disabled/offline. Run on worker arrival or
+            # at most once per 30min when it remains online.
+            last_online = False
+            last_scan = 0.0
+            while not self._stop.wait(30):
+                online = (self.settings.get("backup_replica_enabled", False) is True
+                          and self.cluster.verified_peer() is not None)
+                if not online:
+                    last_online = False
                     continue
-                if self.cluster.verified_peer() is None:
+                now = time.monotonic()
+                if last_online and now - last_scan < 1800:
                     continue
+                last_online = True
+                last_scan = now
                 try:
-                    # One generation per interval: avoid heavy NAS I/O spikes.
                     for snapshot in self.backups.list_snapshots():
-                        # Checking a completed target is read-only, but the
-                        # replication itself is already fully atomic.
+                        if snapshot["name"] in self._verified_names:
+                            continue
+                        # At most one newly written generation per scan.
                         result = self.replicate(snapshot["name"])
                         if result["copied"]:
                             break
