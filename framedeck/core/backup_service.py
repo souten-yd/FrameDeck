@@ -63,8 +63,11 @@ def _check_database(path: Path) -> None:
     # Read-only verification of a completed snapshot; never open a backup
     # writable or let an unrelated WAL file influence its integrity result.
     uri = "file:" + quote(str(path.resolve()), safe="/") + "?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True, timeout=5)) as conn:
-        rows = conn.execute("PRAGMA integrity_check").fetchall()
+    try:
+        with closing(sqlite3.connect(uri, uri=True, timeout=5)) as conn:
+            rows = conn.execute("PRAGMA integrity_check").fetchall()
+    except sqlite3.Error as exc:
+        raise BackupError("SQLite backup cannot be read or verified") from exc
     if rows != [("ok",)]:
         raise BackupError("SQLite backup failed integrity_check")
 
@@ -197,6 +200,11 @@ class BackupService:
                 )):
             raise BackupError("Incomplete backup manifest")
         for name, file_info in files.items():
+            if (not isinstance(file_info, dict) or
+                    not isinstance(file_info.get("size"), int) or
+                    not isinstance(file_info.get("sha256"), str) or
+                    not re.fullmatch(r"[0-9a-f]{64}", file_info["sha256"])):
+                raise BackupError("Invalid file entry in backup manifest")
             path = folder / name
             if path.is_symlink() or not path.is_file():
                 raise BackupError("Missing backup file")
