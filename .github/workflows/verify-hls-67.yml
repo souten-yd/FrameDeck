@@ -1,4 +1,5 @@
 name: FrameDeck PR67 HLS one-shot verification
+# Retry after standalone QNAP-lite regression guard
 
 on:
   push:
