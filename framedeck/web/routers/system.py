@@ -65,8 +65,22 @@ def get_settings(services: Services = Depends(get_services)) -> dict:
 
 
 @router.put("/settings")
-def put_settings(values: dict[str, Any],
+def put_settings(values: dict[str, Any], request: Request,
                  services: Services = Depends(get_services)) -> dict:
+    if "backup_enabled" in values:
+        # Turning on scheduled disk writes requires a protected local/admin
+        # request. Existing ordinary settings keep their current semantics.
+        _require_same_origin(request)
+        client = request.client.host if request.client else ""
+        local = client == "testclient" or (
+            client in ("127.0.0.1", "::1", "localhost") and
+            request.url.hostname in ("127.0.0.1", "::1", "localhost")
+        )
+        if not local and not services.settings.get("web_pin", ""):
+            raise HTTPException(
+                status_code=403,
+                detail="バックアップを設定するにはWeb PINを有効にしてください",
+            )
     try:
         updated = services.settings.update(values)
     except ValueError as e:
