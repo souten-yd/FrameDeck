@@ -43,6 +43,7 @@ const S = {
     mobileStableOriginal: false,
     syncRate: 1, syncInfo: null,
     hlsFallback: false,
+    forceLocal: false,
     watchdogTimer: null, watchdogPosition: 0, watchdogStrikes: 0,
     recovering: false,
     pauseStopTimer: null, pausedConversionStopped: false,
@@ -1942,6 +1943,7 @@ function transcodeStreamUrl(itemId, seconds) {
   if (S.video.copyVideo) params.set("copy_video", "1");
   if (S.video.copyAudio) params.set("copy_audio", "1");
   if (S.video.smoothFps) params.set("smooth_fps", String(S.video.smoothFps));
+  if (S.video.forceLocal) params.set("force_local", "1");
   return `/api/videos/${itemId}/stream-transcode?${params.toString()}`;
 }
 
@@ -1987,6 +1989,7 @@ async function openVideo(item) {
   S.video.copyAudio = false;
   S.video.transcodeFallback = false;
   S.video.hlsFallback = false;
+  S.video.forceLocal = false;
   S.video.mobileStableOriginal = false;
   try {
     const hints = clientMediaHints();
@@ -2288,6 +2291,8 @@ async function recoverPlayback(position) {
   toast("再生が止まったため読み直します");
   try {
     if (S.video.transcode && !S.video.hls) {
+      // A remote Linux worker may be unreachable; retry directly on A.
+      if (S.settings?.cluster_offload_enabled === true) S.video.forceLocal = true;
       S.video.offset = position;
       video.src = transcodeStreamUrl(item.id, position);
     } else if (S.video.hls) {
@@ -2702,6 +2707,7 @@ video.addEventListener("error", () => {
     // If the Linux worker vanished, retry fMP4 from the latest confirmed
     // playback time, not the beginning of the old transcode segment.
     if (S.video.transcode && S.settings?.cluster_offload_enabled === true) {
+      S.video.forceLocal = true;
       const resume = currentPosition();
       if (Number.isFinite(resume) && resume > S.video.offset) {
         S.video.offset = resume;
@@ -2735,6 +2741,15 @@ video.addEventListener("error", () => {
   $("video-msg").classList.remove("hidden");
 });
 video.addEventListener("ended", () => {
+  // A dropped worker stream can appear as a clean EOF in some browsers.
+  // Never advance to the next video before the known source duration.
+  if (S.video.item && S.video.transcode &&
+      S.settings?.cluster_offload_enabled === true && !S.video.forceLocal &&
+      S.video.duration > 0 && currentPosition() + 5 < S.video.duration) {
+    S.video.forceLocal = true;
+    recoverPlayback(currentPosition());
+    return;
+  }
   saveVideoProgress();
   if ((S.video.hls || S.video.transcode) && S.video.item) {
     requestTranscodeStop(S.video.item.id);
