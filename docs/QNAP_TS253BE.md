@@ -4,6 +4,18 @@ FrameDeck uses one application codebase on Ubuntu and QNAP. The QPKG launcher
 sets `FRAMEDECK_PROFILE=qnap-lite`; common features under `framedeck/` apply
 to both platforms without a fork. Linux keeps its original defaults and limits.
 
+## Opt-in SQLite generations (metadata only)
+
+QNAP stores optional online SQLite backups under
+`/share/<volume>/.framedeck/backups/`, separate from the replaceable QPKG
+installation tree. Daily auto snapshots are **OFF by default**, can run at
+local 03:00 or later when enabled and retain 7 daily + 4 weekly generations.
+Snapshots also include private settings and the optional Linux worker pairing
+configuration, but **not** any source videos/comics or caches. Backups on the
+same QNAP RAID volume are not a substitute for off-device copies. Review and
+restore are deliberate offline operations; no remote restore API exists.
+See [Data backup and recovery](DATA_BACKUPS.md).
+
 ## Lightweight execution policy (2.4.0)
 
 The QNAP profile is adopted once for new and existing QPKG data directories.
