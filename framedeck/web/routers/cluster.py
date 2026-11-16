@@ -72,6 +72,7 @@ def cluster_status(services: Services = Depends(get_services)) -> dict:
     return {
         "protocol_version": PROTOCOL_VERSION,
         "worker_mode": worker_secret() is not None,
+        "auto_discovery_enabled": services.discovery.enabled(),
         "peer": peer,
     }
 
