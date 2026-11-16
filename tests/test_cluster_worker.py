@@ -196,6 +196,37 @@ def test_probe_uses_signed_health_and_fails_closed(app_env, monkeypatch):
     assert controller.status()["capabilities"] is None
 
 
+def test_signed_non_object_health_payload_fails_closed(app_env, monkeypatch):
+    import framedeck.cluster_worker as worker
+    services, _, _ = app_env
+    controller = services.cluster
+    controller.configure(LAN_URL, SECRET)
+
+    class Reply:
+        status = 200
+        def __init__(self, proof):
+            self.headers = {"X-FrameDeck-Response-Signature": proof}
+        def read(self, n):
+            return b"[]"
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return None
+
+    class Opener:
+        def open(self, request, timeout):
+            sent = {k.lower(): v for k, v in request.header_items()}
+            proof = response_signature(
+                SECRET, sent["x-framedeck-nonce"], b"[]",
+            )
+            return Reply(proof)
+
+    monkeypatch.setattr(worker, "_secure_opener", lambda: Opener())
+    controller.probe_once()
+    assert controller.status()["online"] is False
+    assert controller.status()["error"] == "unreachable_or_incompatible"
+
+
 def test_insecure_or_corrupted_config_cannot_enable_worker(tmp_path):
     location = tmp_path / "config"
     location.mkdir()
