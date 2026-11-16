@@ -197,6 +197,24 @@ class PairingManager:
             self._window = time.monotonic() + PAIRING_TTL
         return {"armed": True, "expires_in": PAIRING_TTL}
 
+    def reset_linux(self) -> dict:
+        """Explicit local admin revocation; safe for later re-enrollment."""
+        if not self.linux:
+            raise PairingError("Only Linux may revoke its worker secret")
+        if os.environ.get("FRAMEDECK_CLUSTER_WORKER_SECRET"):
+            raise PairingError(
+                "An externally managed worker key is active; remove it in its service manager"
+            )
+        with self._lock:
+            if self._file.is_symlink():
+                raise PairingError("Refusing to follow symlinked worker credentials")
+            self._file.unlink(missing_ok=True)
+            self.cluster._sync_config_dir()
+            set_runtime_worker_secret(None)
+            self._worker = None
+            self._window = 0.0
+        return {"revoked": True}
+
     def active(self) -> bool:
         with self._lock:
             return time.monotonic() < self._window
