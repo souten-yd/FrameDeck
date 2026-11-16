@@ -12,11 +12,12 @@ import logging
 import os
 import secrets
 import socket
+from pathlib import Path
 import threading
 import time
 
 from .cluster_worker import (
-    ReplayGuard, signed_headers, validate_secret, validate_worker_url,
+    ClusterConfigError, ReplayGuard, signed_headers, validate_secret, validate_worker_url,
     worker_secret,
 )
 
@@ -70,11 +71,86 @@ def make_beacon(secret: str, port: int, *, now: int | None = None,
 class LanDiscovery:
     """Accept only pre-authorized matching beacons and avoid repeated NAS writes."""
 
-    def __init__(self, controller) -> None:
+    def __init__(self, controller, config_dir: Path) -> None:
         self.controller = controller
+        self._file = config_dir / "cluster-discovery.json"
+        self._lock = threading.RLock()
+        self._secret: str | None = None
+        self._load()
         self._stop = threading.Event()
         self._guard = ReplayGuard()
         self._threads: list[threading.Thread] = []
+
+    def _load(self) -> None:
+        if not self._file.exists():
+            return
+        try:
+            if self._file.is_symlink() or self._file.stat().st_mode & 0o077:
+                raise ClusterConfigError("insecure discovery configuration")
+            if self._file.stat().st_size > 1024:
+                raise ClusterConfigError("discovery config too large")
+            value = json.loads(self._file.read_text(encoding="utf-8"))
+            self._secret = validate_secret(value["secret"])
+        except (ValueError, TypeError, KeyError, OSError):
+            logger.warning("Invalid LAN discovery config; automatic pairing disabled")
+
+    def discovery_secret(self) -> str | None:
+        with self._lock:
+            return self._secret
+
+    def enabled(self) -> bool:
+        return self.discovery_secret() is not None
+
+    def enable(self) -> str:
+        """Provision a key once. Return it only in this admin-only mutation."""
+        with self._lock:
+            if self._secret:
+                return self._secret
+            with self.controller._lock:
+                secret = (self.controller._peer or {}).get("secret") or secrets.token_hex(32)
+            self._file.parent.mkdir(parents=True, exist_ok=True)
+            temp = self._file.with_name(self._file.name + "." + secrets.token_hex(8) + ".tmp")
+            try:
+                fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(json.dumps({"secret": secret}).encode("ascii"))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp, self._file)
+                self.controller._sync_config_dir()
+            finally:
+                temp.unlink(missing_ok=True)
+            self._secret = secret
+            return secret
+
+    def disable(self) -> None:
+        with self._lock:
+            self._file.unlink(missing_ok=True)
+            self._secret = None
+            self.controller._sync_config_dir()
+
+    def accept_discovered_worker(self, url: str, secret: str) -> bool:
+        try:
+            url = validate_worker_url(url)
+            secret = validate_secret(secret)
+        except ClusterConfigError:
+            return False
+        with self._lock:
+            if self._secret != secret:
+                return False
+            with self.controller._lock:
+                peer = self.controller._peer
+                if peer is not None and peer["secret"] != secret:
+                    return False
+                if peer is not None and peer["url"] == url:
+                    return True  # recurring beacons never write to disk
+                try:
+                    self.controller.configure(url, secret)
+                except (ValueError, OSError) as exc:
+                    logger.warning("Verified LAN discovery was not stored: %s",
+                                   type(exc).__name__)
+                    return False
+        return True
 
     def start(self) -> None:
         # Each job idles without network work if its corresponding mode is off.
@@ -97,7 +173,7 @@ class LanDiscovery:
         Called from the bounded UDP listener; contains no disk writes for
         repeated beacons from the same registered address.
         """
-        secret = self.controller.discovery_secret()
+        secret = self.discovery_secret()
         if secret is None or not isinstance(packet, bytes) or len(packet) > _MAX_FRAME_BYTES:
             return False
         try:
@@ -122,20 +198,20 @@ class LanDiscovery:
             ):
                 return False
             url = validate_worker_url(f"http://{source_ip}:{port}")
-            return self.controller.accept_discovered_worker(url, secret)
+            return self.accept_discovered_worker(url, secret)
         except (ValueError, KeyError, TypeError, OverflowError):
             return False
 
     def _listen(self) -> None:
         while not self._stop.is_set():
-            if self.controller.discovery_secret() is None:
+            if self.discovery_secret() is None:
                 self._stop.wait(2)
                 continue
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                     sock.bind(("0.0.0.0", DISCOVERY_PORT))
                     sock.settimeout(1.5)
-                    while not self._stop.is_set() and self.controller.discovery_secret():
+                    while not self._stop.is_set() and self.discovery_secret():
                         try:
                             packet, addr = sock.recvfrom(_MAX_FRAME_BYTES + 1)
                         except socket.timeout:
