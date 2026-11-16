@@ -30,8 +30,14 @@ creation timestamp, local day and ISO week.
 - Snapshot taken with Python sqlite3.Connection.backup: it is consistent
   with concurrent SQLite WAL writes. In-memory pending comic progress is
   flushed before the snapshot.
+- The SQLite backup inherits the source's WAL journal mode, so the sealed
+  **copy** is explicitly checkpointed and changed to DELETE journal mode.
+  The finished generation must contain only one framedeck.db and must not
+  contain any -wal/-shm sidecars.
 - SQLite PRAGMA integrity_check runs on the new copy, not the live database.
   Checksums, sizes and required filenames are then verified before publish.
+  Unexpected files or broken generations are rejected, and older verified
+  generations are kept even if a newer one becomes corrupted.
 - Temporary directories are owner-only (0700), files owner-only (0600).
   Files and manifests are fsynced, then the directory is atomically renamed.
   The parent directory is fsynced where the filesystem supports it.
