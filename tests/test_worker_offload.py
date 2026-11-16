@@ -330,3 +330,113 @@ def test_midstream_worker_disconnect_marks_unhealthy(app_env):
     assert asyncio.run(consume()) == [b"fmp4-init"]
     assert response.closed
     assert services.cluster.verified_peer() is None
+
+
+def test_two_apps_signed_worker_fmp4_proxy_preserves_a_origin(app_env, monkeypatch, tmp_path):
+    """Exercise the A -> signed B API -> A proxy with independent app services.
+
+    Transport is in-process to avoid requiring Linux/QNAP machines in CI; the
+    end-to-end signed path, source map and client URL all remain real.
+    """
+    from framedeck.config import (
+        Settings, ensure_runtime_directories, resolve_app_paths,
+    )
+    from framedeck.core.services import build_services
+    from framedeck.core.storage import Storage
+    from framedeck import worker_offload
+
+    a, _, _ = app_env
+    source_root = tmp_path / "nas-videos"
+    source_root.mkdir()
+    sample = source_root / "episode.mp4"
+    sample.write_bytes(b"fixture-is-not-a-real-video")
+    a.library.add_root(str(source_root), "video")
+    media_id = item_id_for(str(sample))
+    a.storage.upsert_media_item(
+        media_id, str(sample), "video", None,
+        sample.stat().st_mtime, sample.stat().st_size,
+    )
+
+    b_paths = resolve_app_paths(tmp_path / "Linux_FrameDeck_venv")
+    ensure_runtime_directories(b_paths)
+    b = build_services(Settings(b_paths), Storage(b_paths.database_file), b_paths)
+    monkeypatch.setenv("FRAMEDECK_CLUSTER_WORKER_SECRET", SECRET)
+    monkeypatch.setenv(
+        "FRAMEDECK_CLUSTER_WORKER_MOUNTS_JSON",
+        json.dumps({str(source_root): str(source_root)}),
+    )
+    monkeypatch.setattr(worker_offload, "_is_read_only_mount", lambda _: True)
+
+    import framedeck.web.routers.cluster as cluster_router
+    monkeypatch.setattr(
+        cluster_router, "resolve_ffmpeg",
+        lambda _: SimpleNamespace(available=True),
+    )
+
+    class FakeFmp4:
+        def __init__(self):
+            self.done = False
+            self.closed = False
+        def read(self, n=131072):
+            if self.done:
+                return b""
+            self.done = True
+            return b"linux-encoded-video"
+        def close(self):
+            self.closed = True
+
+    created = []
+    def worker_encode(source, start, **kwargs):
+        assert source == str(sample)
+        assert start == 5.0
+        stream = FakeFmp4()
+        created.append(stream)
+        return stream
+    monkeypatch.setattr(b.transcode, "open_fmp4", worker_encode)
+    b_client = TestClient(create_app(b))
+
+    a.cluster.configure(B_URL, SECRET)
+    with a.cluster._lock:
+        a.cluster._last_seen = time.time()
+        a.cluster._capabilities = {
+            "protocol_version": 1, "remote_fmp4": True,
+            "transcode_available": True,
+            "source_roots": [root_fingerprint(str(source_root))],
+        }
+    a.settings.set("cluster_offload_enabled", True)
+
+    class HttpResponse:
+        def __init__(self, result):
+            self.status = result.status_code
+            self.headers = result.headers
+            self._content = result.content
+            self._offset = 0
+        def read(self, count):
+            part = self._content[self._offset:self._offset + count]
+            self._offset += len(part)
+            return part
+        read1 = read
+        def close(self):
+            pass
+
+    class LocalTransport:
+        def open(self, req, timeout):
+            from urllib.parse import urlsplit
+            assert req.full_url.startswith(B_URL + WORKER_FMP4_PATH)
+            parsed = urlsplit(req.full_url)
+            target = parsed.path + ("?" + parsed.query if parsed.query else "")
+            headers = {k: v for k, v in req.header_items()}
+            result = b_client.get(target, headers=headers)
+            return HttpResponse(result)
+
+    monkeypatch.setattr(worker_offload, "_secure_opener", lambda: LocalTransport())
+    a_client = TestClient(create_app(a))
+    result = a_client.get(
+        f"/api/videos/{media_id}/stream-transcode?start=5&session=e2e-1"
+    )
+    assert result.status_code == 200
+    assert result.content == b"linux-encoded-video"
+    assert result.headers["x-framedeck-processing-node"] == "linux-worker"
+    assert len(created) == 1
+    assert created[0].closed
+    b.shutdown()
