@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,6 +25,38 @@ STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 _LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+
+
+class PinLoginLimiter:
+    """Bounded memory-only failure guard, never writing PIN attempts to NAS."""
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._failures: dict[str, tuple[int, float]] = {}
+
+    def allow(self, ip: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            count, until = self._failures.get(ip, (0, 0.0))
+            if now >= until:
+                self._failures.pop(ip, None)
+                return True
+            return count < 5
+
+    def failed(self, ip: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            count, until = self._failures.get(ip, (0, 0.0))
+            if now >= until:
+                count, until = 0, now + 60
+            if len(self._failures) >= 256 and ip not in self._failures:
+                self._failures.pop(next(iter(self._failures)))
+            self._failures[ip] = (min(5, count + 1), until)
+
+    def success(self, ip: str) -> None:
+        with self._lock:
+            self._failures.pop(ip, None)
+
 
 
 def create_app(services: Services) -> FastAPI:
@@ -48,6 +82,7 @@ def create_app(services: Services) -> FastAPI:
     app.state.services = services
     app.state.event_bus = event_bus
     app.state.cluster_guard = ReplayGuard()
+    app.state.pin_login_limiter = PinLoginLimiter()
 
     @app.middleware("http")
     async def pin_guard(request: Request, call_next):
@@ -56,7 +91,13 @@ def create_app(services: Services) -> FastAPI:
         # also protects its browser UI with a PIN. The worker endpoint itself
         # rejects all unsigned requests.
         if request.url.path in (CAPABILITY_PATH, WORKER_FMP4_PATH,
-                                 WORKER_HLS_START, WORKER_HLS_FILE):
+                                 WORKER_HLS_START, WORKER_HLS_FILE,
+                                 "/api/auth/pin") or (
+                request.url.path in ("/", "/sw.js", "/manifest.webmanifest")
+                or request.url.path.startswith("/static/")
+        ):
+            # UI assets contain no private data; serve them so an unpaired
+            # browser can display the PIN login form. API/media stays locked.
             return await call_next(request)
         pin = services.settings.get("web_pin", "")
         if pin:
