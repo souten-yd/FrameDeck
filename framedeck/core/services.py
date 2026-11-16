@@ -15,6 +15,7 @@ from ..comic.sequence_builder import SequenceBuilder
 from ..comic.source import ComicSourceResolver
 from ..config import AppPaths, Settings
 from ..runtime_profile import qnap_lite
+from ..cluster_worker import ClusterController
 from ..video.playback_service import VideoPlaybackService
 from ..video.transcode import TranscodeService
 from ..video.capabilities import EncoderCapabilityService
@@ -34,6 +35,7 @@ class Services:
         self.storage = storage
         storage.reading_flush_seconds = float(settings.get("comic_progress_save_seconds", 5))
         self.paths = paths
+        self.cluster = ClusterController(paths.config_dir)
 
         self.rating = RatingService(storage)
         self.library = LibraryService(storage, settings, self.rating)
@@ -155,6 +157,7 @@ class Services:
             logger.exception("ffmpeg検出に失敗しました")
 
     def shutdown(self) -> None:
+        self.cluster.shutdown()
         try:
             self.comic_engine.shutdown()
         except Exception:
