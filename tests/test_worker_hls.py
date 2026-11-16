@@ -251,3 +251,37 @@ def test_two_app_aaac_hls_proxy_and_nas_failback(app_env, tmp_path, monkeypatch)
     assert a_client.get(segment_uri).content == b"nas-aac-data"
     assert a_hls_calls[-1] == (str(source), ["original-aac"], 3.0)
     b.shutdown()
+
+
+def test_qnap_lite_never_offloads_hls_above_local_fallback_cap(
+        app_env, tmp_path, monkeypatch):
+    """B cannot cause an unsafe 1080p job when playback falls back to A."""
+    import framedeck.web.routers.video as video_router
+    services, _, _ = app_env
+    source_root = tmp_path / "ro-nas-source"
+    source_root.mkdir()
+    sample = source_root / "test.mp4"
+    sample.write_bytes(b"video-fixture")
+    services.library.add_root(str(source_root), "video")
+    media_id = item_id_for(str(sample))
+    services.storage.upsert_media_item(
+        media_id, str(sample), "video", None,
+        sample.stat().st_mtime, sample.stat().st_size,
+    )
+    services.settings.set("cluster_offload_enabled", True)
+    monkeypatch.setattr(video_router, "qnap_lite", lambda: True)
+    monkeypatch.setattr(services.video_playback, "get_info",
+                        lambda *args: SimpleNamespace(height=1080))
+    monkeypatch.setattr(video_router, "hls_eligible", lambda *args: True)
+    observed = []
+    def fake_start(*args):
+        observed.append(args[3])
+        return "a" * 64
+    monkeypatch.setattr(video_router, "start_remote_hls", fake_start)
+    response = TestClient(create_app(services)).get(
+        f"/api/videos/{media_id}/hls/master.m3u8?profile=1080p&session=qnap-test",
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert observed == [["720p"]]
+
