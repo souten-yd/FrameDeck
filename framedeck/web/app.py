@@ -38,6 +38,7 @@ def create_app(services: Services) -> FastAPI:
         except (RuntimeError, ValueError):  # pragma: no cover
             pass
         services.cluster.start()
+        services.discovery.start()
         yield
         services.shutdown()
 
