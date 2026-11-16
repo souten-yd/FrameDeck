@@ -40,7 +40,9 @@ class WorkerOffloadError(Exception):
     """Unavailable or unsafe worker; do not expose detailed network errors."""
 
 
-def offload_enabled() -> bool:
+def offload_enabled(settings=None) -> bool:
+    if settings is not None and settings.get("cluster_offload_enabled", False) is True:
+        return True
     return os.environ.get(_ENABLED_ENV, "").strip().lower() in {
         "1", "true", "yes", "on",
     }
@@ -143,8 +145,8 @@ def owner_source_ref(video_path: str, library_roots: list[dict]) -> tuple[str, s
     return best
 
 
-def remote_eligible(controller, source_root: str) -> bool:
-    if not offload_enabled():
+def remote_eligible(controller, source_root: str, settings=None) -> bool:
+    if not offload_enabled(settings):
         return False
     caps = controller.status().get("capabilities") or {}
     return bool(
@@ -156,7 +158,7 @@ def remote_eligible(controller, source_root: str) -> bool:
 
 
 def open_remote_fmp4(controller, source_root: str, relative_path: str,
-                     *, start: float = 0.0,
+                     *, settings=None, start: float = 0.0,
                      max_height: int | None = None,
                      max_width: int | None = None,
                      session: str = "",
@@ -169,7 +171,7 @@ def open_remote_fmp4(controller, source_root: str, relative_path: str,
     Data streaming itself is chunked and never copied wholesale into RAM.
     """
     peer = controller.verified_peer()
-    if not peer or not remote_eligible(controller, source_root):
+    if not peer or not remote_eligible(controller, source_root, settings):
         raise WorkerOffloadError("worker is offline or unsupported")
     params = {
         "source_root": source_root,
