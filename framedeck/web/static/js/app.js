@@ -3531,6 +3531,7 @@ async function openSettings() {
       });
       workerSecret.value = "";
       toast("ワーカーを登録しました");
+      await api("/api/cluster/probe", { method: "POST" });
       await refreshWorkerStatus();
     } catch (e) {
       toast(e.message, true);
@@ -3548,7 +3549,12 @@ async function openSettings() {
       toast("ワーカーの登録を解除しました");
     } catch (e) { toast(e.message, true); }
   };
-  workerRefresh.onclick = refreshWorkerStatus;
+  workerRefresh.onclick = async () => {
+    try {
+      await api("/api/cluster/probe", { method: "POST" });
+      await refreshWorkerStatus();
+    } catch (e) { toast(e.message, true); }
+  };
   refreshWorkerStatus();
 
   const note = document.createElement("div");
