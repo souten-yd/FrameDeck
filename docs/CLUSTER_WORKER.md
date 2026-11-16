@@ -59,7 +59,9 @@ operations, or second metadata writer are introduced.
    framedeck.db, under /share/<volume>/.framedeck/data on QNAP.
 2. Mount each corresponding QNAP share on Linux B, e.g. /mnt/qnap-video.
    Use a dedicated account without write/delete permission. Verify that
-   normal files can be read and that a test write fails.
+   normal files can be read and that a test write fails. The worker checks
+   the Linux mount's OS-level read-only flag; writable mounts are rejected
+   even if directory permissions appear restrictive.
 3. Configure Linux B with both service environment variables. The secret is
    the same 64-hex-value used during Stage 1 pairing, and the map key is the
    **exact** registered QNAP library root. Example:
@@ -85,8 +87,10 @@ operations, or second metadata writer are introduced.
 6. Stop B during playback. The A-side worker connection fails and is placed
    into a short cooldown; existing browser recovery retries the request from
    the most recently known video position and routes it to A's local FFmpeg.
-   A short pause or buffering interval is allowed. The QNAP CPU/resolution
-   limits still apply whenever QNAP performs the actual conversion.
+   A short pause or buffering interval is allowed. Retry requests may set
+   force_local=1 on A's fMP4 route, preventing a repeated attempt to use
+   an unreliable worker for that playback. The QNAP CPU/resolution limits
+   still apply whenever QNAP performs the actual conversion.
 
 ### Limits and data safety
 
