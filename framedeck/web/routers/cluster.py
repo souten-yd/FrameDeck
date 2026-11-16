@@ -345,6 +345,17 @@ def pairing_join(request: Request, data: dict = Body(...),
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.post("/pairing/revoke")
+def pairing_revoke(request: Request,
+                   services: Services = Depends(get_services)) -> dict:
+    """Admin explicitly resets Linux-only trust for a new bilateral pairing."""
+    _require_pairing_permission(request, services)
+    try:
+        return services.pairing.reset_linux()
+    except (PairingError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/pairing/approve")
 def pairing_approve(request: Request,
                     services: Services = Depends(get_services)) -> dict:
