@@ -35,7 +35,7 @@ class Services:
         self.storage = storage
         storage.reading_flush_seconds = float(settings.get("comic_progress_save_seconds", 5))
         self.paths = paths
-        self.backups = BackupService(paths)
+        self.backups = BackupService(paths, storage)
 
         self.rating = RatingService(storage)
         self.library = LibraryService(storage, settings, self.rating)
