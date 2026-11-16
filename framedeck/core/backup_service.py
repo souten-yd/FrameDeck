@@ -189,7 +189,14 @@ class BackupService:
             os.replace(temp, final)
             temp = None
             _sync_directory(self.root)
-            self.prune()
+            # The new backup is already valid and published. Retention is
+            # best-effort cleanup: filesystem errors must not make the UI
+            # falsely report that snapshot creation failed.
+            try:
+                self.prune()
+            except (OSError, BackupError, ValueError) as exc:
+                logger.warning("Backup %s saved; old-generation pruning failed (%s)",
+                               name, type(exc).__name__)
             return {"name": name, "created_at": metadata["created_at"],
                     "local_date": metadata["local_date"],
                     "size_bytes": sum(x["size"] for x in metadata["files"].values())}
