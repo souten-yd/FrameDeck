@@ -3570,24 +3570,6 @@ async function openSettings() {
   autoDisable.className = "modal-btn";
   autoDisable.textContent = "自動検出を無効化";
   autoDisable.type = "button";
-  const autoKeyBox = document.createElement("div");
-  autoKeyBox.hidden = true;
-  const autoKeyHint = document.createElement("p");
-  autoKeyHint.className = "hint";
-  autoKeyHint.textContent = "この共有キーをLinux側の FRAMEDECK_CLUSTER_WORKER_SECRET に一度設定してください。安全な管理経路で転送し、端末に残さないでください。";
-  const autoKey = document.createElement("input");
-  autoKey.readOnly = true;
-  autoKey.style.width = "100%";
-  autoKey.autocomplete = "off";
-  const autoCopy = document.createElement("button");
-  autoCopy.className = "modal-btn";
-  autoCopy.type = "button";
-  autoCopy.textContent = "共有キーをコピー";
-  autoCopy.onclick = async () => {
-    if (!autoKey.value) return;
-    try { await navigator.clipboard.writeText(autoKey.value); toast("共有キーをコピーしました"); }
-    catch (e) { toast("コピーできませんでした", true); }
-  };
   const pinKeyBox = document.createElement("div");
   pinKeyBox.hidden = true;
   const pinKeyHint = document.createElement("p");
@@ -3608,13 +3590,12 @@ async function openSettings() {
     catch (e) { toast("コピーに失敗しました", true); }
   };
   pinKeyBox.append(pinKeyHint, generatedPin, copyPin);
-  autoKeyBox.append(autoKeyHint, autoKey, autoCopy);
   const autoButtons = document.createElement("div");
   autoButtons.style.display = "flex";
   autoButtons.style.flexWrap = "wrap";
   autoButtons.style.gap = "8px";
   autoButtons.append(autoEnable, autoDisable);
-  autoBox.append(autoHint, autoButtons, pinKeyBox, autoKeyBox);
+  autoBox.append(autoHint, autoButtons, pinKeyBox);
   clusterSection.appendChild(autoBox);
   // The initial pair is approved in BOTH browsers. Shared HMAC keys
   // never appear in the DOM, URL, localStorage or a user-visible field.
@@ -3788,25 +3769,6 @@ async function openSettings() {
     } catch (e) { toast(e.message, true); }
     finally { nasPairFinish.disabled = !pairingCheckbox.checked; }
   };
-  let connectionPolling = false;
-  async function watchAutoWorker() {
-    if (connectionPolling) return;
-    connectionPolling = true;
-    try {
-      for (let poll = 0; poll < 9; poll++) {
-        await new Promise((resolve) => setTimeout(resolve, 8000));
-        // If settings dialog has been closed, do not poll a dead UI.
-        if (!clusterSection.isConnected) break;
-        const status = await refreshWorkerStatus();
-        if (status?.peer?.online) { toast("Linuxワーカーに接続できました"); break; }
-      }
-    } catch (e) {
-      // Network loss leaves the NAS standalone, not an endless retry loop.
-    } finally {
-      connectionPolling = false;
-    }
-  }
-
   autoEnable.onclick = async () => {
     autoEnable.disabled = true;
     try {
@@ -3848,8 +3810,6 @@ async function openSettings() {
   autoDisable.onclick = async () => {
     try {
       await api("/api/cluster/discovery", { method: "DELETE" });
-      autoKey.value = "";
-      autoKeyBox.hidden = true;
       await refreshWorkerStatus();
       toast("LAN自動検出を停止しました");
     } catch (e) { toast(e.message, true); }
