@@ -3288,6 +3288,9 @@ async function openSettings() {
   videoHead.style.gridColumn = "1 / -1";
   videoHead.style.margin = "14px 0 0";
   grid.appendChild(videoHead);
+  settingRow(grid, "Linux高速変換を使用", makeSelect("cluster_offload_enabled", [
+    ["false", "無効（QNAPのみ）"], ["true", "有効（Linuxが利用可能なら使用）"],
+  ]), "Linux側にQNAPの動画フォルダを読み取り専用マウントして登録した場合、fMP4変換だけを委譲します。HLS/iPadは現時点でQNAPのままです。");
   settingRow(grid, "動画軽量配信", makeSelect("video_stream_mode", [
     ["original", "無効"], ["auto", "自動"], ["transcode", "常に有効"],
   ]));
@@ -3455,12 +3458,12 @@ async function openSettings() {
   const clusterSection = document.createElement("section");
   clusterSection.className = "library-root-section";
   const clusterHeading = document.createElement("h3");
-  clusterHeading.textContent = "Linux高速変換サーバー（準備段階）";
+  clusterHeading.textContent = "Linux高速変換サーバー（fMP4試験運用）";
   clusterHeading.style.margin = "16px 0 8px";
   clusterSection.appendChild(clusterHeading);
   const clusterHint = document.createElement("p");
   clusterHint.className = "hint";
-  clusterHint.textContent = "接続認証・稼働確認のみ対応。動画の変換委譲は次の更新で有効になります。QNAPは引き続きすべての動画を配信します。";
+  clusterHint.textContent = "読み取り専用でQNAPをマウントしたLinuxへ、fMP4変換のみを委譲できます。iPadのHLS・元動画の直接Range配信はQNAPのままです。";
   clusterSection.appendChild(clusterHint);
   const clusterStatus = document.createElement("p");
   clusterStatus.className = "hint";
@@ -3515,7 +3518,7 @@ async function openSettings() {
       clusterStatus.textContent = !peer.configured
         ? "未登録（QNAP単体で動作中）"
         : peer.online
-          ? "接続済み: " + peer.url + " / FFmpeg: " + (peer.capabilities?.transcode_available ? "利用可" : "利用不可")
+          ? "接続済み: " + peer.url + " / FFmpeg: " + (peer.capabilities?.transcode_available ? "利用可" : "利用不可") + " / fMP4委譲: " + (peer.offload_active ? "有効" : "無効・待機中")
           : "登録済み・オフライン: " + peer.url + "（Linux停止中もQNAPは利用できます）";
       workerRemove.disabled = !peer.configured;
     } catch (e) {
