@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from ..core.services import Services
 from ..cluster_worker import CAPABILITY_PATH, ReplayGuard
 from ..worker_offload import WORKER_FMP4_PATH
+from ..worker_hls import WORKER_HLS_START, WORKER_HLS_FILE
 from ..runtime_profile import qnap_lite
 from .routers import backups, cluster, comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
@@ -54,7 +55,8 @@ def create_app(services: Services) -> FastAPI:
         # Worker health uses a separate HMAC challenge, even if this host
         # also protects its browser UI with a PIN. The worker endpoint itself
         # rejects all unsigned requests.
-        if request.url.path in (CAPABILITY_PATH, WORKER_FMP4_PATH):
+        if request.url.path in (CAPABILITY_PATH, WORKER_FMP4_PATH,
+                                 WORKER_HLS_START, WORKER_HLS_FILE):
             return await call_next(request)
         pin = services.settings.get("web_pin", "")
         if pin:

@@ -1,4 +1,4 @@
-# FrameDeck LAN Linux worker — Stage 1: authenticated pairing
+# FrameDeck LAN Linux worker — registered worker, fMP4 and optional HLS
 
 Tracking: https://github.com/souten-yd/FrameDeck/issues/62
 
@@ -11,10 +11,13 @@ Tracking: https://github.com/souten-yd/FrameDeck/issues/62
 - Stage 1 implements registration, signed capability checks and health monitoring.
 - Stage 2 adds **opt-in Linux fMP4 transcoding** from an explicitly mapped,
   read-only NAS share. A proxies B's encoded stream, falling back to QNAP.
-  HLS/iPad, comic offload, metadata synchronization and backups remain future work.
+  HLS/iPad worker offload is added in the next stage (see CLUSTER_HLS.md).
+  SQLite backups are implemented in docs/DATA_BACKUPS.md; comic offload,
+  metadata replication, off-NAS backup copy and HLS on-device performance tests remain future work.
 - Both hosts run the **same** FrameDeck codebase. Default is standalone mode.
-  No LAN scanning, WOL, uploads, source sharing, automatic installs,
-  remote execution, or scheduled backups are introduced.
+  No LAN scanning, WOL, uploads, raw source sharing, or automatic installs
+  are introduced. Optional LAN discovery uses authenticated UDP beacons.
+  SQLite backups are independently opt-in and OFF by default.
 
 ## LAN auto-discovery (preferred)
 
@@ -57,8 +60,8 @@ paired worker until explicitly unpaired.
 
 ## First-time configuration
 
-1. Install the same FrameDeck version on A and B. B should have a working
-   local FFmpeg binary; remote transcoding is not yet used.
+1. Install the same FrameDeck version on A and B. B must have working FFmpeg
+   for fMP4/HLS processing. Offload is OFF until explicitly enabled.
 2. On Linux B generate a **64-hex-character shared secret**:
 
        python3 -c 'import secrets; print(secrets.token_hex(32))'
@@ -133,12 +136,13 @@ operations, or second metadata writer are introduced.
 
 ### Limits and data safety
 
-- Only fMP4 conversion is delegated in Stage 2. Browser-compatible original
-  files still use A's direct HTTP Range path. iOS/iPad native HLS, AAC audio
-  conversion, comic pages and HLS segment serving remain on A.
-- Real encode-FPS monitoring and continuous best-node scoring are **not yet
-  implemented**. Stage 2 prefers B if healthy, mapped and enabled. A stable
-  in-progress playback is not moved to B when it comes online.
+- Stage 2 delegates only fMP4; **the later HLS stage** also delegates
+  iOS/iPad native HLS including `original-aac` when enabled, healthy and
+  source is mapped. See CLUSTER_HLS.md. Direct HTTP Range stays on A.
+- HLS stage measures end-to-end segment arrival against segment playback
+  demand and cools down slow workers for new sessions, but this is not an
+  accurate ffmpeg FPS benchmark or a full A-vs-B CPU cost model. Running
+  sessions are not moved just because the measured rate changes.
 - HMAC-SHA256 authenticates each worker request and the response handshake,
   with bounded nonce/replay protection. This does **not** provide per-byte
   end-to-end content integrity or confidentiality on plaintext HTTP.
@@ -150,10 +154,9 @@ operations, or second metadata writer are introduced.
 - Neither B nor its filesystem mount may modify A's original files or SQLite.
   Persistent playback state still belongs to A. If A loses power, B cannot
   access any originals that existed **only** on A.
-- Backup and metadata synchronization are not present in Stage 2. Follow-up
-  work must provide SQLite online snapshots, integrity checks, safe restore,
-  and initially **7 daily + 4 weekly generations** before claiming data
-  corruption protection.
+- QNAP metadata backup snapshots (7 daily + 4 weekly and two latest
+  verified copies) are implemented separately. Revision-based cross-node
+  state synchronization and off-NAS backup replication are not yet present.
 - Do not merge/release Stage 2 until the new worker tests and existing API,
   direct Range, HLS, iPad AAC and QNAP constraints pass. Real QNAP/Linux/iPad
   testing remains separate from local synthetic tests.
@@ -183,15 +186,15 @@ operations, or second metadata writer are introduced.
 
 ## Subsequent PRs required to deliver the approved feature
 
-1. **Complete processing offload**: Stage 2 adds opt-in fMP4 only. Add
-   HLS/iPad audio offload, actual speed measurement, and better node scoring.
+1. **Complete processing offload**: HLS/iPad AAC worker delegation and
+   segment-arrival speed monitoring are implemented. Still needed: hardware
+   encode-FPS benchmarks, CPU/network cost comparison, and device validation.
 2. **Automatic failback**: recover worker interruption on A with the
    video position or comic page retained as far as possible. A short pause
    is acceptable. B cannot read originals that exist only on a dead A.
-3. **State and safety**: authoritative A metadata, revisioned idempotent
-   updates, conflict handling, bounded write buffering, corruption-resistant
-   SQLite online snapshots and recovery. Proposed initial retention is
-   **7 daily + 4 weekly** backups, verified before considered usable.
+3. **State and safety**: local A-authoritative SQLite online generations
+   are implemented. Cross-node revisioned, idempotent update replay, offline
+   event queue and conflict detection remain future work.
 4. **Optional replication**: only if explicitly enabled, limited in space
    and bandwidth, verified before publishing files, with deletion safety.
    A outage recovery for new browser sessions needs a separate entrypoint.

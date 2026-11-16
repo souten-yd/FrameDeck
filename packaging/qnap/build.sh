@@ -45,7 +45,17 @@ find "$WORK_DIR/env/x86_64/app" -type d -name __pycache__ -prune -exec rm -rf {}
 # Portable CPython: the NAS does not need Python, pip, Entware, or a compiler.
 # Baseline x86_64 (not x86_64_v2/v3) maximizes compatibility with the J3455.
 PY_META="$WORK_DIR/python-release.json"
-curl -fsSL "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest" -o "$PY_META"
+# Shared CI runner IPs can hit GitHub's unauthenticated API rate limit
+# (HTTP 403) despite publicly available release assets. A workflow token is
+# used ONLY for this metadata request; local/manual builds still work without it.
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+    curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+        -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest" \
+        -o "$PY_META"
+else
+    curl -fsSL "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest" -o "$PY_META"
+fi
 PY_URL="$(python3 - "$PY_META" "$PYTHON_SERIES" <<'PY'
 import json, re, sys
 meta = json.load(open(sys.argv[1], encoding='utf-8'))
