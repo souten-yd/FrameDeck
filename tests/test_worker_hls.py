@@ -218,6 +218,8 @@ def test_two_app_aaac_hls_proxy_and_nas_failback(app_env, tmp_path, monkeypatch)
             "source_roots": [root_fingerprint(str(root))],
         }
     a.settings.set("cluster_offload_enabled", True)
+    monkeypatch.setattr(a.video_playback, "get_info",
+                        lambda *args: SimpleNamespace(height=1080))
     a_client = TestClient(create_app(a))
     master = a_client.get(
         f"/api/videos/{media_id}/hls/master.m3u8?profile=original-aac&start=3&session=tab",
