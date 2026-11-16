@@ -228,6 +228,38 @@ def test_saved_linux_worker_secret_reloaded_after_reboot(pairing_pair):
     reloaded.shutdown()
 
 
+def test_web_revocation_clears_linux_saved_secret_without_exposing_key(pairing_pair):
+    nas, worker, _, nas_discovery, _, linux_dir = pairing_pair
+    _open_and_join(nas, worker)
+    worker.approve_worker()
+    nas.finish()
+    assert worker_secret() == nas_discovery.secret
+    assert worker.reset_linux()["revoked"] is True
+    assert worker_secret() is None
+    assert not (linux_dir / "cluster-worker-secret.json").exists()
+    assert worker.arm()["armed"] is True
+
+
+def test_revoke_refuses_to_override_externally_managed_secret(pairing_pair, monkeypatch):
+    nas, worker, *_ = pairing_pair
+    monkeypatch.setenv("FRAMEDECK_CLUSTER_WORKER_SECRET", "7a" * 32)
+    with pytest.raises(PairingError, match="externally managed"):
+        worker.reset_linux()
+    assert worker_secret() == "7a" * 32
+
+
+def test_untrusted_pairing_origin_does_not_activate_worker(app_env):
+    services, _, _ = app_env
+    client = TestClient(create_app(services))
+    response = client.get("/api/cluster/pairing/status")
+    assert response.status_code == 200
+    assert "secret" not in response.text
+    assert client.post(
+        "/api/cluster/pairing/revoke",
+        headers={"sec-fetch-site": "cross-site"},
+    ).status_code == 403
+
+
 def test_pairing_endpoints_fail_closed_when_not_armed(app_env):
     services, _, _ = app_env
     client = TestClient(create_app(services))
