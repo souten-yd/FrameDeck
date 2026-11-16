@@ -3564,7 +3564,7 @@ async function openSettings() {
   autoHint.textContent = "QNAPとLinuxのブラウザだけで安全に登録します。認証情報は内部で生成・保存され、ユーザーによるキーのコピーや環境変数編集は不要です。初回は両画面の番号を照合して承認してください。";
   const autoEnable = document.createElement("button");
   autoEnable.className = "modal-btn primary";
-  autoEnable.textContent = "Linuxとの接続を開始";
+  autoEnable.textContent = "安全にLinuxを登録";
   autoEnable.type = "button";
   const autoDisable = document.createElement("button");
   autoDisable.className = "modal-btn";
@@ -3665,8 +3665,8 @@ async function openSettings() {
   async function refreshPairingStatus() {
     const info = await api("/api/cluster/pairing/status");
     const linux = info.role === "linux";
-    pairingPanel.hidden = !info.available;
-    linuxPairStart.hidden = !linux;
+    pairingPanel.hidden = false;
+    linuxPairStart.hidden = !linux || !info.available;
     if (!info.available) {
       pairingStatusText.textContent = "このサーバーにペアリング用の暗号化モジュールがありません";
       return info;
@@ -3871,7 +3871,11 @@ async function openSettings() {
   workerRefresh.textContent = "状態を更新";
   workerButtons.append(workerPair, workerRemove, workerRefresh);
   clusterForm.append(workerUrl, workerSecret, workerButtons);
-  clusterSection.appendChild(clusterForm);
+  const manualPairDetails = document.createElement("details");
+  const manualPairSummary = document.createElement("summary");
+  manualPairSummary.textContent = "旧方式の手動登録（通常は不要）";
+  manualPairDetails.append(manualPairSummary, clusterForm);
+  clusterSection.appendChild(manualPairDetails);
   wrap.appendChild(clusterSection);
 
   async function refreshWorkerStatus() {
@@ -3884,17 +3888,18 @@ async function openSettings() {
           ? "Linuxワーカー: 認証済み、QNAPの検出待ち"
           : "Linuxワーカー: Web画面から初回登録できます";
         autoBox.style.display = "none";
-        clusterForm.style.display = "none";
+        manualPairDetails.hidden = true;
         pairingPanel.hidden = false;
         refreshPairingStatus().then((info) => { if (info.open) watchPairingStatus(); })
           .catch((e) => { pairingStatusText.textContent = e.message; });
         return result;
       }
       pairingPanel.hidden = false;
+      manualPairDetails.hidden = false;
       workerUrl.value = workerUrl.value || peer.url || "";
       autoEnable.disabled = false;
       autoEnable.textContent = peer.configured ? "接続状態を再確認"
-        : "Linuxとの接続を開始";
+        : "安全にLinuxを登録";
       autoDisable.disabled = !result.auto_discovery_enabled;
       const hlsPerf = result.hls_performance || {};
       const workerHls = peer.capabilities?.remote_hls === true;
@@ -3912,6 +3917,9 @@ async function openSettings() {
           ? "接続済み: " + peer.url + " / FFmpeg: " + (peer.capabilities?.transcode_available ? "利用可" : "利用不可") + " / fMP4委譲: " + (peer.offload_active ? "有効" : "無効・待機中") + hlsInfo + rateInfo + cooldownInfo
           : "登録済み・オフライン: " + peer.url + "（Linux停止中もQNAPは利用できます）";
       workerRemove.disabled = !peer.configured;
+      refreshPairingStatus()
+        .then((info) => { if (info.open) watchPairingStatus(); })
+        .catch(() => {});
       return result;
     } catch (e) {
       clusterStatus.textContent = "状態を取得できません: " + e.message;
