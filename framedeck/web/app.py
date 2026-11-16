@@ -12,8 +12,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..core.services import Services
+from ..cluster_worker import ReplayGuard
 from ..runtime_profile import qnap_lite
-from .routers import comic, library, system, video, volume_view
+from .routers import cluster, comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -35,12 +36,14 @@ def create_app(services: Services) -> FastAPI:
             anyio.to_thread.current_default_thread_limiter().total_tokens = 8 if qnap_lite() else 96
         except (RuntimeError, ValueError):  # pragma: no cover
             pass
+        services.cluster.start()
         yield
         services.shutdown()
 
     app = FastAPI(title="FrameDeck", lifespan=lifespan)
     app.state.services = services
     app.state.event_bus = event_bus
+    app.state.cluster_guard = ReplayGuard()
 
     @app.middleware("http")
     async def pin_guard(request: Request, call_next):
@@ -67,6 +70,7 @@ def create_app(services: Services) -> FastAPI:
         return response
 
     app.include_router(system.router)
+    app.include_router(cluster.router)
     app.include_router(library.router)
     app.include_router(volume_view.router)
     app.include_router(comic.router)
