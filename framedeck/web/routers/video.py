@@ -250,7 +250,9 @@ async def hls_master(media_id: str,
     # provided B has explicitly mapped the source read-only and was paired.
     # Never delegate direct Range playback, and avoid using a slow B for
     # new sessions after measured segment-delivery failures.
-    if services.remote_hls.eligible() and offload_enabled(services.settings):
+    if (getattr(services, "remote_hls", None) is not None and
+            services.remote_hls.eligible() and
+            offload_enabled(getattr(services, "settings", None))):
         try:
             source_root, relative = owner_source_ref(
                 item.path, services.library.list_roots(),
