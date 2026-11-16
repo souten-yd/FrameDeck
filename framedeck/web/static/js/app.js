@@ -3631,6 +3631,11 @@ async function openSettings() {
   linuxPairStart.className = "modal-btn primary";
   linuxPairStart.textContent = "このLinuxを接続待機にする";
   linuxPairStart.type = "button";
+  const linuxPairRevoke = document.createElement("button");
+  linuxPairRevoke.className = "modal-btn danger";
+  linuxPairRevoke.type = "button";
+  linuxPairRevoke.textContent = "Linuxの登録を解除・再設定";
+  linuxPairRevoke.hidden = true;
   const pairingCandidates = document.createElement("div");
   pairingCandidates.style.display = "grid";
   pairingCandidates.style.gap = "5px";
@@ -3657,8 +3662,8 @@ async function openSettings() {
   nasPairFinish.type = "button";
   nasPairFinish.hidden = true;
   pairingPanel.append(pairingExplanation, pairingStatusText, linuxPairStart,
-                      pairingCandidates, pairingCode, pairingCheckboxLabel,
-                      linuxPairApprove, nasPairFinish);
+                      linuxPairRevoke, pairingCandidates, pairingCode,
+                      pairingCheckboxLabel, linuxPairApprove, nasPairFinish);
   clusterSection.appendChild(pairingPanel);
   let pairingPollActive = false;
   let pairingPreviousCode = "";
@@ -3678,6 +3683,7 @@ async function openSettings() {
                     : "Linuxのブラウザで「接続待機」を押してください（共有キーは不要）。";
       if (info.request_from) pairingStatusText.textContent += " / 申請元: " + info.request_from;
       linuxPairStart.disabled = info.open || info.worker_key_configured;
+      linuxPairRevoke.hidden = !info.worker_key_configured;
     } else {
       pairingStatusText.textContent = info.open
         ? "Linux候補を検出中（残り" + info.expires_in + "秒）。Linux側でも接続待機を押してください。"
@@ -3752,6 +3758,16 @@ async function openSettings() {
     } catch (e) {
       toast(e.message + "（Linux本体の localhost で開くか、Web PINでログインしてください）", true);
     } finally { linuxPairStart.disabled = false; }
+  };
+  linuxPairRevoke.onclick = async () => {
+    if (!confirm("Linuxの認証設定を解除して再登録しますか？ 既存のQNAPとの接続は切れます。")) return;
+    try {
+      await api("/api/cluster/pairing/revoke", { method: "POST" });
+      pairingCheckbox.checked = false;
+      pairingPreviousCode = "";
+      await refreshPairingStatus();
+      toast("Linux側の登録を解除しました。QNAP側も旧登録を解除してから再設定してください");
+    } catch (e) { toast(e.message, true); }
   };
   linuxPairApprove.onclick = async () => {
     if (!pairingCheckbox.checked) return;
