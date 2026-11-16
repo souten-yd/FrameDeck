@@ -120,6 +120,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "library_start_folder": "last",          # last(前回のフォルダ) | root
     # 削除
     "delete_to_trash": True,
+    # Data safety (off by default until reviewed and enabled)
+    "backup_enabled": False,
     # Web
     "web_pin": "",
 }
