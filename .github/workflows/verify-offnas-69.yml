@@ -1,4 +1,5 @@
 name: FrameDeck PR69 OFF-NAS one-shot safety validation
+# Repeat after verified pre-update snapshot safety tests and docs
 
 on:
   push:
