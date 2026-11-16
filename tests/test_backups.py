@@ -70,6 +70,17 @@ def test_checksum_prevents_using_corrupted_generation(app_env):
     assert services.storage.get_state("anything", None) is None
 
 
+def test_sealed_snapshot_rejects_untracked_sqlite_sidecars(app_env):
+    services, paths, _ = app_env
+    name = services.backups.create_snapshot()["name"]
+    folder = paths.base / "backups" / name
+    (folder / "framedeck.db-wal").write_bytes(b"untracked")
+    with pytest.raises(BackupError, match="Unexpected files"):
+        services.backups.verify(name)
+    # Never modify the source or automatically restore this broken backup.
+    assert services.storage.get_state("unrelated", None) is None
+
+
 def test_invalid_name_and_malformed_manifest_rejected(app_env):
     services, paths, _ = app_env
     result = services.backups.create_snapshot()
