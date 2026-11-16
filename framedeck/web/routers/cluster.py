@@ -77,6 +77,25 @@ def cluster_status(services: Services = Depends(get_services)) -> dict:
     }
 
 
+@router.post("/discovery/enable")
+def enable_auto_discovery(request: Request,
+                          services: Services = Depends(get_services)) -> dict:
+    """Enable trusted LAN discovery and reveal the shared key ONCE to admin."""
+    _require_pairing_permission(request, services)
+    already_enabled = services.discovery.enabled()
+    secret = services.discovery.enable() if not already_enabled else None
+    return {"enabled": True, "secret": secret,
+            "udp_port": 31964}
+
+
+@router.delete("/discovery")
+def disable_auto_discovery(request: Request,
+                           services: Services = Depends(get_services)) -> dict:
+    _require_pairing_permission(request, services)
+    services.discovery.disable()
+    return {"enabled": False}
+
+
 @router.put("/peer")
 def set_cluster_peer(request: Request, payload: dict = Body(...),
                      services: Services = Depends(get_services)) -> dict:
@@ -92,6 +111,7 @@ def set_cluster_peer(request: Request, payload: dict = Body(...),
 def remove_cluster_peer(request: Request,
                         services: Services = Depends(get_services)) -> dict:
     _require_pairing_permission(request, services)
+    services.discovery.disable()
     services.cluster.clear()
     return services.cluster.status()
 
