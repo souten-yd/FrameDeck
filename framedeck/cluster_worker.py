@@ -25,7 +25,7 @@ PROTOCOL_VERSION = 1
 CAPABILITY_PATH = "/api/cluster/worker/capabilities"
 POLL_INTERVAL_SECONDS = 10
 MAX_STALE_SECONDS = 35
-_TOKEN_PATTERN = re.compile(r"^[a-fA-F0-9]{64,128}$")
+_TOKEN_PATTERN = re.compile(r"^[a-fA-F0-9]{64}$")
 _LAN_V4 = tuple(ipaddress.ip_network(net) for net in (
     "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
     "100.64.0.0/10",  # opt-in Tailscale/CGNAT address
@@ -39,7 +39,7 @@ class ClusterConfigError(ValueError):
 
 def validate_secret(value: str) -> str:
     if not isinstance(value, str) or not _TOKEN_PATTERN.fullmatch(value):
-        raise ClusterConfigError("共有キーは64～128文字の16進数で指定してください")
+        raise ClusterConfigError("共有キーは64文字の16進数で指定してください")
     return value.lower()
 
 
@@ -170,6 +170,8 @@ class ClusterController:
         if not self._file.exists():
             return
         try:
+            if self._file.is_symlink():
+                raise ClusterConfigError("symlink config rejected")
             stat = self._file.stat()
             if stat.st_mode & 0o077:
                 raise ClusterConfigError("unsafe file permissions")
