@@ -1,5 +1,5 @@
 name: FrameDeck PR72 secure keyless pairing full validation
-# Final retest: two FastAPI apps, worker credential revocation, default no-key UI
+# Final retest: PIN-free Linux Web bootstrap, CSRF regression and signed two-sided pairing
 
 on:
   push:
