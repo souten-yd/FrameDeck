@@ -16,6 +16,45 @@ Tracking: https://github.com/souten-yd/FrameDeck/issues/62
   No LAN scanning, WOL, uploads, source sharing, automatic installs,
   remote execution, or scheduled backups are introduced.
 
+## LAN auto-discovery (preferred)
+
+QNAP no longer requires manually entering the Linux worker IP address or port.
+B broadcasts a signed UDP beacon every eight seconds to UDP port 31964.
+QNAP listens only if the administrator has enabled auto-discovery.
+When B starts or changes LAN IP, QNAP performs an authenticated TCP check
+and registers the current address automatically. Repeated messages from an
+unchanged address do not write the QNAP configuration. A powered-off B does
+not affect normal NAS playback.
+
+**First-time trust enrollment remains mandatory.** Do not trust unknown LAN
+devices merely because they are on the same local network.
+
+1. Set the existing Web PIN on QNAP A. Open Settings >
+   Linux高速変換サーバー > LAN自動検出を有効化.
+2. The button shows a newly generated 64-hex-character secret **once**.
+   Send it to Linux B using a protected admin connection, and set the service
+   environment variable FRAMEDECK_CLUSTER_WORKER_SECRET to that value.
+   Restart Linux FrameDeck after modifying the service environment.
+   Do not commit the secret to Git, screenshots or browser storage.
+3. If B uses a port other than 9000, set its service environment variable
+   FRAMEDECK_CLUSTER_WORKER_PORT to the actual TCP port. Allow outbound
+   UDP broadcast to 255.255.255.255:31964 from Linux and inbound UDP 31964
+   from the trusted LAN to QNAP, plus QNAP-to-Linux access to the TCP port.
+   Do not create internet router port forwards.
+4. A accepts only signed, recent beacons from private RFC1918 IPv4
+   addresses. It also asks the announced TCP endpoint to prove possession
+   of the same secret using a signed capability response. No unauthenticated
+   address is saved, even if an attacker replays a captured UDP beacon.
+5. For VLANs, guest Wi-Fi isolation or Tailscale-only paths that do not
+   carry LAN broadcast, use the existing manual IP + secret form.
+
+Discovery does not perform LAN scanning, command execution, file upload,
+automatic media copying or arbitrary URL fetching. Initial browser-to-NAS
+key transfer is sensitive on plaintext HTTP; use properly validated HTTPS
+or a local protected administrative channel where possible. Disabling
+auto-discovery stops new address registration but retains a previously
+paired worker until explicitly unpaired.
+
 ## First-time configuration
 
 1. Install the same FrameDeck version on A and B. B should have a working
