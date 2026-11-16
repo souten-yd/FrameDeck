@@ -17,6 +17,7 @@ from ..config import AppPaths, Settings
 from ..runtime_profile import qnap_lite
 from ..cluster_worker import ClusterController
 from ..cluster_discovery import LanDiscovery
+from ..cluster_pairing import PairingManager
 from ..worker_hls import RemoteHlsSessions
 from ..video.playback_service import VideoPlaybackService
 from ..video.transcode import TranscodeService
@@ -42,6 +43,11 @@ class Services:
         self.cluster = ClusterController(paths.config_dir)
         self.remote_hls = RemoteHlsSessions()
         self.discovery = LanDiscovery(self.cluster, paths.config_dir)
+        self.pairing = PairingManager(
+            paths.config_dir, self.cluster, self.discovery,
+            linux=not qnap_lite(),
+        )
+        self.discovery.pairing = self.pairing
 
         self.rating = RatingService(storage)
         self.library = LibraryService(storage, settings, self.rating)
@@ -165,6 +171,7 @@ class Services:
     def shutdown(self) -> None:
         self.backups.shutdown()
         self.discovery.shutdown()
+        self.pairing.shutdown()
         self.cluster.shutdown()
         try:
             self.comic_engine.shutdown()
