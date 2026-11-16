@@ -281,6 +281,70 @@ def test_pairing_endpoints_fail_closed_when_not_armed(app_env):
                        headers={"content-type": "text/plain"}).status_code == 415
 
 
+def test_two_web_apps_pair_without_ever_sending_secret(app_env, tmp_path, monkeypatch):
+    """Both real FastAPI admin surfaces drive the pairing handshake."""
+    from framedeck.config import Settings, ensure_runtime_directories, resolve_app_paths
+    from framedeck.core.services import build_services
+    from framedeck.core.storage import Storage
+
+    monkeypatch.delenv("FRAMEDECK_CLUSTER_WORKER_SECRET", raising=False)
+    set_runtime_worker_secret(None)
+    a, a_paths, _ = app_env
+    a.pairing = PairingManager(
+        a_paths.config_dir, a.cluster, a.discovery, linux=False,
+    )
+    a.discovery.pairing = a.pairing
+    b_paths = resolve_app_paths(tmp_path / "linux-b")
+    ensure_runtime_directories(b_paths)
+    b = build_services(Settings(b_paths), Storage(b_paths.database_file), b_paths)
+    assert b.pairing.linux
+    monkeypatch.setattr(a.cluster, "probe_once", lambda: None)
+    b_client = TestClient(create_app(b))
+    a_client = TestClient(create_app(a))
+
+    class WebTransport:
+        def open(self, req, timeout):
+            path = urlsplit(req.full_url).path
+            assert path in (
+                cluster_pairing.PAIRING_ANNOUNCE_PATH,
+                cluster_pairing.PAIRING_COMMIT_PATH,
+            )
+            assert b"secret" not in req.data
+            response = b_client.post(
+                path, content=req.data,
+                headers={"content-type": "application/json"},
+            )
+            return Result(response.json(), status=response.status_code)
+
+    monkeypatch.setattr(cluster_pairing, "_secure_opener", lambda: WebTransport())
+    assert b_client.post("/api/cluster/pairing/start").status_code == 200
+    assert a_client.post("/api/cluster/pairing/start").status_code == 200
+    offer = b.pairing.offer_packet(9000)
+    assert a.pairing.accept_offer(offer, "192.168.1.80")
+    pending = a_client.get("/api/cluster/pairing/status").json()
+    assert len(pending["candidates"]) == 1
+    chosen = a_client.post(
+        "/api/cluster/pairing/join",
+        json={"id": pending["candidates"][0]["id"]},
+    )
+    assert chosen.status_code == 200
+    nas_code = a_client.get("/api/cluster/pairing/status").json()["confirmation_code"]
+    linux_code = b_client.get("/api/cluster/pairing/status").json()["confirmation_code"]
+    assert nas_code == linux_code
+    assert len(nas_code) == 6
+    assert "secret" not in a_client.get("/api/cluster/pairing/status").text
+    assert "secret" not in b_client.get("/api/cluster/pairing/status").text
+
+    assert b_client.post("/api/cluster/pairing/approve").status_code == 200
+    finished = a_client.post("/api/cluster/pairing/finish")
+    assert finished.status_code == 200
+    assert finished.json()["paired"] is True
+    assert a_client.get("/api/cluster/status").json()["peer"]["configured"]
+    assert b_client.get("/api/cluster/status").json()["secure_pairing"]["worker_key_configured"]
+    assert "secret" not in a_client.get("/api/cluster/status").text
+    b.shutdown()
+
+
 def test_browser_pairing_mutations_reject_cross_site(app_env):
     services, _, _ = app_env
     client = TestClient(create_app(services))
