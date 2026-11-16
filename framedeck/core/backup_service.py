@@ -73,8 +73,9 @@ def _check_database(path: Path) -> None:
 
 
 class BackupService:
-    def __init__(self, paths: AppPaths):
+    def __init__(self, paths: AppPaths, storage=None):
         self.paths = paths
+        self._storage = storage
         self.root = paths.base / "backups"
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -132,6 +133,9 @@ class BackupService:
             raise BackupError("Another backup is already running")
         temp: Path | None = None
         try:
+            # Include recent reading positions still buffered in memory.
+            if self._storage is not None:
+                self._storage.flush_reading_progress()
             self._ensure_private_root()
             if not self.paths.settings_file.is_file():
                 raise BackupError("FrameDeck settings are unavailable")
