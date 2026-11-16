@@ -118,13 +118,14 @@ def test_retention_seven_daily_four_weekly(tmp_path):
         name = t.strftime("%Y%m%dT%H%M%S") + "-" + f"{day:08x}"
         folder = backup.root / name
         folder.mkdir()
-        metadata = {
-            "format_version": 1,
-            "created_at": t.isoformat(),
-            "local_date": t.date().isoformat(),
-            "iso_week": f"{t.isocalendar().year}-W{t.isocalendar().week:02d}",
-            "files": {},
-        }
+        with sqlite3.connect(str(folder / "framedeck.db")) as db:
+            db.execute("CREATE TABLE IF NOT EXISTS marker (day INTEGER)")
+            db.execute("INSERT INTO marker VALUES (?)", (day,))
+        (folder / "settings.json").write_text('{"video_stream_mode":"auto"}')
+        metadata = backup._make_metadata(folder)
+        metadata["created_at"] = t.isoformat()
+        metadata["local_date"] = t.date().isoformat()
+        metadata["iso_week"] = f"{t.isocalendar().year}-W{t.isocalendar().week:02d}"
         (folder / "manifest.json").write_text(json.dumps(metadata))
     backup.prune()
     remaining = backup.list_snapshots()
@@ -132,6 +133,22 @@ def test_retention_seven_daily_four_weekly(tmp_path):
     assert len(remaining) >= 7
     assert len({s["local_date"] for s in remaining[:7]}) >= 5
     assert len({s["iso_week"] for s in remaining}) >= 4
+
+
+def test_corrupted_newest_snapshot_cannot_displace_verified_prior(app_env):
+    services, paths, _ = app_env
+    first = services.backups.create_snapshot()
+    second = services.backups.create_snapshot()
+    root = paths.base / "backups"
+    corrupted = root / second["name"] / "framedeck.db"
+    with corrupted.open("ab") as out:
+        out.write(b"corruption")
+    services.backups.prune()
+    assert (root / first["name"]).exists()
+    assert (root / second["name"]).exists()  # retain corrupt for diagnosis
+    assert services.backups.verify(first["name"])["verified"]
+
+
 
 
 def test_no_snapshot_created_if_disk_is_full(app_env, monkeypatch):
