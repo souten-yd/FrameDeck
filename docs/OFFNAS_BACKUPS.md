@@ -22,9 +22,13 @@ encryption, SSHFS or a trusted encrypted overlay) and **at rest on Linux**
 (e.g. LUKS/cryptsetup or other encrypted volume) before enabling replication.
 Never expose this share to unrelated LAN users or to the internet.
 
-The OS mount must be a direct, existing mountpoint that reports a different
-device from QNAP's FrameDeck data volume. A normal local directory, symlink,
-missing path or same-device location is rejected. The application creates
+The OS mount must be a direct, existing **NFS/NFS4/SMB/CIFS/SSHFS**
+network mountpoint that reports a different device from QNAP's FrameDeck data
+volume. FrameDeck checks the filesystem type in Linux mountinfo; a local
+system root, /tmp RAM disk, USB volume or another internal QNAP data mount
+is rejected even when its device number differs. A normal local directory,
+symlink, missing path or same-device location is also rejected. The
+application creates
 a private 0700 FrameDeck-Metadata-Backups subdirectory and insists that
 permissions are respected. Use least-privileged NAS credentials allowed to
 write ONLY the backup destination, not the source video/SQLite directories.
