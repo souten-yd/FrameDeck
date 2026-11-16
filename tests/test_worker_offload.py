@@ -29,6 +29,9 @@ B_URL = "http://192.168.0.30:9000"
 
 @pytest.fixture()
 def mounted_video(monkeypatch, tmp_path):
+    import framedeck.worker_offload as offload
+    # Simulate an OS-mounted ro share in the filesystem fixture.
+    monkeypatch.setattr(offload, "_is_read_only_mount", lambda _: True)
     root = tmp_path / "nas-share"
     root.mkdir()
     video = root / "episode.mp4"
@@ -43,6 +46,14 @@ def mounted_video(monkeypatch, tmp_path):
 def test_disabled_by_default(monkeypatch):
     monkeypatch.delenv("FRAMEDECK_CLUSTER_ENABLE_OFFLOAD", raising=False)
     assert not offload_enabled()
+
+
+def test_worker_refuses_writable_mount(mounted_video, monkeypatch):
+    import framedeck.worker_offload as offload
+    monkeypatch.setattr(offload, "_is_read_only_mount", lambda _: False)
+    assert worker_root_fingerprints() == []
+    with pytest.raises(WorkerOffloadError):
+        resolve_mounted_video(A_ROOT, "episode.mp4")
 
 
 def test_mounted_source_allowlist_only(mounted_video):
