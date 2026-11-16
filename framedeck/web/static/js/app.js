@@ -3665,11 +3665,19 @@ async function openSettings() {
   settingRow(grid, "SQLiteの自動バックアップ", makeSelect("backup_enabled", [
     ["false", "無効"], ["true", "有効（毎日・03時以降）"],
   ]), "設定・履歴・評価などを7日次＋4週次で保持します。元の動画・漫画は対象外です。バックアップ先は同じQNAP内なので、物理故障対策は別途必要です。");
-  settingRow(grid, "Linuxへの世代バックアップ複製", makeSelect("backup_replica_enabled", [
+  const replicaEnabledControl = makeSelect("backup_replica_enabled", [
     ["false", "無効"], ["true", "有効（別ストレージへコピー）"],
-  ]), "Linux側の別ディスクをQNAPに明示的にマウントしてください。接続・保存先の暗号化はNFS/SMB/SSHFSとLinuxの暗号化ファイルシステムで別途設定してください。QNAP上の元データは削除されません。");
+  ]);
+  const priorReplicaEnableChange = replicaEnabledControl.onchange;
+  replicaEnabledControl.onchange = async () => {
+    await priorReplicaEnableChange();
+    await refreshBackups();
+  };
+  settingRow(grid, "Linuxへの世代バックアップ複製", replicaEnabledControl,
+    "Linux側の別ディスクをQNAPに明示的にマウントしてください。接続・保存先の暗号化はNFS/SMB/SSHFSとLinuxの暗号化ファイルシステムで別途設定してください。QNAP上の元データは削除されません。");
   const replicaPath = document.createElement("input");
   replicaPath.type = "text";
+  replicaPath.maxLength = 1024;
   replicaPath.className = "tb-input";
   replicaPath.value = S.settings.backup_replica_target || "";
   replicaPath.placeholder = "Linuxの暗号化共有のマウントポイント（例: /mnt/linux-backup）";
