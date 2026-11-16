@@ -1,0 +1,8 @@
+name: FrameDeck RC one-shot validation placeholder
+on:
+  workflow_dispatch:
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'RC workflow permission test'
