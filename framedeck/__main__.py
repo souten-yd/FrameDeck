@@ -7,6 +7,10 @@ instead of patching FrameDeck itself.
 from __future__ import annotations
 
 import os
+import importlib.util
+from pathlib import Path
+import subprocess
+import sys
 from dataclasses import dataclass
 
 
@@ -49,8 +53,44 @@ def resolve_launch_config() -> LaunchConfig:
     )
 
 
+def _ensure_linux_owned_venv_crypto() -> bool:
+    """Install *only* a fixed pairing dependency for a managed Linux venv.
+
+    FrameDeck.py already bootstraps the same venv dependencies. This is the
+    alternate `python -m framedeck` path used by some service managers and by
+    the built-in Ubuntu source updater after restart. Never modify the QNAP
+    bundled runtime, system Python or arbitrary third-party Python venvs.
+    """
+    if os.environ.get("FRAMEDECK_PROFILE", "").lower() == "qnap-lite":
+        return True
+    if importlib.util.find_spec("cryptography") is not None:
+        return True
+    app_root = Path(__file__).resolve().parents[1]
+    venv = Path(sys.prefix).resolve()
+    if (venv.name != "FrameDeck_venv" or
+            not (venv / "pyvenv.cfg").is_file() or
+            not (app_root / "FrameDeck.py").is_file() or
+            venv.parent != app_root):
+        return False
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "cryptography>=43,<47"],
+            check=True, timeout=300,
+        )
+    except (OSError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired) as exc:
+        print(
+            "[FrameDeck] Linux pairing crypto dependency setup failed: "
+            f"{type(exc).__name__}. The media viewer can still start.",
+            file=sys.stderr,
+        )
+        return False
+    return importlib.util.find_spec("cryptography") is not None
+
+
 def main() -> None:
     cfg = resolve_launch_config()
+    _ensure_linux_owned_venv_crypto()
     from .bootstrap import run
 
     run(

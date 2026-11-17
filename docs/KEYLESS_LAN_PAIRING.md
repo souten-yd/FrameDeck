@@ -42,9 +42,15 @@ Linuxの環境変数設定・QNAPへのSSHは不要です。
   認証情報は通常の設定/status API、URL、ブラウザ保存領域、画面、
   ログに公開しません。
 - QNAPにはcryptographyのX25519/HKDF実行環境をQPKGへ同梱します。
-  Linuxの既存Python環境にcryptographyが無い場合はペアリングが
-  利用できません。Linux環境で同じ依存関係をインストールする必要があります。
-  **FrameDeckのサーバー起動時にpipやnpmビルドは実行しません。**
+  Linuxで `python3 FrameDeck.py` を使うと、FrameDeck自身の
+  `FrameDeck_venv` 内にcryptographyが無ければ既存の依存関係の
+  自動セットアップ機構で導入します。`python -m framedeck` でも、
+  **FrameDeck専用の管理下venvで起動している場合だけ**不足を補います。
+  ユーザーによる共有キー管理や手動pip入力は通常不要です。
+  QNAPの同梱Pythonや外部のシステムPython/別アプリ管理下venvには
+  pipを実行しません。オフラインまたは依存導入失敗時には
+  メディア閲覧機能を継続し、ペアリングは安全側で無効のままです。
+  **NAS起動時のビルド、npm build、任意のコマンド実行APIは追加しません。**
 - LANブロードキャストを遮断するVLAN/ゲストWi-FiやTailscaleだけの
   ネットワークでは候補が現れません。接続先や鍵の自動信頼を推測しません。
   手動方式は折りたたんだ上級者向け項目に残します。
