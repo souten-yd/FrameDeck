@@ -1,4 +1,5 @@
 name: FrameDeck PR76 PIN-free direct LAN validation
+# Final rerun against updated LAN backup admin boundary and UI static tests
 
 on:
   push:
