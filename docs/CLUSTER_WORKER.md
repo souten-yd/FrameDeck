@@ -43,27 +43,20 @@ and registers the current address automatically. Repeated messages from an
 unchanged address do not write the QNAP configuration. A powered-off B does
 not affect normal NAS playback.
 
-**One-tap QNAP setup and mandatory initial Linux trust enrollment:**
-Do not trust unknown LAN devices merely because they are on the same network.
+**Legacy manual provisioning only:** Do not trust unknown LAN devices
+merely because they are on the same network. The current browser pairing
+flow needs NO PIN and NO worker secret copied by the user.
 
-1. On QNAP A, open Settings > Linux高速変換サーバー and press
-   **LANワーカーをワンタップ登録**. If no Web PIN exists, FrameDeck creates
-   a cryptographically random PIN, logs this browser in using an HttpOnly
-   SameSite cookie and shows the new PIN **once**. Save it securely: other
-   browsers will need this PIN. Never enter it over an untrusted plaintext
-   connection; use trusted HTTPS when possible.
-2. The same button enables signed LAN auto-discovery. It displays a new
-   **64-hex-character worker secret once**. This must be installed on
-   **Linux B on the first enrollment** via a protected administrator
-   connection as FRAMEDECK_CLUSTER_WORKER_SECRET, and Linux FrameDeck must
-   be restarted. This step cannot be skipped securely: without any existing
-   identity/key, there is no way for QNAP to prove an unknown LAN device
-   is the owner's Linux workstation.
-3. Thereafter the *same QNAP button* reconnects/rechecks the worker, and
-   its IP changes and future boot announcements are automatic with NO
-   further SSH/password/secret copying. The UI watches for signed workers
-   for at most about 70 seconds, without repeatedly writing QNAP config.
-   Old manual IP/secret enrollment remains available.
+1. The **recommended** browser flow is in KEYLESS_LAN_PAIRING.md.
+   For legacy manual provisioning only, configure a worker secret separately
+   using the service environment; it is not generated/displayed in the
+   normal browser registration flow.
+2. For browser pairing, both devices create the shared HMAC key internally
+   after the same 6-digit verification code is confirmed at both ends.
+   Legacy manual deployment can still use FRAMEDECK_CLUSTER_WORKER_SECRET.
+3. After browser pairing, signed worker discovery and future IP changes are
+   automatic. The legacy IP/secret configuration remains under advanced
+   settings but is not needed for new installations.
 3. If B uses a port other than 9000, set its service environment variable
    FRAMEDECK_CLUSTER_WORKER_PORT to the actual TCP port. Allow outbound
    UDP broadcast to 255.255.255.255:31964 from Linux and inbound UDP 31964
@@ -97,10 +90,9 @@ paired worker until explicitly unpaired.
    or process command-line arguments. Configure its service manager so it
    persists across restarts. The authenticated worker endpoint is closed if
    this variable is absent or invalid.
-3. On QNAP A, the one-tap button can provision the initial Web PIN and
-   start the browser session; LAN-based manual registration remains blocked
-   if Web PIN is empty. The button does not authorize an untrusted worker
-   or remove the initial Linux-side key enrollment requirement.
+3. Direct private-LAN IP Web access is PIN-free by default. Legacy manual
+   worker secrets should be configured only through the advanced settings.
+   The normal Web flow always requires explicit approval at BOTH hosts.
 4. Open A's FrameDeck > Settings > Linux高速変換サーバー（準備段階）.
    Enter B's literal LAN IP + port, such as http://192.168.1.20:9000, and
    the shared secret generated on B. Choose ワーカーを登録・更新.
