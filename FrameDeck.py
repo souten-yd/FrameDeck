@@ -53,6 +53,9 @@ VENV_PACKAGES = {
     "uvicorn": "uvicorn[standard]",
     "aiofiles": "aiofiles",
     "pydantic": "pydantic",
+    # Paired with QNAP's cryptography wheel; required for X25519/HKDF
+    # browser-to-browser pairing after a Linux source-only update.
+    "cryptography": "cryptography>=43,<47",
     "send2trash": "send2trash",
 }
 
