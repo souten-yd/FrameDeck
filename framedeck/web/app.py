@@ -20,6 +20,7 @@ from ..worker_hls import WORKER_HLS_START, WORKER_HLS_FILE
 from ..runtime_profile import qnap_lite
 from .routers import backups, cluster, comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
+from .lan_access import trusted_direct_lan
 
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -102,17 +103,23 @@ def create_app(services: Services) -> FastAPI:
             # browser can display the PIN login form. API/media stays locked.
             return await call_next(request)
         pin = services.settings.get("web_pin", "")
-        if pin:
-            client_host = request.client.host if request.client else ""
-            if client_host not in _LOCAL_HOSTS:
-                supplied = (request.headers.get("x-framedeck-pin")
-                            or request.query_params.get("pin")
-                            or request.cookies.get("framedeck_pin"))
-                if supplied != pin:
-                    return JSONResponse(
-                        status_code=401,
-                        content={"detail": "PINが必要です"},
-                    )
+        local_lan = (services.settings.get("lan_pinless_access", True) is True
+                     and trusted_direct_lan(request))
+        if not local_lan:
+            if not pin:
+                # Public, proxied, VPN/non-private and DNS-rebound browser
+                # sessions never become implicitly admin just because PIN
+                # was not configured.
+                return JSONResponse(status_code=403, content={
+                    "detail": "直接LANのIPアドレスで開いてください"
+                })
+            supplied = (request.headers.get("x-framedeck-pin")
+                        or request.query_params.get("pin")
+                        or request.cookies.get("framedeck_pin"))
+            if supplied != pin:
+                return JSONResponse(
+                    status_code=401, content={"detail": "PINが必要です"}
+                )
         response = await call_next(request)
         if pin and request.query_params.get("pin") == pin:
             response.set_cookie("framedeck_pin", pin, httponly=True)
