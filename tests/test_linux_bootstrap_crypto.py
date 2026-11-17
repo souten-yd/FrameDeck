@@ -36,3 +36,57 @@ def test_linux_launcher_installation_is_explicitly_in_venv_bootstrap():
     assert 'if importlib.util.find_spec(module) is None' in launcher
     assert '[sys.executable, "-m", "pip", "install", *missing]' in launcher
     assert "cryptography" in launcher
+
+
+def test_module_launcher_repairs_own_missing_venv_dependency(monkeypatch, tmp_path):
+    """Built-in updater can restart via -m framedeck, not only FrameDeck.py."""
+    from types import SimpleNamespace
+    from framedeck import __main__ as module_runner
+
+    root = tmp_path / "FrameDeck"
+    pkg = root / "framedeck"
+    pkg.mkdir(parents=True)
+    (root / "FrameDeck.py").write_text("# launcher\n", "utf-8")
+    venv = root / "FrameDeck_venv"
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n", "utf-8")
+    monkeypatch.setattr(module_runner, "__file__", str(pkg / "__main__.py"))
+    monkeypatch.setattr(module_runner.sys, "prefix", str(venv))
+    monkeypatch.delenv("FRAMEDECK_PROFILE", raising=False)
+    installed = {"ready": False}
+    monkeypatch.setattr(
+        module_runner.importlib.util, "find_spec",
+        lambda name: SimpleNamespace() if installed["ready"] else None,
+    )
+    calls = []
+    def fake_run(argv, **options):
+        calls.append((argv, options))
+        installed["ready"] = True
+    monkeypatch.setattr(module_runner.subprocess, "run", fake_run)
+    assert module_runner._ensure_linux_owned_venv_crypto() is True
+    assert len(calls) == 1
+    assert calls[0][0] == [
+        module_runner.sys.executable, "-m", "pip", "install",
+        "cryptography>=43,<47",
+    ]
+    assert calls[0][1]["check"] is True
+    assert calls[0][1]["timeout"] <= 300
+
+
+def test_module_launcher_does_not_install_on_qnap_or_unmanaged_python(
+        monkeypatch, tmp_path):
+    from framedeck import __main__ as module_runner
+    monkeypatch.setattr(module_runner.importlib.util, "find_spec", lambda _: None)
+    calls = []
+    monkeypatch.setattr(
+        module_runner.subprocess, "run",
+        lambda *a, **k: calls.append((a, k)),
+    )
+    monkeypatch.setenv("FRAMEDECK_PROFILE", "qnap-lite")
+    assert module_runner._ensure_linux_owned_venv_crypto() is True
+    assert calls == []
+
+    monkeypatch.delenv("FRAMEDECK_PROFILE", raising=False)
+    monkeypatch.setattr(module_runner.sys, "prefix", str(tmp_path))
+    assert module_runner._ensure_linux_owned_venv_crypto() is False
+    assert calls == []
