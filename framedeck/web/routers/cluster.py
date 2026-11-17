@@ -51,7 +51,7 @@ def _require_pairing_permission(request: Request, services: Services) -> None:
     if not lan and not services.settings.get("web_pin", ""):
         raise HTTPException(
             status_code=403,
-            detail="直接LANで開くかWeb PIN認証を有効にしてください",
+            detail="LANまたはVPNで開くかWeb PIN認証を有効にしてください",
         )
 
 

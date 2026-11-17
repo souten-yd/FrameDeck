@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -60,14 +62,13 @@ def test_no_pin_does_not_make_external_browser_an_admin(app_env):
         assert client.get("/api/settings").status_code == 200
 
 
-def test_lan_pinless_access_does_not_trust_proxy_dns_rebinding_or_vpn_peer(app_env):
+def test_lan_pinless_access_does_not_trust_proxy_or_dns_rebinding(app_env):
     services, _, _ = app_env
     services.settings.set("web_pin", "")
     for peer, target, headers in (
         ("192.168.68.24", "http://attacker.example:9000", {}),
         ("192.168.68.24", "http://192.168.68.200:9000",
          {"x-forwarded-for": "8.8.8.8"}),
-        ("100.100.100.100", "http://192.168.68.200:9000", {}),
         ("192.168.68.24", "http://8.8.8.8:9000", {}),
     ):
         with _client_at(services, peer, target) as client:
@@ -128,3 +129,44 @@ def test_browser_pairing_no_longer_auto_generates_web_pin():
     assert "generatedPin" not in script
     assert 'json: { web_pin: pin }' not in script
     assert '"/api/cluster/pairing/start"' in script
+
+
+@pytest.mark.parametrize("peer,target", [
+    ("100.82.8.45", "http://100.82.8.44:9000"),
+    ("100.82.8.45", "http://linux.tail123.ts.net:9000"),
+    ("fd7a:115c:a1e0::1", "http://linux.tail123.ts.net:9000"),
+    ("10.8.0.2", "http://192.168.68.200:9000"),
+    ("100.82.8.45", "http://192.168.68.200:9000"),
+])
+def test_vpn_browser_no_pin(app_env, peer, target):
+    services, _, _ = app_env
+    services.settings.set("web_pin", "old-random-pin")
+    with _client_at(services, peer, target) as client:
+        assert client.get("/api/settings").status_code == 200
+        assert client.get("/api/backups/status").status_code == 200
+        assert client.get("/api/cluster/status").status_code == 200
+        assert client.put("/api/settings", json={
+            "comic_progress_save_seconds": 30,
+        }, headers={"origin": target}).status_code == 200
+        assert client.put("/api/settings", json={
+            "comic_progress_save_seconds": 30,
+        }, headers={"origin": "https://attacker.example"}).status_code == 403
+
+
+def test_vpn_pinless_rejects_public_hosts_and_forwarding(app_env):
+    services, _, _ = app_env
+    services.settings.set("web_pin", "old-random-pin")
+    for peer, target in [
+        ("8.8.8.8", "http://100.82.8.44:9000"),
+        ("8.8.8.8", "http://linux.tail123.ts.net:9000"),
+        ("100.82.8.45", "http://attacker.example:9000"),
+        ("100.82.8.45", "http://100.82.8.44.ts.net.attacker.example:9000"),
+    ]:
+        with _client_at(services, peer, target) as client:
+            assert client.get("/api/settings").status_code == 401
+    with _client_at(services, "100.82.8.45", "http://100.82.8.44:9000") as client:
+        for headers in ({"x-forwarded-for": "100.82.8.45"},
+                        {"forwarded": "for=100.82.8.45"}):
+            assert client.get("/api/settings", headers=headers).status_code == 401
+        services.settings.set("lan_pinless_access", False)
+        assert client.get("/api/settings").status_code == 401

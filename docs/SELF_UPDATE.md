@@ -51,3 +51,16 @@ Git cloneで配置した場合、FrameDeckを停止して配置ディレクト�
 QNAP の自動更新を成立させるには、GitHub Release に対象 architecture の QPKG asset が必要です。GitHub Actions は自動実行せず、既存の manual validation workflow を必要な時だけ手動起動して QPKG を生成・Release へ登録してください。
 
 FrameDeck 2.1.0 以前には updater 自体が入っていないため、2.2.0 への最初の移行だけは従来どおり手動インストールが必要です。それ以降は設定画面から更新できます。
+
+## LAN・VPNからのPIN不要アクセス（v2.4.26以降）
+
+`lan_pinless_access` が有効（既定）の場合、直接接続した端末と接続先が
+RFC1918のIPv4、IPv6 ULA、または `100.64.0.0/10` のアドレスならWeb PINは不要です。
+VPN側のサブネットとLAN側のサブネットが異なっていても利用できます。
+Tailscaleの `100.64.0.0/10` または `fd7a:115c:a1e0::/48` からは、
+接続先にMagicDNSの完全名（`*.ts.net`）も指定できます。
+
+この範囲からの接続は設定・バックアップ・ワーカー登録を含む管理操作も可能です。
+公開IP、任意のDNS名、Forwarded/X-Forwarded-For付きのプロキシ接続は対象外です。
+変更要求のOrigin・cross-site検査とワーカーのHMAC認証は継続します。
+`lan_pinless_access=false` にすると、このPIN省略はLAN・VPNとも無効になります。

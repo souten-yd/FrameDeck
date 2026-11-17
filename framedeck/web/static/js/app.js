@@ -387,7 +387,7 @@ function requireWebPinLogin() {
     const box = document.createElement("div");
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "LAN内のIPアドレスで開く場合、Web PINは不要です。外部接続用のWeb PINが設定済みなら入力してください。";
+    hint.textContent = "LAN・VPN内のIPアドレス、またはTailscaleのMagicDNS名で開く場合、Web PINは不要です。外部接続用のWeb PINが設定済みなら入力してください。";
     const input = document.createElement("input");
     input.type = "password";
     input.autocomplete = "current-password";
@@ -3561,7 +3561,7 @@ async function openSettings() {
   autoBox.style.marginBottom = "12px";
   const autoHint = document.createElement("p");
   autoHint.className = "hint";
-  autoHint.textContent = "同じLANのIPアドレスからはWeb PINなしで操作できます。QNAPとLinuxの両画面で6桁の番号を照合して承認するだけで登録できます。信頼できるLANでのみ利用してください。";
+  autoHint.textContent = "LAN・VPNのIPアドレスやTailscaleのMagicDNS名からはWeb PINなしで操作できます。QNAPとLinuxの両画面で6桁の番号を照合して承認するだけで登録できます。信頼できるLAN・VPNでのみ利用してください。";
   const autoEnable = document.createElement("button");
   autoEnable.className = "modal-btn primary";
   autoEnable.textContent = "安全にLinuxを登録";

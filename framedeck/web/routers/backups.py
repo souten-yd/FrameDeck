@@ -24,7 +24,7 @@ def _require_backup_admin(request: Request, services: Services) -> None:
     if not lan and not services.settings.get("web_pin", ""):
         raise HTTPException(
             status_code=403,
-            detail="直接LANで開くかWeb PINを設定してください",
+            detail="LANまたはVPNで開くかWeb PINを設定してください",
         )
 
 

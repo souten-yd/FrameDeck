@@ -88,9 +88,9 @@ def create_app(services: Services) -> FastAPI:
 
     @app.middleware("http")
     async def pin_guard(request: Request, call_next):
-        """Direct trusted LAN browsers do not need a Web PIN.
+        """Direct trusted LAN/VPN browsers do not need a Web PIN.
 
-        LAN users can administer FrameDeck; prevent browser CSRF even when
+        LAN/VPN users can administer FrameDeck; prevent browser CSRF even when
         login is bypassed. This does not treat arbitrary Host or forwarded
         proxy headers as proof of LAN access.
         """
@@ -127,11 +127,11 @@ def create_app(services: Services) -> FastAPI:
                      and trusted_direct_lan(request))
         if not local_lan:
             if not pin:
-                # Public, proxied, VPN/non-private and DNS-rebound browser
+                # Public, proxied, non-private and DNS-rebound browser
                 # sessions never become implicitly admin just because PIN
                 # was not configured.
                 return JSONResponse(status_code=403, content={
-                    "detail": "直接LANのIPアドレスで開いてください"
+                    "detail": "LANまたはVPNのIPアドレスで開いてください"
                 })
             supplied = (request.headers.get("x-framedeck-pin")
                         or request.query_params.get("pin")
