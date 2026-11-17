@@ -6,6 +6,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import anyio.to_thread
 
@@ -87,7 +88,26 @@ def create_app(services: Services) -> FastAPI:
 
     @app.middleware("http")
     async def pin_guard(request: Request, call_next):
-        """LANアクセス時の簡易PIN(設定時のみ)。localhostは常に許可。"""
+        """Direct trusted LAN browsers do not need a Web PIN.
+
+        LAN users can administer FrameDeck; prevent browser CSRF even when
+        login is bypassed. This does not treat arbitrary Host or forwarded
+        proxy headers as proof of LAN access.
+        """
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            origin = request.headers.get("origin")
+            host = request.headers.get("host", "")
+            try:
+                different_origin = bool(
+                    origin and urlsplit(origin).netloc.lower() != host.lower()
+                )
+            except ValueError:
+                different_origin = True
+            if (request.headers.get("sec-fetch-site", "").lower() == "cross-site"
+                    or different_origin):
+                return JSONResponse(status_code=403, content={
+                    "detail": "他のWebサイトからの変更要求は許可されていません"
+                })
         # Worker health uses a separate HMAC challenge, even if this host
         # also protects its browser UI with a PIN. The worker endpoint itself
         # rejects all unsigned requests.
