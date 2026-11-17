@@ -387,7 +387,7 @@ function requireWebPinLogin() {
     const box = document.createElement("div");
     const hint = document.createElement("p");
     hint.className = "hint";
-    hint.textContent = "QNAPで設定済みのWeb PINを入力してください。PINはURLやブラウザ保存領域には残しません。";
+    hint.textContent = "LAN内のIPアドレスで開く場合、Web PINは不要です。外部接続用のWeb PINが設定済みなら入力してください。";
     const input = document.createElement("input");
     input.type = "password";
     input.autocomplete = "current-password";
@@ -3561,7 +3561,7 @@ async function openSettings() {
   autoBox.style.marginBottom = "12px";
   const autoHint = document.createElement("p");
   autoHint.className = "hint";
-  autoHint.textContent = "QNAPとLinuxのブラウザだけで安全に登録します。認証情報は内部で生成・保存され、ユーザーによるキーのコピーや環境変数編集は不要です。初回は両画面の番号を照合して承認してください。";
+  autoHint.textContent = "同じLANのIPアドレスからはWeb PINなしで操作できます。QNAPとLinuxの両画面で6桁の番号を照合して承認するだけで登録できます。信頼できるLANでのみ利用してください。";
   const autoEnable = document.createElement("button");
   autoEnable.className = "modal-btn primary";
   autoEnable.textContent = "安全にLinuxを登録";
@@ -3570,32 +3570,12 @@ async function openSettings() {
   autoDisable.className = "modal-btn";
   autoDisable.textContent = "自動検出を無効化";
   autoDisable.type = "button";
-  const pinKeyBox = document.createElement("div");
-  pinKeyBox.hidden = true;
-  const pinKeyHint = document.createElement("p");
-  pinKeyHint.className = "hint";
-  pinKeyHint.textContent = "Web PINを自動作成しました。ほかの端末から使うため、今ここで安全な場所へ保存してください。自動的には再表示されません。";
-  const generatedPin = document.createElement("input");
-  generatedPin.type = "password";
-  generatedPin.readOnly = true;
-  generatedPin.autocomplete = "off";
-  generatedPin.style.width = "100%";
-  const copyPin = document.createElement("button");
-  copyPin.className = "modal-btn";
-  copyPin.type = "button";
-  copyPin.textContent = "作成したWeb PINをコピー";
-  copyPin.onclick = async () => {
-    if (!generatedPin.value) return;
-    try { await navigator.clipboard.writeText(generatedPin.value); toast("Web PINをコピーしました"); }
-    catch (e) { toast("コピーに失敗しました", true); }
-  };
-  pinKeyBox.append(pinKeyHint, generatedPin, copyPin);
   const autoButtons = document.createElement("div");
   autoButtons.style.display = "flex";
   autoButtons.style.flexWrap = "wrap";
   autoButtons.style.gap = "8px";
   autoButtons.append(autoEnable, autoDisable);
-  autoBox.append(autoHint, autoButtons, pinKeyBox);
+  autoBox.append(autoHint, autoButtons);
   clusterSection.appendChild(autoBox);
   // The initial pair is approved in BOTH browsers. Shared HMAC keys
   // never appear in the DOM, URL, localStorage or a user-visible field.
@@ -3725,29 +3705,10 @@ async function openSettings() {
       } finally { pairingPollActive = false; }
     })();
   }
-  async function ensureLocalAdminSession(status, linuxSide = false) {
-    if (status.web_pin_configured) return;
-    if (!window.crypto?.getRandomValues) {
-      throw new Error("このブラウザでは安全な管理PINを生成できません");
-    }
-    const bytes = window.crypto.getRandomValues(new Uint8Array(20));
-    const pin = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-    await api("/api/settings", { method: "PUT", json: { web_pin: pin } });
-    const response = await fetch("/api/auth/pin", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin }),
-    });
-    if (!response.ok) throw new Error("管理PIN設定後のログインに失敗しました");
-    generatedPin.value = pin;
-    if (linuxSide) pairingPanel.appendChild(pinKeyBox);
-    pinKeyBox.hidden = false;
-  }
   linuxPairStart.onclick = async () => {
     linuxPairStart.disabled = true;
     try {
       const status = await api("/api/cluster/status");
-      await ensureLocalAdminSession(status, true);
       const result = await api("/api/cluster/pairing/start", { method: "POST" });
       if (result.already_paired) {
         toast("Linuxの認証設定はすでに有効です");
@@ -3757,7 +3718,7 @@ async function openSettings() {
       }
       await refreshPairingStatus();
     } catch (e) {
-      toast(e.message + "（Linux本体の localhost で開くか、Web PINでログインしてください）", true);
+      toast(e.message + "（LinuxのLAN内IPアドレスから開いてください）", true);
     } finally { linuxPairStart.disabled = false; }
   };
   linuxPairRevoke.onclick = async () => {
@@ -3797,7 +3758,6 @@ async function openSettings() {
         toast("Linux側では登録できません。QNAPの画面で操作してください", true);
         return;
       }
-      await ensureLocalAdminSession(status);
       if (status.peer?.configured) {
         await api("/api/cluster/probe", { method: "POST" });
         toast("登録済みLinuxワーカーを再確認しました");

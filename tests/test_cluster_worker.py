@@ -84,7 +84,8 @@ def test_config_file_atomic_private_and_status_no_token(app_env):
     assert services.cluster.status()["configured"] is False
 
 
-def test_remote_pairing_requires_pin_and_same_origin(app_env):
+def test_remote_pairing_allows_private_direct_lan_without_pin_but_rejects_external(
+        app_env):
     services, _, _ = app_env
     scope = {
         "type": "http", "http_version": "1.1", "method": "PUT",
@@ -94,12 +95,17 @@ def test_remote_pairing_requires_pin_and_same_origin(app_env):
         "server": ("192.168.1.10", 9000),
         "scheme": "http",
     }
+    _require_pairing_permission(Request(scope), services)
+    services.settings.set("web_pin", "test-only-pin")
+    _require_pairing_permission(Request(scope), services)
+
+    scope["client"] = ("8.8.8.8", 50000)
+    services.settings.set("web_pin", "")
     with pytest.raises(HTTPException) as exc:
         _require_pairing_permission(Request(scope), services)
     assert exc.value.status_code == 403
 
-    services.settings.set("web_pin", "test-only-pin")
-    _require_pairing_permission(Request(scope), services)
+    scope["client"] = ("192.168.1.12", 50000)
     scope["headers"] = [
         (b"host", b"192.168.1.10:9000"),
         (b"origin", b"http://bad.example"),

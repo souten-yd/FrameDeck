@@ -6,6 +6,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import anyio.to_thread
 
@@ -20,6 +21,7 @@ from ..worker_hls import WORKER_HLS_START, WORKER_HLS_FILE
 from ..runtime_profile import qnap_lite
 from .routers import backups, cluster, comic, library, system, video, volume_view
 from .websocket import EventBus, websocket_endpoint
+from .lan_access import trusted_direct_lan
 
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -86,7 +88,26 @@ def create_app(services: Services) -> FastAPI:
 
     @app.middleware("http")
     async def pin_guard(request: Request, call_next):
-        """LANアクセス時の簡易PIN(設定時のみ)。localhostは常に許可。"""
+        """Direct trusted LAN browsers do not need a Web PIN.
+
+        LAN users can administer FrameDeck; prevent browser CSRF even when
+        login is bypassed. This does not treat arbitrary Host or forwarded
+        proxy headers as proof of LAN access.
+        """
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            origin = request.headers.get("origin")
+            host = request.headers.get("host", "")
+            try:
+                different_origin = bool(
+                    origin and urlsplit(origin).netloc.lower() != host.lower()
+                )
+            except ValueError:
+                different_origin = True
+            if (request.headers.get("sec-fetch-site", "").lower() == "cross-site"
+                    or different_origin):
+                return JSONResponse(status_code=403, content={
+                    "detail": "他のWebサイトからの変更要求は許可されていません"
+                })
         # Worker health uses a separate HMAC challenge, even if this host
         # also protects its browser UI with a PIN. The worker endpoint itself
         # rejects all unsigned requests.
@@ -102,17 +123,23 @@ def create_app(services: Services) -> FastAPI:
             # browser can display the PIN login form. API/media stays locked.
             return await call_next(request)
         pin = services.settings.get("web_pin", "")
-        if pin:
-            client_host = request.client.host if request.client else ""
-            if client_host not in _LOCAL_HOSTS:
-                supplied = (request.headers.get("x-framedeck-pin")
-                            or request.query_params.get("pin")
-                            or request.cookies.get("framedeck_pin"))
-                if supplied != pin:
-                    return JSONResponse(
-                        status_code=401,
-                        content={"detail": "PINが必要です"},
-                    )
+        local_lan = (services.settings.get("lan_pinless_access", True) is True
+                     and trusted_direct_lan(request))
+        if not local_lan:
+            if not pin:
+                # Public, proxied, VPN/non-private and DNS-rebound browser
+                # sessions never become implicitly admin just because PIN
+                # was not configured.
+                return JSONResponse(status_code=403, content={
+                    "detail": "直接LANのIPアドレスで開いてください"
+                })
+            supplied = (request.headers.get("x-framedeck-pin")
+                        or request.query_params.get("pin")
+                        or request.cookies.get("framedeck_pin"))
+            if supplied != pin:
+                return JSONResponse(
+                    status_code=401, content={"detail": "PINが必要です"}
+                )
         response = await call_next(request)
         if pin and request.query_params.get("pin") == pin:
             response.set_cookie("framedeck_pin", pin, httponly=True)

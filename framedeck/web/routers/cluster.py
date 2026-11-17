@@ -35,6 +35,7 @@ from ...video.hls_service import HLS_PROFILES
 from ...video.transcode import TranscodeError
 from ..dependencies import get_services
 from .system import _require_same_origin
+from ..lan_access import trusted_direct_lan
 from .video import _aiter_transcode, _hls_wait_file
 
 router = APIRouter(prefix="/api/cluster", tags=["cluster"])
@@ -43,17 +44,14 @@ _WORKER_TRANSCODE_GATE = threading.BoundedSemaphore(2)
 
 def _require_pairing_permission(request: Request, services: Services) -> None:
     _require_same_origin(request)
-    # Existing web_pin middleware authenticates all remote requests when set.
-    # Require that protection before accepting a remotely supplied secret.
-    host = request.client.host if request.client else ""
-    local = host == "testclient" or (
-        host in ("127.0.0.1", "::1", "localhost") and
-        request.url.hostname in ("127.0.0.1", "::1", "localhost")
-    )
-    if not local and not services.settings.get("web_pin", ""):
+    # Direct private LAN IP access is explicitly PIN-free. Every pairing
+    # operation remains same-origin, short-lived and two-sided approved.
+    lan = (services.settings.get("lan_pinless_access", True) is True
+           and trusted_direct_lan(request))
+    if not lan and not services.settings.get("web_pin", ""):
         raise HTTPException(
             status_code=403,
-            detail="LANからワーカーを登録する前にWeb PINを設定してください",
+            detail="直接LANで開くかWeb PIN認証を有効にしてください",
         )
 
 
