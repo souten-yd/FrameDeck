@@ -126,6 +126,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "backup_enabled": False,
     # Web
     "web_pin": "",
+    # Direct private-LAN IP connections may use the Web UI without a PIN.
+    # Public/forwarded connections still require explicit authentication.
+    "lan_pinless_access": True,
 }
 
 _VALID_ENUMS = {
