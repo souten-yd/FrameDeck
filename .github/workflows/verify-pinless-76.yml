@@ -1,0 +1,50 @@
+name: FrameDeck PR76 PIN-free direct LAN validation
+
+on:
+  push:
+    branches: [ci/verify-pinless-76]
+    paths: [.github/workflows/verify-pinless-76.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/web-pin-device-approval-76
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install runtime, tests and QDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg curl xz-utils libxml2-utils xmlstarlet pv dos2unix
+          curl -fsSL -o /tmp/qdk.deb https://github.com/qnap-dev/QDK/releases/download/v2.5.3/qdk_2.5.3_amd64.deb
+          sudo apt-get install -y /tmp/qdk.deb
+          python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Static syntax and trust boundary tests
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: |
+          python -m compileall -q framedeck
+          python -m py_compile FrameDeck.py
+          node --check framedeck/web/static/js/app.js
+          python -m pytest -q tests/test_lan_pinless_access.py tests/test_cluster_worker.py
+      - name: Full regression suite
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q -rs tests/
+      - name: QNAP TS-253Be QDK package build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash packaging/qnap/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameDeck-PR76-QPKG-verification
+          path: dist/*.qpkg
+          if-no-files-found: error
+          retention-days: 3
