@@ -16,6 +16,7 @@ from ...core.update_service import UpdateError, get_update_manager
 from ...runtime_profile import qnap_lite
 from ...video.ffmpeg import resolve_ffmpeg, system_ffprobe_path
 from ..dependencies import get_services
+from ..lan_access import trusted_direct_lan
 
 router = APIRouter(prefix="/api", tags=["system"])
 
@@ -102,18 +103,21 @@ def put_settings(values: dict[str, Any], request: Request,
                  services: Services = Depends(get_services)) -> dict:
     # First-use Web PIN bootstrap is a security-sensitive mutation. Reject
     # cross-site forms/requests even before a PIN has been installed.
-    if "web_pin" in values:
+    if "web_pin" in values or "lan_pinless_access" in values:
         _require_same_origin(request)
+    if (values.get("lan_pinless_access") is False and
+            not services.settings.get("web_pin", "")):
+        raise HTTPException(
+            status_code=422,
+            detail="PINなしLANアクセスを無効化する前にWeb PINを設定してください",
+        )
     if "backup_enabled" in values:
         # Turning on scheduled disk writes requires a protected local/admin
         # request. Existing ordinary settings keep their current semantics.
         _require_same_origin(request)
-        client = request.client.host if request.client else ""
-        local = client == "testclient" or (
-            client in ("127.0.0.1", "::1", "localhost") and
-            request.url.hostname in ("127.0.0.1", "::1", "localhost")
-        )
-        if not local and not services.settings.get("web_pin", ""):
+        lan = (services.settings.get("lan_pinless_access", True) is True
+               and trusted_direct_lan(request))
+        if not lan and not services.settings.get("web_pin", ""):
             raise HTTPException(
                 status_code=403,
                 detail="バックアップを設定するにはWeb PINを有効にしてください",
