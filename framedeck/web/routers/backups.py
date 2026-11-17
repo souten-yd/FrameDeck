@@ -12,22 +12,19 @@ from ...core.backup_service import (
 from ...core.services import Services
 from ..dependencies import get_services
 from .system import _require_same_origin
+from ..lan_access import trusted_direct_lan
 
 router = APIRouter(prefix="/api/backups", tags=["backups"])
 
 
 def _require_backup_admin(request: Request, services: Services) -> None:
     _require_same_origin(request)
-    client = request.client.host if request.client else ""
-    hostname = request.url.hostname
-    local = client == "testclient" or (
-        client in ("127.0.0.1", "::1", "localhost") and
-        hostname in ("127.0.0.1", "::1", "localhost")
-    )
-    if not local and not services.settings.get("web_pin", ""):
+    lan = (services.settings.get("lan_pinless_access", True) is True
+           and trusted_direct_lan(request))
+    if not lan and not services.settings.get("web_pin", ""):
         raise HTTPException(
             status_code=403,
-            detail="LANからバックアップ管理するにはWeb PINを設定してください",
+            detail="直接LANで開くかWeb PINを設定してください",
         )
 
 
