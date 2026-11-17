@@ -185,7 +185,7 @@ def test_no_snapshot_created_if_disk_is_full(app_env, monkeypatch):
     monkeypatch.setattr(backup_module.os, "statvfs", original)
 
 
-def test_unauthenticated_lan_cannot_trigger_backup_when_pin_absent(app_env):
+def test_pinless_backup_admin_only_on_direct_private_lan(app_env):
     from starlette.requests import Request
     from fastapi import HTTPException
     from framedeck.web.routers.backups import _require_backup_admin
@@ -197,6 +197,21 @@ def test_unauthenticated_lan_cannot_trigger_backup_when_pin_absent(app_env):
         "client": ("192.168.1.12", 50000),
         "server": ("192.168.1.10", 9000), "scheme": "http",
     }
+    # Explicit user choice: LAN administration needs no Web PIN.
+    _require_backup_admin(Request(scope), services)
+
+    # Public/non-LAN clients must not acquire the same admin privilege.
+    scope["client"] = ("8.8.8.8", 50000)
+    with pytest.raises(HTTPException) as exc:
+        _require_backup_admin(Request(scope), services)
+    assert exc.value.status_code == 403
+
+    # Cross-site requests still fail, including from a private LAN peer.
+    scope["client"] = ("192.168.1.12", 50000)
+    scope["headers"] = [
+        (b"host", b"192.168.1.10:9000"),
+        (b"sec-fetch-site", b"cross-site"),
+    ]
     with pytest.raises(HTTPException) as exc:
         _require_backup_admin(Request(scope), services)
     assert exc.value.status_code == 403
