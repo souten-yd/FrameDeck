@@ -1,0 +1,61 @@
+name: Release FrameDeck 2.4.25
+
+on:
+  push:
+    branches: [ci/release-2.4.25]
+    paths: [.github/workflows/release-2.4.25-one-shot.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: b09f92c6860d56416b618f05e6ce2b2a11e780d7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install FFmpeg and QDK prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg curl xz-utils libxml2-utils xmlstarlet pv dos2unix
+          curl -fsSL -o /tmp/qdk.deb https://github.com/qnap-dev/QDK/releases/download/v2.5.3/qdk_2.5.3_amd64.deb
+          sudo apt-get install -y /tmp/qdk.deb
+          command -v qbuild
+          command -v qpkg_encrypt
+          ffmpeg -version | head -1
+      - name: Install Python test dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Verify exact source version and JS syntax
+        run: |
+          python - <<'PY'
+          from framedeck import __version__
+          assert __version__ == '2.4.25', __version__
+          assert 'QPKG_VER="2.4.25"' in open('packaging/qnap/qpkg.cfg').read()
+          PY
+          python -m compileall -q framedeck
+          node --check framedeck/web/static/js/app.js
+          test "$(git rev-parse HEAD)" = 'b09f92c6860d56416b618f05e6ce2b2a11e780d7'
+      - name: Run full suite including FFmpeg integration
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q -rs tests/
+      - name: Build QNAP TS-253Be x86_64 QPKG
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash packaging/qnap/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameDeck-QPKG-2.4.25
+          path: dist/*.qpkg
+          if-no-files-found: error
+          retention-days: 3
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.4.25 dist/*.qpkg --target b09f92c6860d56416b618f05e6ce2b2a11e780d7 --latest --title "FrameDeck v2.4.25" --notes "正式版。PR #76: 信頼済み家庭内LANのプライベートIPアドレスへ直接アクセスした場合、既存Web PINを入力せずにFrameDeckの閲覧・設定・鍵入力不要のLinux/QNAPペアリングを使用可能にした。以前自動生成されたPINは削除せず、ブラウザからのPIN新規自動生成を廃止。公開IP、外部/VPN/プロキシ/転送ヘッダー、DNS名によるアクセスにはこの例外を適用せず、cross-siteとOrigin不一致の変更要求を拒否。重要: PINなしLAN上の他の端末も管理操作が可能になるため、信頼できる家庭内LAN専用とし、ゲストWi-Fi/インターネットへ公開しないこと。QNAP正本/元メディアのRange配信/HLSとバックエンドワーカーHMAC認証は維持。PR #77はバージョン番号のみ更新。Actions全テストとQDKビルド成功。QNAP/Linux/iPhone実機の動作確認は導入後に実施。"
