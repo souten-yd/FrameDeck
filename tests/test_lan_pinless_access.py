@@ -6,6 +6,8 @@ must never inherit the same access.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -117,3 +119,12 @@ def test_trusted_ip_detection_uses_real_peer_not_host_alone():
     assert trusted_direct_lan(Request(scope))
     scope["client"] = ("203.0.113.25", 50000)
     assert not trusted_direct_lan(Request(scope))
+
+
+def test_browser_pairing_no_longer_auto_generates_web_pin():
+    script = (Path(__file__).resolve().parents[1] /
+              "framedeck" / "web" / "static" / "js" / "app.js").read_text("utf-8")
+    assert "ensureLocalAdminSession(" not in script
+    assert "generatedPin" not in script
+    assert 'json: { web_pin: pin }' not in script
+    assert '"/api/cluster/pairing/start"' in script
