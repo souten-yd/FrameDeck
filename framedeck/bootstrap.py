@@ -98,6 +98,7 @@ class WebServerThread:
         import uvicorn
         from .web.app import create_app
 
+        services.listen_port = port
         self._config = uvicorn.Config(
             create_app(services), host=host, port=port,
             log_level="warning", access_log=False,
@@ -131,6 +132,7 @@ def run(app_mode: str = "web", host: str = "0.0.0.0", port: int = 9000,
     settings = Settings(paths)
     database = Storage(paths.database_file)
     services = build_services(settings, database, paths)
+    services.listen_port = port
     services.startup_maintenance()
 
     if _port_in_use(host, port):
@@ -168,6 +170,7 @@ def run_web_server(services: Services, host: str, port: int,
     import uvicorn
     from .web.app import create_app
 
+    services.listen_port = port
     _print_urls(host, port)
     if open_browser:
         _open_browser_when_ready(port)

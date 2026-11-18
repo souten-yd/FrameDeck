@@ -109,6 +109,17 @@ def _resolve_video(services: Services, media_id: str) -> MediaItem:
     return item
 
 
+def _worker_ready(services, path: str, *, hls: bool = False) -> bool:
+    try:
+        root, _ = owner_source_ref(path, services.library.list_roots())
+        ready = remote_eligible(services.cluster, root, services.settings)
+        return ready and (not hls or (
+            services.remote_hls.eligible() and
+            services.cluster.status().get("capabilities", {}).get("remote_hls") is True))
+    except (WorkerOffloadError, OSError, ValueError):
+        return False
+
+
 @router.get("/{media_id}")
 def video_detail(media_id: str,
                  services: Services = Depends(get_services)) -> dict:
@@ -138,6 +149,7 @@ def video_detail(media_id: str,
         "resume_position": resume,
         "transcode_available": remote_available or services.transcode.available(),
         "worker_transcode_available": remote_available,
+        "worker_hls_available": _worker_ready(services, item.path, hls=True),
         "ffmpeg_status": services.transcode.ffmpeg_status(),
     }
 
@@ -166,8 +178,17 @@ def playback_profile(media_id: str, request: Request,
     )
     settings = services.settings.as_dict()
     requested = payload.get("requestedProfile")
+    ui = payload.get("uiProfile") or "desktop"
+    configured = settings.get("video_profile_mobile" if ui == "mobile" else "video_profile_desktop", "auto")
+    if configured == "auto":
+        configured = settings.get("video_max_resolution", "auto")
+    worker_required = (requested if requested and requested != "auto" else configured) == "1080p-ext"
+    if worker_required and not _worker_ready(services, item.path, hls=ui == "mobile"):
+        raise HTTPException(status_code=409, detail="1080p (ext) のLinuxワーカーを利用できません。別の画質を選んでください")
     direct = resolve_direct_play(info, hints)
-    if qnap_lite():
+    if worker_required:
+        profile = resolve_video_profile("1080p", info.height, info.width)
+    elif qnap_lite():
         # Auto means original on every connection, including mobile/saveData.
         # Only a chosen quality or "always transcode" may resize by choice.
         ui = payload.get("uiProfile") or "desktop"
@@ -209,6 +230,8 @@ def playback_profile(media_id: str, request: Request,
     copy_video = direct.copy_video and profile.transcode and profile.name == "original"
     return {
         "profile": profile.to_dict(),
+        "worker_required": worker_required,
+        "processing_node": "linux-worker" if worker_required else None,
         "network": classify_network(hints),
         # 端末の申告を反映した判定(サーバ側の固定テーブルより優先)
         "direct_play": direct.direct_play,
@@ -228,6 +251,7 @@ def encoder_capabilities(services: Services = Depends(get_services)) -> list[dic
 
 @router.get("/{media_id}/hls/master.m3u8")
 async def hls_master(media_id: str,
+                     worker_only: bool = False,
                      profile: str | None = Query(default=None),
                      start: float = Query(default=0.0, ge=0.0),
                      session: str = Query(default=""),
@@ -240,7 +264,11 @@ async def hls_master(media_id: str,
     """
     item = _resolve_video(services, media_id)
     info = services.video_playback.get_info(item.path, media_id)
-    if profile == "original-aac":
+    if worker_only:
+        if profile != "1080p" or not _worker_ready(services, item.path, hls=True):
+            raise HTTPException(status_code=503, detail="1080p (ext) のLinuxワーカーを利用できません")
+        profiles = ["1080p"]
+    elif profile == "original-aac":
         # Compatible video is copied unchanged; only the soundtrack is AAC.
         profiles = ["original-aac"]
     else:
@@ -258,9 +286,8 @@ async def hls_master(media_id: str,
                 item.path, services.library.list_roots(),
             )
             if hls_eligible(services.cluster, source_root, services.settings):
-                # Keep the QNAP-lite resolution caps even for a Linux
-                # session. If B dies, A must not silently start a 1080p
-                # encode that the NAS safety profile would otherwise reject.
+                # Ordinary profiles retain local caps. External 1080p is
+                # worker-only and refuses unsafe NAS fallback below.
                 worker_profiles = profiles
                 worker_key = await anyio.to_thread.run_sync(
                     lambda: start_remote_hls(
@@ -285,6 +312,8 @@ async def hls_master(media_id: str,
             logger.info("Linux HLS start failed; use QNAP: %s",
                         type(exc).__name__)
 
+    if worker_only:
+        raise HTTPException(status_code=503, detail="Linuxワーカーでの1080p変換に失敗しました")
     try:
         # 旧ジョブの停止待ちを含むため、専用スレッド枠で実行する
         manifest = await anyio.to_thread.run_sync(
@@ -385,6 +414,9 @@ async def _serve_hls_worker_or_fallback(
             services.cluster.mark_unhealthy()
             logger.info("Remote HLS segment failed, using local HLS: %s",
                         type(exc).__name__)
+
+    if qnap_lite() and any(p in {"1080p", "2160p"} for p in item.profiles):
+        raise HTTPException(status_code=503, detail="外部1080pワーカーが切断されました。720p以下を選んでください")
 
     # Reconstruct the SAME profile / start time locally. This keeps the
     # browser playlist URL stable when B powers down; ffmpeg on A is still
@@ -677,6 +709,7 @@ async def stream_transcode(media_id: str,
                            copy_audio: bool = Query(default=False),
                            smooth_fps: float | None = Query(default=None, ge=20, le=240),
                            force_local: bool = Query(default=False),
+                           worker_only: bool = False,
                            services: Services = Depends(get_services)):
     """ブラウザ非対応形式向けのfMP4変換ストリーミング(シークは?start=で再要求)。
 
@@ -687,10 +720,8 @@ async def stream_transcode(media_id: str,
     """
     item = _resolve_video(services, media_id)
 
-    # Explicitly opt-in; a missing/offline Linux worker never affects direct
-    # Range streaming, HLS or ordinary playback.  A does not need to expose
-    # source bytes to the worker: B uses the separately configured read-only
-    # mount of A's media share.
+    # Direct Range playback stays on the owner. Conversion can read either
+    # a configured mount or a scoped owner HTTP source, negotiated by health.
     if not force_local and offload_enabled(services.settings):
         try:
             source_root, relative = owner_source_ref(
@@ -728,6 +759,9 @@ async def stream_transcode(media_id: str,
             services.cluster.mark_unhealthy()
             logger.info("Worker unavailable before stream; using NAS fMP4: %s",
                         type(exc).__name__)
+
+    if worker_only:
+        raise HTTPException(status_code=503, detail="Linuxワーカーを利用できません。別の画質を選んでください")
 
     # Hardware and CPU safety caps still apply whenever QNAP encodes locally.
     if qnap_lite() and not copy_video:

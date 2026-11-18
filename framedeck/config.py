@@ -162,15 +162,15 @@ _VALID_ENUMS = {
     },
     "video_stream_mode": {"original", "auto", "transcode"},
     "video_profile_desktop": {
-        "auto", "original", "2160p", "1080p", "720p", "480p", "360p",
+        "auto", "original", "2160p", "1080p", "1080p-ext", "720p", "480p", "360p",
         "wifi_high", "mobile_balanced", "mobile_low", "data_saver", "custom",
     },
     "video_profile_mobile": {
-        "auto", "original", "2160p", "1080p", "720p", "480p", "360p",
+        "auto", "original", "2160p", "1080p", "1080p-ext", "720p", "480p", "360p",
         "wifi_high", "mobile_balanced", "mobile_low", "data_saver", "custom",
     },
     "video_max_resolution": {
-        "auto", "original", "2160p", "1080p", "720p", "480p", "360p",
+        "auto", "original", "2160p", "1080p", "1080p-ext", "720p", "480p", "360p",
     },
     "video_cellular_max_resolution": {
         "auto", "original", "2160p", "1080p", "720p", "480p", "360p",

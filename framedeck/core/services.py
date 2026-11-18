@@ -19,6 +19,7 @@ from ..cluster_worker import ClusterController
 from ..cluster_discovery import LanDiscovery
 from ..cluster_pairing import PairingManager
 from ..worker_hls import RemoteHlsSessions
+from ..worker_sources import WorkerSources
 from ..video.playback_service import VideoPlaybackService
 from ..video.transcode import TranscodeService
 from ..video.capabilities import EncoderCapabilityService
@@ -51,6 +52,10 @@ class Services:
 
         self.rating = RatingService(storage)
         self.library = LibraryService(storage, settings, self.rating)
+
+        self.worker_sources = WorkerSources(self)
+        self.cluster.parent_announcement = self.worker_sources.announcement
+        self.cluster.source_provider = self.worker_sources.issue
 
         self.nested_cache = NestedArchiveCache(
             paths.nested_archive_cache, storage,
@@ -100,6 +105,7 @@ class Services:
             encode_threads=2 if qnap_lite() else None,
             process_gate=video_gate,
         )
+        self.hls.source_metadata = self.worker_sources.metadata
         self.transcode_jobs = TranscodeJobManager()
         self.encoder_capabilities = EncoderCapabilityService()
         self.confirm_tokens = ConfirmTokenBox()
