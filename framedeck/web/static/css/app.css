@@ -851,3 +851,5 @@ body.orientation-lock-active #video-player:not(.hidden) {
   height: 100dvh;
   background: #000;
 }
+
+.cluster-summary { flex: 0 0 auto; padding: 6px 12px; font-size: 12px; color: var(--text-muted, #aaa); background: var(--surface); border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }

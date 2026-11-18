@@ -1,18 +1,18 @@
-"""Opt-in cluster worker pairing and health endpoints.
-
-Worker capabilities are read-only and require an HMAC-authenticated request.
-No job execution, arbitrary URL fetching, media mutation or remote input API
-is exposed in this stage.
-"""
+"""Worker pairing, capabilities and scoped read-only media conversion endpoints."""
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 import threading
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
+from ...worker_sources import library_source, read_ticket
+from ...video.stream import parse_range_header, RangeNotSatisfiable, iter_file_range, mime_for_video
 from ... import __version__
 from ...cluster_pairing import PairingError
 from ...cluster_worker import (
@@ -24,8 +24,8 @@ from ...cluster_worker import (
 )
 from ...core.services import Services
 from ...worker_offload import (
-    WORKER_FMP4_PATH, WorkerOffloadError, resolve_mounted_video,
-    worker_root_fingerprints, root_fingerprint,
+    WORKER_FMP4_PATH, WorkerOffloadError,
+    worker_root_fingerprints, root_fingerprint, offload_enabled,
 )
 from ...video.ffmpeg import resolve_ffmpeg
 from ...worker_hls import (
@@ -79,6 +79,7 @@ def cluster_status(services: Services = Depends(get_services)) -> dict:
         "auto_discovery_enabled": services.discovery.enabled(),
         "web_pin_configured": bool(services.settings.get("web_pin", "")),
         "peer": peer,
+        "parent": services.worker_sources.status(),
         "hls_performance": services.remote_hls.status(),
         "secure_pairing": {
             key: value for key, value in services.pairing.status().items()
@@ -147,10 +148,22 @@ def worker_capabilities(request: Request,
     # Do not bootstrap ffmpeg during a heartbeat.  Linux may have it in PATH;
     # QNAP's packaged binary is also detected without a background install.
     ffmpeg = resolve_ffmpeg(False)
-    roots = worker_root_fingerprints()
+    parent_header = request.headers.get("x-framedeck-parent")
+    if parent_header:
+        try:
+            services.worker_sources.accept_announcement(
+                parent_header, request.headers.get("x-framedeck-parent-proof", ""),
+                request.headers["x-framedeck-nonce"], secret,
+                request.client.host if request.client else "",
+            )
+        except WorkerOffloadError as exc:
+            raise HTTPException(status_code=403, detail="invalid parent identity") from exc
+    roots = sorted(set(worker_root_fingerprints() + services.worker_sources.roots()))
     payload = json.dumps({
         "protocol_version": PROTOCOL_VERSION,
         "worker": True,
+        "name": socket.gethostname(),
+        "automatic_sources": True,
         "version": __version__,
         "transcode_available": bool(ffmpeg.available),
         "remote_fmp4": bool(ffmpeg.available and roots),
@@ -170,6 +183,7 @@ def worker_capabilities(request: Request,
 @router.get("/worker/fmp4")
 def worker_fmp4(request: Request,
                 source_root: str = Query(..., min_length=1, max_length=2048),
+                source_url: str | None = Query(None, max_length=16384),
                 relative_path: str = Query(..., min_length=1, max_length=4096),
                 start: float = Query(0.0, ge=0.0, le=1000000.0),
                 max_height: int | None = Query(None, ge=144, le=4320),
@@ -179,11 +193,7 @@ def worker_fmp4(request: Request,
                 copy_audio: bool = False,
                 smooth_fps: float | None = Query(None, ge=20.0, le=240.0),
                 services: Services = Depends(get_services)):
-    """Authentication-gated conversion of only preconfigured mounted videos.
-
-    There is intentionally no arbitrary URL, command, filepath or raw-file API.
-    The Linux mount should be explicitly read-only at the OS level.
-    """
+    """Convert a read-only mount or a ticketed video from the paired parent."""
     secret = worker_secret()
     signed_resource = request.url.path + (
         ("?" + request.url.query) if request.url.query else ""
@@ -195,7 +205,7 @@ def worker_fmp4(request: Request,
     if not _WORKER_TRANSCODE_GATE.acquire(blocking=False):
         raise HTTPException(status_code=503, detail="worker is busy")
     try:
-        source = resolve_mounted_video(source_root, relative_path)
+        source = services.worker_sources.resolve(source_root, relative_path, source_url, secret)
         if not resolve_ffmpeg(False).available:
             raise WorkerOffloadError("ffmpeg unavailable")
         stream = services.transcode.open_fmp4(
@@ -248,6 +258,7 @@ def _require_worker_hls(request: Request) -> str:
 def worker_hls_start(
     request: Request,
     source_root: str = Query(..., min_length=1, max_length=2048),
+    source_url: str | None = Query(None, max_length=16384),
     relative_path: str = Query(..., min_length=1, max_length=4096),
     profiles: str = Query(..., min_length=1, max_length=80),
     height: int = Query(0, ge=0, le=4320),
@@ -255,13 +266,13 @@ def worker_hls_start(
     session: str = Query("", max_length=64),
     services: Services = Depends(get_services),
 ) -> Response:
-    """Start bounded existing HlsService on a read-only mapped NAS video."""
+    """Start bounded HLS from a mount or an authenticated parent video."""
     secret = _require_worker_hls(request)
     requested = profiles.split(",")
     if not requested or len(requested) > 4 or any(p not in HLS_ALLOWED for p in requested):
         raise HTTPException(status_code=422, detail="invalid HLS profiles")
     try:
-        source = resolve_mounted_video(source_root, relative_path)
+        source = services.worker_sources.resolve(source_root, relative_path, source_url, secret)
         if not resolve_ffmpeg(False).available:
             raise WorkerOffloadError("ffmpeg unavailable")
         manifest = services.hls.ensure_async(
@@ -349,7 +360,9 @@ def pairing_revoke(request: Request,
     """Admin explicitly resets Linux-only trust for a new bilateral pairing."""
     _require_pairing_permission(request, services)
     try:
-        return services.pairing.reset_linux()
+        result = services.pairing.reset_linux()
+        services.worker_sources.clear()
+        return result
     except (PairingError, OSError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -371,7 +384,9 @@ def pairing_finish(request: Request,
     """QNAP admin confirms the code and saves derived HMAC without seeing it."""
     _require_pairing_permission(request, services)
     try:
-        return services.pairing.finish()
+        result = services.pairing.finish()
+        services.settings.set("cluster_offload_enabled", True)
+        return result
     except (PairingError, ClusterConfigError, OSError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -429,3 +444,41 @@ async def pairing_commit(request: Request,
         )
     except (PairingError, KeyError, TypeError, OSError) as exc:
         raise HTTPException(status_code=403, detail="Pairing unavailable") from exc
+
+
+@router.api_route("/source", methods=["GET", "HEAD"])
+def worker_source(request: Request, ticket: str = Query(..., max_length=12000),
+                  services: Services = Depends(get_services)):
+    """Serve only a ticketed library video to the currently paired worker."""
+    peer = services.cluster.verified_peer()
+    try:
+        same_peer = bool(peer and request.client and
+                         ipaddress.ip_address(request.client.host) ==
+                         ipaddress.ip_address(urlsplit(peer["url"]).hostname))
+    except ValueError:
+        same_peer = False
+    if not same_peer or not offload_enabled(services.settings):
+        raise HTTPException(status_code=403, detail="paired worker required")
+    try:
+        data = read_ticket(peer["secret"], ticket)
+        path = library_source(services.library.list_roots(), data["root"], data["relative"])
+        stat = path.stat()
+        if stat.st_size != data["size"] or stat.st_mtime_ns != data["mtime"]:
+            raise WorkerOffloadError("source changed")
+    except (WorkerOffloadError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=403, detail="source unavailable") from exc
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "no-store",
+               "X-Content-Type-Options": "nosniff"}
+    try:
+        span = parse_range_header(request.headers.get("range"), stat.st_size)
+    except RangeNotSatisfiable:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{stat.st_size}"})
+    start, end = span if span else (0, stat.st_size - 1)
+    headers["Content-Length"] = str(max(0, end - start + 1))
+    if span:
+        headers["Content-Range"] = f"bytes {start}-{end}/{stat.st_size}"
+    if request.method == "HEAD":
+        return Response(status_code=206 if span else 200, headers=headers)
+    return StreamingResponse(iter_file_range(str(path), start, end),
+                             status_code=206 if span else 200,
+                             media_type=mime_for_video(str(path)), headers=headers)

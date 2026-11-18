@@ -113,6 +113,7 @@ def create_app(services: Services) -> FastAPI:
         # rejects all unsigned requests.
         if request.url.path in (CAPABILITY_PATH, WORKER_FMP4_PATH,
                                  WORKER_HLS_START, WORKER_HLS_FILE,
+                                 "/api/cluster/source",
                                  "/api/auth/pin",
                                  "/api/cluster/pairing/hello",
                                  "/api/cluster/pairing/commit") or (

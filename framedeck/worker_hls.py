@@ -65,6 +65,9 @@ def start_remote_hls(controller, root: str, relative: str, profiles: list[str],
         "source_root": root, "relative_path": relative, "profiles": ",".join(profiles),
         "height": str(int(height)), "start": str(float(start)), "session": session[:64],
     }
+    provider = getattr(controller, "source_provider", None)
+    if controller.status().get("capabilities", {}).get("automatic_sources") and provider:
+        params.update(provider(root, relative))
     path = WORKER_HLS_START + "?" + urlencode(params)
     response, peer, headers = _signed_open(controller, path, timeout=8)
     try:

@@ -81,6 +81,58 @@ function videoSupportsNativeHls() {
   return Boolean(video?.canPlayType?.("application/vnd.apple.mpegurl"));
 }
 
+function workerOverview(result) {
+  if (result.secure_pairing?.role === "linux") {
+    const parent = result.parent;
+    if (!parent?.configured) return result.worker_mode ? "Linuxワーカー: 親QNAPの接続待ち" : "";
+    const roots = (parent.roots || []).map((r) => r.name).join("、") || "動画フォルダなし";
+    return `親QNAP: ${parent.name} / ${parent.url} / v${parent.version} / ${parent.online ? "接続中" : "オフライン"} / 動画: ${roots} / 自動読み取り`;
+  }
+  const peer = result.peer;
+  if (!peer?.configured) return "";
+  const caps = peer.capabilities || {};
+  return `Linuxワーカー: ${caps.name || peer.url} / ${peer.url}` +
+    `${caps.version ? " / v" + caps.version : ""} / ${peer.online ? "接続中" : "オフライン"}` +
+    ` / 動画変換: ${peer.offload_active ? "利用可能" : "待機中"}` +
+    ` / ${caps.automatic_sources ? "動画フォルダは自動読み取り" : "共有マウントを使用"}`;
+}
+
+function updateWorkerQualityOptions(ready) {
+  const select = $("sel-video-quality");
+  if (!select || S.settings.runtime_profile !== "qnap-lite") return;
+  for (const option of [...select.options]) {
+    if (["2160p", "1080p"].includes(option.value)) option.remove();
+  }
+  let option = [...select.options].find((x) => x.value === "1080p-ext");
+  if (!option && ready) {
+    option = new Option("1080p (ext)", "1080p-ext");
+    select.insertBefore(option, [...select.options].find((x) => x.value === "720p") || null);
+  }
+  if (option) {
+    option.disabled = !ready;
+    option.textContent = ready ? "1080p (ext)" : "1080p (ext・接続待ち)";
+  }
+}
+
+async function refreshClusterOverview() {
+  try {
+    const result = await api("/api/cluster/status");
+    S.clusterStatus = result;
+    const summary = $("cluster-summary");
+    if (summary) {
+      summary.textContent = workerOverview(result);
+      summary.classList.toggle("hidden", !summary.textContent);
+    }
+    updateWorkerQualityOptions(result.peer?.offload_active === true);
+    return result;
+  } catch (_) {
+    const summary = $("cluster-summary");
+    if (summary && summary.textContent) summary.textContent = "接続相手の状態を確認できません";
+    updateWorkerQualityOptions(false);
+    return null;
+  }
+}
+
 function configuredVideoQuality() {
   const sessionQuality = S.video.quality || "auto";
   if (sessionQuality !== "auto") return sessionQuality;
@@ -97,7 +149,8 @@ function hlsProfileName(profile) {
 function hlsMasterUrl(itemId, profile, startSeconds) {
   const start = Math.max(0, Number(startSeconds) || 0);
   return `/api/videos/${itemId}/hls/master.m3u8?profile=${encodeURIComponent(profile)}` +
-    `&start=${start.toFixed(2)}&session=${encodeURIComponent(CLIENT_SESSION_ID)}`;
+    `&start=${start.toFixed(2)}&session=${encodeURIComponent(CLIENT_SESSION_ID)}` +
+    (S.video.workerRequired ? "&worker_only=1" : "");
 }
 
 /* モバイルで変換が必要な場合はHLSを使う。
@@ -2006,7 +2059,8 @@ function transcodeStreamUrl(itemId, seconds) {
   if (S.video.copyVideo) params.set("copy_video", "1");
   if (S.video.copyAudio) params.set("copy_audio", "1");
   if (S.video.smoothFps) params.set("smooth_fps", String(S.video.smoothFps));
-  if (S.video.forceLocal) params.set("force_local", "1");
+  if (S.video.forceLocal && !S.video.workerRequired) params.set("force_local", "1");
+  if (S.video.workerRequired) params.set("worker_only", "1");
   return `/api/videos/${itemId}/stream-transcode?${params.toString()}`;
 }
 
@@ -2035,6 +2089,8 @@ async function openVideo(item) {
   if (token !== S.video.loadToken) return;
   S.video.item = item;
   S.video.info = detail.info;
+  updateWorkerQualityOptions(detail.worker_transcode_available &&
+    (S.uiProfile !== "mobile" || detail.worker_hls_available));
   S.video.duration = detail.info.duration_seconds || 0;
   S.video.offset = 0;
   S.video.pendingSeekSeconds = null;
@@ -2053,6 +2109,7 @@ async function openVideo(item) {
   S.video.transcodeFallback = false;
   S.video.hlsFallback = false;
   S.video.forceLocal = false;
+  S.video.workerRequired = false;
   S.video.mobileStableOriginal = false;
   try {
     const hints = clientMediaHints();
@@ -2061,12 +2118,19 @@ async function openVideo(item) {
       json: hints,
     });
     playbackProfile = decision.profile;
+    S.video.workerRequired = decision.worker_required === true;
     network = decision.network;
     canDirectPlay = decision.direct_play;
     directPlayReason = decision.direct_play_reason || directPlayReason;
     S.video.copyVideo = Boolean(decision.copy_video);
     S.video.copyAudio = Boolean(decision.copy_audio);
   } catch (e) {
+    if (configuredVideoQuality() === "1080p-ext") {
+      $("video-spinner").classList.add("hidden");
+      $("video-msg").textContent = e.message;
+      $("video-msg").classList.remove("hidden");
+      return;
+    }
     playbackProfile = null;
   }
   if (token !== S.video.loadToken) return;
@@ -2170,6 +2234,7 @@ async function openVideo(item) {
       }
       if (resume > 0) toast(`続きから再生: ${fmtTime(resume)}`);
     }
+    if (S.video.workerRequired) $("video-badge").textContent += " (ext・Linuxワーカー)";
     $("video-badge").textContent += network === "cellular" ? " · モバイル回線" : "";
     $("video-badge").classList.remove("hidden");
   } else if (canDirectPlay) {
@@ -2798,7 +2863,9 @@ video.addEventListener("error", () => {
     return;
   }
   $("video-spinner").classList.add("hidden");
-  $("video-msg").textContent = (S.video.transcode || S.video.hls)
+  $("video-msg").textContent = S.video.workerRequired
+    ? "外部Linuxワーカーでの再生に失敗しました。接続状態を確認するか、720p以下の画質を選んでください。"
+    : (S.video.transcode || S.video.hls)
     ? "変換ストリーミングの再生に失敗しました。ffmpegの有無、入力動画形式、またはモバイル互換出力を確認してください。"
     : "再生エラーが発生しました";
   $("video-msg").classList.remove("hidden");
@@ -3275,6 +3342,13 @@ function makeNumberInput(key, { min = 0, max = 999999, step = 1 } = {}) {
 async function openSettings() {
   try { S.settings = await api("/api/settings"); updateComicTapControl(); } catch (e) {}
   const wrap = document.createElement("div");
+  const connection = await refreshClusterOverview();
+  if (connection && workerOverview(connection)) {
+    const overview = document.createElement("p");
+    overview.className = "hint";
+    overview.textContent = workerOverview(connection);
+    wrap.appendChild(overview);
+  }
   const grid = document.createElement("div");
   grid.className = "settings-grid";
 
@@ -3376,7 +3450,7 @@ async function openSettings() {
   grid.appendChild(videoHead);
   settingRow(grid, "Linux高速変換を使用", makeSelect("cluster_offload_enabled", [
     ["false", "無効（QNAPのみ）"], ["true", "有効（Linuxが利用可能なら使用）"],
-  ]), "Linux側にQNAPの動画フォルダを読み取り専用マウントして登録した場合、fMP4に加えてiPad向けHLS/AAC変換も委譲できます。原版の直接Range配信はQNAPのままです。");
+  ]), "接続済みLinuxがQNAPの動画を自動で読み取り、fMP4とiPad向けHLS/AAC変換を担当します。共有フォルダの手動マウントは不要です。原版の直接Range配信はQNAPのままです。");
   settingRow(grid, "動画軽量配信", makeSelect("video_stream_mode", [
     ["original", "無効"], ["auto", "自動"], ["transcode", "常に有効"],
   ]));
@@ -3386,6 +3460,10 @@ async function openSettings() {
        ["480p", "480p"], ["360p", "360p"]]
     : [["auto", "自動 (回線で判定)"], ["original", "原寸"], ["2160p", "4K"],
        ["1080p", "1080p"], ["720p", "720p"], ["480p", "480p"], ["360p", "360p"]];
+  if (qnapVideo && (S.clusterStatus?.peer?.offload_active ||
+      [S.settings.video_max_resolution, S.settings.video_profile_desktop, S.settings.video_profile_mobile].includes("1080p-ext"))) {
+    videoQualityOptions.splice(2, 0, ["1080p-ext", "1080p (ext)"]);
+  }
   settingRow(grid, "最大解像度", makeSelect("video_max_resolution", videoQualityOptions),
     qnapVideo ? "自動は原寸。720p以下への縮小は手動指定時のみです。" :
     "4K変換は通信量・CPU/GPU負荷・キャッシュ容量が大きくなります。");
@@ -3549,7 +3627,7 @@ async function openSettings() {
   clusterSection.appendChild(clusterHeading);
   const clusterHint = document.createElement("p");
   clusterHint.className = "hint";
-  clusterHint.textContent = "読み取り専用でQNAPをマウントしたLinuxへ、fMP4とiPadのHLS/AAC変換を委譲します。元動画の直接Range配信はQNAPのままです。";
+  clusterHint.textContent = "接続済みLinuxへ動画を読み取り専用で自動共有し、fMP4とiPadのHLS/AAC変換を委譲します。元動画の直接Range配信はQNAPのままです。";
   clusterSection.appendChild(clusterHint);
   const clusterStatus = document.createElement("p");
   clusterStatus.className = "hint";
@@ -3821,12 +3899,11 @@ async function openSettings() {
   async function refreshWorkerStatus() {
     try {
       const result = await api("/api/cluster/status");
+      S.clusterStatus = result;
       const peer = result.peer;
       const linuxRole = result.secure_pairing?.role === "linux";
       if (linuxRole) {
-        clusterStatus.textContent = result.secure_pairing.worker_key_configured
-          ? "Linuxワーカー: 認証済み、QNAPの検出待ち"
-          : "Linuxワーカー: Web画面から初回登録できます";
+        clusterStatus.textContent = workerOverview(result) || "Linuxワーカー: Web画面から初回登録できます";
         autoBox.style.display = "none";
         manualPairDetails.hidden = true;
         pairingPanel.hidden = false;
@@ -3856,6 +3933,7 @@ async function openSettings() {
         : peer.online
           ? "接続済み: " + peer.url + " / FFmpeg: " + (peer.capabilities?.transcode_available ? "利用可" : "利用不可") + " / fMP4委譲: " + (peer.offload_active ? "有効" : "無効・待機中") + hlsInfo + rateInfo + cooldownInfo
           : "登録済み・オフライン: " + peer.url + "（Linux停止中もQNAPは利用できます）";
+      if (peer.configured) clusterStatus.textContent = workerOverview(result) + hlsInfo + rateInfo + cooldownInfo;
       workerRemove.disabled = !peer.configured;
       refreshPairingStatus()
         .then((info) => { if (info.open) watchPairingStatus(); })
@@ -4235,16 +4313,13 @@ async function init() {
   setupHistoryNavigation();
   try {
     S.settings = await api("/api/settings");
-    if (S.settings.runtime_profile === "qnap-lite") {
-      for (const option of [...$("sel-video-quality").options]) {
-        if (["2160p", "1080p"].includes(option.value)) option.remove();
-      }
-    }
+    await refreshClusterOverview();
     await loadRoots();
   } catch (e) {
     toast(`初期化に失敗: ${e.message}`, true);
     return;
   }
+  setInterval(() => { if (!document.hidden) refreshClusterOverview(); }, 15000);
   setupMobileSelects();
   await switchToActiveRoot({ announceResume: true });
   connectWs();

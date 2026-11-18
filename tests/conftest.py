@@ -40,6 +40,14 @@ def make_zip(path: Path, pages: int = 4, landscape_pages=(),
     return path
 
 
+@pytest.fixture(autouse=True)
+def isolate_default_library_folders(monkeypatch):
+    # Tests must not stat a real SMB/NFS mount on the developer's machine.
+    from framedeck.config import DEFAULT_SETTINGS
+    monkeypatch.setitem(DEFAULT_SETTINGS, "default_folder_video", "")
+    monkeypatch.setitem(DEFAULT_SETTINGS, "default_folder_comic", "")
+
+
 @pytest.fixture()
 def app_env(tmp_path):
     """一時ディレクトリにFrameDeckの実行環境一式を作る。"""

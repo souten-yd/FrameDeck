@@ -197,6 +197,9 @@ def open_remote_fmp4(controller, source_root: str, relative_path: str,
         params["max_width"] = str(int(max_width))
     if smooth_fps is not None:
         params["smooth_fps"] = str(float(smooth_fps))
+    provider = getattr(controller, "source_provider", None)
+    if controller.status().get("capabilities", {}).get("automatic_sources") and provider:
+        params.update(provider(source_root, relative_path))
     resource = WORKER_FMP4_PATH + "?" + urlencode(params)
     try:
         base = validate_worker_url(peer["url"])

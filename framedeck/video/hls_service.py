@@ -159,12 +159,14 @@ class HlsService:
 
     def cache_key(self, source_path: str, profiles: list[str],
                   source_height: int = 0, start_seconds: float = 0.0) -> str:
-        stat = os.stat(source_path)
+        metadata = getattr(self, "source_metadata", None)
+        remote = metadata(source_path) if metadata else None
+        stat = None if remote else os.stat(source_path)
         payload = {
             "version": HLS_VERSION,
-            "path": os.path.abspath(source_path),
-            "mtime": stat.st_mtime,
-            "size": stat.st_size,
+            "path": remote["identity"] if remote else os.path.abspath(source_path),
+            "mtime": remote["mtime"] if remote else stat.st_mtime,
+            "size": remote["size"] if remote else stat.st_size,
             "profiles": profiles,
             "source_height": source_height,
             "segment_duration": self.segment_duration,
@@ -604,8 +606,10 @@ class HlsService:
                     raise TranscodeError(f"HLS生成に失敗しました: {detail}")
             if job.cancelled:
                 raise _HlsCancelled()
+            source_metadata = getattr(self, "source_metadata", None)
+            remote = source_metadata(source_path) if source_metadata else None
             (manifest.cache_dir / COMPLETE_MARKER).write_text(
-                json.dumps({"source": os.path.abspath(source_path),
+                json.dumps({"source": remote["identity"] if remote else os.path.abspath(source_path),
                             "start": round(float(start_seconds), 2)}),
                 "utf-8",
             )

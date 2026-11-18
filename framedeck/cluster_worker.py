@@ -1,10 +1,7 @@
-"""LAN-only optional FrameDeck worker discovery and authenticated health monitoring.
-
-No media is sent to a worker in this foundation release.  The NAS stays the
-sole source of truth and continues to serve every existing request locally.
-"""
+"""Authenticated optional worker registration, capabilities and health monitoring."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -165,6 +162,8 @@ class ClusterController:
         self._last_seen: float | None = None
         self._retry_after: float = 0.0
         self._error = "not_configured"
+        self.parent_announcement = None
+        self.source_provider = None
         self._load()
 
     def _load(self) -> None:
@@ -306,6 +305,12 @@ class ClusterController:
             return
         url = validate_worker_url(peer["url"]) + CAPABILITY_PATH
         headers = signed_headers(peer["secret"], "GET", CAPABILITY_PATH)
+        if self.parent_announcement is not None:
+            raw = json.dumps(self.parent_announcement(), ensure_ascii=False, separators=(",", ":")).encode()
+            headers["X-FrameDeck-Parent"] = base64.urlsafe_b64encode(raw).decode()
+            headers["X-FrameDeck-Parent-Proof"] = response_signature(
+                peer["secret"], headers["X-FrameDeck-Nonce"], raw,
+            )
         request = Request(url, method="GET", headers=headers)
         try:
             with _secure_opener().open(request, timeout=2.0) as response:
@@ -341,6 +346,8 @@ class ClusterController:
                     "remote_fmp4": data.get("remote_fmp4", False),
                     "remote_hls": data.get("remote_hls", False),
                     "source_roots": roots,
+                    "automatic_sources": data.get("automatic_sources") is True,
+                    "name": str(data.get("name", "Linux"))[:128],
                 }
         except (HTTPError, URLError, OSError, ValueError, TypeError) as exc:
             # No secrets or detailed server response in logs / status.
