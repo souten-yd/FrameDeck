@@ -118,16 +118,9 @@ async function refreshClusterOverview() {
   try {
     const result = await api("/api/cluster/status");
     S.clusterStatus = result;
-    const summary = $("cluster-summary");
-    if (summary) {
-      summary.textContent = workerOverview(result);
-      summary.classList.toggle("hidden", !summary.textContent);
-    }
     updateWorkerQualityOptions(result.peer?.offload_active === true);
     return result;
   } catch (_) {
-    const summary = $("cluster-summary");
-    if (summary && summary.textContent) summary.textContent = "接続相手の状態を確認できません";
     updateWorkerQualityOptions(false);
     return null;
   }
