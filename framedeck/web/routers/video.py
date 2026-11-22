@@ -333,7 +333,7 @@ async def hls_master(media_id: str,
                 )
                 proxy = services.remote_hls.add(
                     worker_key, media_id, item.path, worker_profiles,
-                    info.height, start, session.strip()[:64],
+                    info.height, start, session.strip()[:64], tone_map,
                 )
                 return RedirectResponse(
                     f"/api/videos/{media_id}/hls/{proxy.proxy_key}/master.m3u8",
@@ -460,7 +460,7 @@ async def _serve_hls_worker_or_fallback(
             lambda: services.hls.ensure_async(
                 item.source_path, profiles=list(item.profiles),
                 source_height=item.height, start_seconds=item.start,
-                owner=item.owner or None,
+                owner=item.owner or None, tone_map=item.tone_map,
             ),
             limiter=_STREAM_LIMITER,
         )
