@@ -225,7 +225,10 @@ class HlsService:
         try:
             self._acquire_slot(job)
             acquired = True
-            self._generate(source_path, manifest, job, start_seconds, tone_map)
+            if tone_map:
+                self._generate(source_path, manifest, job, start_seconds, tone_map=True)
+            else:
+                self._generate(source_path, manifest, job, start_seconds)
         finally:
             if acquired:
                 self._release_slot(job)
@@ -279,7 +282,10 @@ class HlsService:
             try:
                 self._acquire_slot(job)
                 acquired = True
-                self._generate(source_path, manifest, job, start_seconds, tone_map)
+                if tone_map:
+                    self._generate(source_path, manifest, job, start_seconds, tone_map=True)
+                else:
+                    self._generate(source_path, manifest, job, start_seconds)
                 if job.cancelled:
                     raise _HlsCancelled()
             except _HlsCancelled:
