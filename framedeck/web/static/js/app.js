@@ -2163,6 +2163,8 @@ async function openVideo(item) {
   S.video.maxWidth = playbackProfile?.width || null;
 
   if (S.video.quality === "remux") {
+    // Explicit remux is an opt-out from tone mapping: encoded video is untouched.
+    S.video.toneMap = false;
     // 画質はそのまま(再エンコードなし)、コンテナだけ作り直して連続配信する。
     // 直接再生で不定期に引っかかる場合の逃げ道。データトラック等の
     // 余計なストリームも落ちるため、素の配信より素直に流れる
