@@ -191,6 +191,7 @@ def worker_fmp4(request: Request,
                 session: str = Query("", max_length=64),
                 copy_video: bool = False,
                 copy_audio: bool = False,
+                tone_map: bool = False,
                 smooth_fps: float | None = Query(None, ge=20.0, le=240.0),
                 services: Services = Depends(get_services)):
     """Convert a read-only mount or a ticketed video from the paired parent."""
@@ -212,6 +213,7 @@ def worker_fmp4(request: Request,
             str(source), start, max_height=max_height, max_width=max_width,
             owner=session or None, copy_video=copy_video,
             copy_audio=copy_audio, smooth_fps=smooth_fps,
+            tone_map=tone_map,
         )
     except (WorkerOffloadError, OSError, ValueError) as exc:
         _WORKER_TRANSCODE_GATE.release()
@@ -264,6 +266,7 @@ def worker_hls_start(
     height: int = Query(0, ge=0, le=4320),
     start: float = Query(0.0, ge=0.0, le=1000000.0),
     session: str = Query("", max_length=64),
+    tone_map: bool = False,
     services: Services = Depends(get_services),
 ) -> Response:
     """Start bounded HLS from a mount or an authenticated parent video."""
@@ -278,6 +281,7 @@ def worker_hls_start(
         manifest = services.hls.ensure_async(
             str(source), profiles=requested, source_height=height,
             start_seconds=start, owner=session or None,
+            **({"tone_map": True} if tone_map else {}),
         )
     except (WorkerOffloadError, OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail="HLS worker unavailable") from exc

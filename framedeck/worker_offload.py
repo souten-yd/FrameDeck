@@ -174,7 +174,8 @@ def open_remote_fmp4(controller, source_root: str, relative_path: str,
                      session: str = "",
                      copy_video: bool = False,
                      copy_audio: bool = False,
-                     smooth_fps: float | None = None):
+                     smooth_fps: float | None = None,
+                     tone_map: bool = False):
     """Authenticate request and response handshake; return a live HTTP stream.
 
     Call from a bounded thread since connecting to B can take a few seconds.
@@ -190,6 +191,7 @@ def open_remote_fmp4(controller, source_root: str, relative_path: str,
         "session": session[:64],
         "copy_video": "true" if copy_video else "false",
         "copy_audio": "true" if copy_audio else "false",
+        "tone_map": "true" if tone_map else "false",
     }
     if max_height is not None:
         params["max_height"] = str(int(max_height))

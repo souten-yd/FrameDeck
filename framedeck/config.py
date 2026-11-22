@@ -99,6 +99,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Linux worker (opt-in; standalone QNAP unchanged by default)
     "cluster_offload_enabled": False,
     # 動画配信
+    "video_color_mode": "auto",               # auto | original | sdr
     "video_stream_mode": "auto",             # original | auto | transcode
     # auto = 原寸 (回線状況による画質変更なし)
     "video_profile_desktop": "auto",         # auto | original | 2160p | ... | 360p
@@ -160,6 +161,7 @@ _VALID_ENUMS = {
     "comic_mobile_client_enhancement": {
         "off", "auto", "sharpen", "contrast", "super_resolution",
     },
+    "video_color_mode": {"auto", "original", "sdr"},
     "video_stream_mode": {"original", "auto", "transcode"},
     "video_profile_desktop": {
         "auto", "original", "2160p", "1080p", "1080p-ext", "720p", "480p", "360p",

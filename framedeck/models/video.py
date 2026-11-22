@@ -53,6 +53,11 @@ class VideoInfo:
     chapters: tuple[ChapterInfo, ...]
     direct_play: bool
     direct_play_reason: str
+    color_primaries: str = ""
+    color_transfer: str = ""
+    color_space: str = ""
+    color_range: str = ""
+    hdr_format: str = "unknown"
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +74,11 @@ class VideoInfo:
             "chapters": [c.to_dict() for c in self.chapters],
             "direct_play": self.direct_play,
             "direct_play_reason": self.direct_play_reason,
+            "color_primaries": self.color_primaries,
+            "color_transfer": self.color_transfer,
+            "color_space": self.color_space,
+            "color_range": self.color_range,
+            "hdr_format": self.hdr_format,
         }
 
 

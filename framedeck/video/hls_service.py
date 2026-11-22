@@ -25,8 +25,9 @@ from pathlib import Path
 from .ffmpeg import resolve_ffmpeg
 from .profile_service import VIDEO_PROFILES, canonical_video_profile, resolve_video_profile, scale_filter_for_box
 from .transcode import TranscodeError
+from .color import hdr_to_sdr_filters, check_tonemap_filters
 
-HLS_VERSION = "hls-v3"
+HLS_VERSION = "hls-v4-color"
 HLS_PROFILES = ("360p", "480p", "720p", "1080p")
 COMPLETE_MARKER = "complete"
 HLS_READ_RATE = 1.0
@@ -158,7 +159,8 @@ class HlsService:
         self.segment_duration = int(value)
 
     def cache_key(self, source_path: str, profiles: list[str],
-                  source_height: int = 0, start_seconds: float = 0.0) -> str:
+                  source_height: int = 0, start_seconds: float = 0.0,
+                  tone_map: bool = False) -> str:
         metadata = getattr(self, "source_metadata", None)
         remote = metadata(source_path) if metadata else None
         stat = None if remote else os.stat(source_path)
@@ -170,6 +172,7 @@ class HlsService:
             "profiles": profiles,
             "source_height": source_height,
             "segment_duration": self.segment_duration,
+            "tone_map": bool(tone_map),
             "start": round(float(start_seconds), 2),
         }
         raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -177,9 +180,10 @@ class HlsService:
 
     def manifest_for(self, source_path: str, profiles: list[str] | None = None,
                      source_height: int = 0,
-                     start_seconds: float = 0.0) -> HlsManifest:
+                     start_seconds: float = 0.0,
+                     tone_map: bool = False) -> HlsManifest:
         profiles = self._normalize_profiles(profiles)
-        key = self.cache_key(source_path, profiles, source_height, start_seconds)
+        key = self.cache_key(source_path, profiles, source_height, start_seconds, tone_map)
         cache_dir = self.cache_root / key
         variants = tuple(self._variant_for(name, source_height) for name in profiles)
         return HlsManifest(
@@ -204,13 +208,16 @@ class HlsService:
 
     def ensure(self, source_path: str, profiles: list[str] | None = None,
                source_height: int = 0,
-               start_seconds: float = 0.0) -> HlsManifest:
+               start_seconds: float = 0.0,
+               tone_map: bool = False) -> HlsManifest:
         """同期生成(テスト・デスクトップ用)。"""
-        manifest = self.manifest_for(source_path, profiles, source_height, start_seconds)
+        manifest = self.manifest_for(source_path, profiles, source_height, start_seconds, tone_map)
         if manifest.ready:
             return manifest
         if not self.available():
             raise TranscodeError("ffmpeg が見つかりません。HLSを生成できません。")
+        if tone_map:
+            check_tonemap_filters(resolve_ffmpeg(self.auto_download_ffmpeg).path or "ffmpeg")
         job = self._register_job(manifest, source_path)
         if job is None:
             raise TranscodeError("HLS生成中です。しばらくしてから再試行してください。")
@@ -218,26 +225,30 @@ class HlsService:
         try:
             self._acquire_slot(job)
             acquired = True
-            self._generate(source_path, manifest, job, start_seconds)
+            if tone_map:
+                self._generate(source_path, manifest, job, start_seconds, tone_map=True)
+            else:
+                self._generate(source_path, manifest, job, start_seconds)
         finally:
             if acquired:
                 self._release_slot(job)
             self._unregister_job(job)
         return self.manifest_for(
             source_path, [v.name for v in manifest.variants],
-            source_height, start_seconds,
+            source_height, start_seconds, tone_map,
         )
 
     def ensure_async(self, source_path: str, profiles: list[str] | None = None,
                      source_height: int = 0,
                      start_seconds: float = 0.0,
-                     owner: str | None = None) -> HlsManifest:
+                     owner: str | None = None,
+                     tone_map: bool = False) -> HlsManifest:
         """バックグラウンド生成を開始してマスタープレイリストを即返す。
 
         ownerがある場合は、そのownerの他ジョブ(別ソースを含む)を停止する。
         同一keyを別ownerが生成中なら、その生成を共有して他ownerは止めない。
         """
-        manifest = self.manifest_for(source_path, profiles, source_height, start_seconds)
+        manifest = self.manifest_for(source_path, profiles, source_height, start_seconds, tone_map)
         with self._start_lock:
             # 「旧要求の停止 → 最新要求の登録」をowner単位で原子的に行う。
             # 完成済みcacheを使う場合も、別keyの旧変換は不要なので停止する。
@@ -249,6 +260,8 @@ class HlsService:
                 return manifest
             if not self.available():
                 raise TranscodeError("ffmpeg が見つかりません。HLSを生成できません。")
+            if tone_map:
+                check_tonemap_filters(resolve_ffmpeg(self.auto_download_ffmpeg).path or "ffmpeg")
             job = self._register_job(manifest, source_path, owner=owner)
         if job is None:
             # 同一keyの生成が進行中
@@ -269,7 +282,10 @@ class HlsService:
             try:
                 self._acquire_slot(job)
                 acquired = True
-                self._generate(source_path, manifest, job, start_seconds)
+                if tone_map:
+                    self._generate(source_path, manifest, job, start_seconds, tone_map=True)
+                else:
+                    self._generate(source_path, manifest, job, start_seconds)
                 if job.cancelled:
                     raise _HlsCancelled()
             except _HlsCancelled:
@@ -568,7 +584,8 @@ class HlsService:
         manifest.master.write_text("\n".join(lines) + "\n", "utf-8")
 
     def _generate(self, source_path: str, manifest: HlsManifest,
-                  job: _HlsJob, start_seconds: float = 0.0) -> None:
+                  job: _HlsJob, start_seconds: float = 0.0,
+                  tone_map: bool = False) -> None:
         manifest.cache_dir.mkdir(parents=True, exist_ok=True)
         self._write_master(manifest)
         try:
@@ -589,7 +606,7 @@ class HlsService:
                                            profile.video_bitrate or "1800k",
                                            profile.audio_bitrate or "96k",
                                            profile.fps_limit,
-                                           start_seconds)
+                                           start_seconds, tone_map=tone_map)
                 process = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                            stderr=subprocess.PIPE)
                 with job.lock:
@@ -626,8 +643,11 @@ class HlsService:
                     video_bitrate: str, audio_bitrate: str,
                     fps_limit: int | None,
                     start_seconds: float = 0.0,
-                    copy_video: bool = False) -> list[str]:
-        filters = []
+                    copy_video: bool = False,
+                    tone_map: bool = False) -> list[str]:
+        if tone_map and copy_video:
+            raise TranscodeError("HDR→SDR変換で映像コピーはできません")
+        filters = hdr_to_sdr_filters() if tone_map else []
         if not copy_video:
             filters.append(scale_filter_for_box(max_width, max_height))
             if fps_limit:
@@ -659,6 +679,9 @@ class HlsService:
                 f"expr:gte(t,n_forced*{self.segment_duration})",
                 "-vf", ",".join(filters),
             ]
+        if tone_map:
+            cmd += ["-color_primaries", "bt709", "-color_trc", "bt709",
+                    "-colorspace", "bt709", "-color_range", "tv"]
         cmd += [
             "-c:a", "aac", "-b:a", audio_bitrate, "-ac", "2",
             "-f", "hls",

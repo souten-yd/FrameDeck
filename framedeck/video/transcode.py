@@ -17,6 +17,7 @@ import threading
 import time
 
 from .ffmpeg import resolve_ffmpeg
+from .color import hdr_to_sdr_filters, check_tonemap_filters
 from .profile_service import scale_filter_for_box
 
 TRANSCODE_CHUNK = 1024 * 128
@@ -101,7 +102,8 @@ class TranscodeService:
                   owner: str | None = None,
                   copy_video: bool = False,
                   copy_audio: bool = False,
-                  smooth_fps: float | None = None) -> Fmp4Stream:
+                  smooth_fps: float | None = None,
+                  tone_map: bool = False) -> Fmp4Stream:
         """変換プロセスを起動してストリームハンドルを返す。
 
         `owner`(クライアントセッションID)が同じ古いストリームは停止する。
@@ -110,13 +112,17 @@ class TranscodeService:
         ffmpeg = resolve_ffmpeg(self.auto_download_ffmpeg)
         if not ffmpeg.path:
             raise TranscodeError(ffmpeg.error or "ffmpeg が見つかりません。")
+        if tone_map:
+            if copy_video:
+                raise TranscodeError("HDR→SDR変換では映像のコピーはできません")
+            check_tonemap_filters(ffmpeg.path)
         if owner:
             self.cancel_owner(owner)
         cmd = build_fmp4_transcode_cmd(
             path, start_seconds=start_seconds,
             max_height=max_height, max_width=max_width,
             copy_video=copy_video, copy_audio=copy_audio,
-            smooth_fps=smooth_fps, ffmpeg_bin=ffmpeg.path,
+            smooth_fps=smooth_fps, tone_map=tone_map, ffmpeg_bin=ffmpeg.path,
             encode_threads=self.encode_threads,
         )
         # stderrはパイプにするとログが溜まった時にffmpegが書き込みで
@@ -274,6 +280,7 @@ def build_fmp4_transcode_cmd(
     copy_video: bool = False,
     copy_audio: bool = False,
     smooth_fps: float | None = None,
+    tone_map: bool = False,
     ffmpeg_bin: str = "ffmpeg",
     encode_threads: int | None = None,
 ) -> list[str]:
@@ -293,10 +300,12 @@ def build_fmp4_transcode_cmd(
     if start_seconds > 0:
         cmd += ["-ss", f"{start_seconds:.3f}"]
     cmd += ["-i", path, "-map", "0:v:0", "-map", "0:a:0?"]
+    if copy_video and tone_map:
+        raise TranscodeError("HDR→SDR変換でcopy_videoは指定できません")
     if copy_video:
         cmd += ["-c:v", "copy"]
     else:
-        filters = [scale_filter_for_box(max_width, max_height)]
+        filters = (hdr_to_sdr_filters() if tone_map else []) + [scale_filter_for_box(max_width, max_height)]
         if smooth_fps and smooth_fps > 0:
             filters.append(f"framerate=fps={smooth_fps:.3f}")
         cmd += [
@@ -315,6 +324,9 @@ def build_fmp4_transcode_cmd(
             "-crf", "23",
             "-vf", ",".join(filters),
         ]
+    if tone_map:
+        cmd += ["-color_primaries", "bt709", "-color_trc", "bt709",
+                "-colorspace", "bt709", "-color_range", "tv"]
     if copy_audio:
         cmd += ["-c:a", "copy"]
     else:
