@@ -57,13 +57,15 @@ def _signed_open(controller, endpoint: str, *, timeout: float):
 
 
 def start_remote_hls(controller, root: str, relative: str, profiles: list[str],
-                     height: int, start: float, session: str) -> str:
+                     height: int, start: float, session: str,
+                     tone_map: bool = False) -> str:
     if (not profiles or len(profiles) > 4 or
             any(profile not in HLS_ALLOWED for profile in profiles)):
         raise WorkerOffloadError("unsupported HLS profile")
     params = {
         "source_root": root, "relative_path": relative, "profiles": ",".join(profiles),
         "height": str(int(height)), "start": str(float(start)), "session": session[:64],
+        "tone_map": "true" if tone_map else "false",
     }
     provider = getattr(controller, "source_provider", None)
     if controller.status().get("capabilities", {}).get("automatic_sources") and provider:
@@ -121,6 +123,7 @@ class RemoteHls:
     start: float
     owner: str
     seen: float
+    tone_map: bool = False
 
 
 class RemoteHlsSessions:
@@ -138,7 +141,8 @@ class RemoteHlsSessions:
             return time.monotonic() >= self._cooldown_until
 
     def add(self, worker_key: str, media_id: str, source_path: str,
-            profiles: list[str], height: int, start: float, owner: str) -> RemoteHls:
+            profiles: list[str], height: int, start: float, owner: str,
+            tone_map: bool = False) -> RemoteHls:
         if not _KEY.fullmatch(worker_key):
             raise WorkerOffloadError("invalid worker cache identity")
         now = time.monotonic()
@@ -148,7 +152,7 @@ class RemoteHlsSessions:
                 self._items.pop(min(self._items, key=lambda k: self._items[k].seen))
             key = secrets.token_hex(32)
             item = RemoteHls(key, worker_key, media_id, source_path,
-                             tuple(profiles), height, start, owner, now)
+                             tuple(profiles), height, start, owner, now, tone_map)
             self._items[key] = item
             return item
 
