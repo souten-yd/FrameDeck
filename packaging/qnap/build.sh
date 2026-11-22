@@ -139,6 +139,10 @@ tar -xzf "$WORK_DIR/ffmpeg.tar.gz" -C "$WORK_DIR/ffmpeg"
 install -m 755 "$WORK_DIR/ffmpeg/ffmpeg" "$WORK_DIR/env/x86_64/bin/ffmpeg"
 install -m 755 "$WORK_DIR/ffmpeg/ffprobe" "$WORK_DIR/env/x86_64/bin/ffprobe"
 "$WORK_DIR/env/x86_64/bin/ffmpeg" -version >/dev/null
+# Video HDR→SDR needs both filters in the bundled binary; do not ship a
+# package whose auto colour mode silently fails on SDR-only displays.
+"$WORK_DIR/env/x86_64/bin/ffmpeg" -hide_banner -filters | grep -Eq '[[:space:]]zscale[[:space:]]'
+"$WORK_DIR/env/x86_64/bin/ffmpeg" -hide_banner -filters | grep -Eq '[[:space:]]tonemap[[:space:]]'
 "$WORK_DIR/env/x86_64/bin/ffprobe" -version >/dev/null
 
 # 7zz provides RAR/CBR extraction without requiring proprietary unrar. FrameDeck
