@@ -1,0 +1,26 @@
+name: Video HDR validation v4
+on:
+  push:
+    branches: [ci/validate-video-color-v4]
+    paths: [.github/workflows/validate-video-color-v4.yml]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Compile Python and JS
+        run: |
+          python -m compileall -q framedeck
+          node --check framedeck/web/static/js/app.js
+      - name: Run complete test suite
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q tests/
