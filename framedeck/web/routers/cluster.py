@@ -281,7 +281,7 @@ def worker_hls_start(
         manifest = services.hls.ensure_async(
             str(source), profiles=requested, source_height=height,
             start_seconds=start, owner=session or None,
-            tone_map=tone_map,
+            **({"tone_map": True} if tone_map else {}),
         )
     except (WorkerOffloadError, OSError, ValueError) as exc:
         raise HTTPException(status_code=503, detail="HLS worker unavailable") from exc
