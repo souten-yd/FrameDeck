@@ -2145,6 +2145,7 @@ async function openVideo(item) {
   // iOSの原寸Direct Playはファイルの瞬間ビットレートによって
   // Range取得が間に合わない。1080p以下なら同じ寸法のHLSへ寄せる。
   if (!playbackProfile?.transcode && canDirectPlay &&
+      !["hdr10", "hlg", "dolby_vision"].includes(detail.info.hdr_format) &&
       shouldStabilizeMobileOriginal(detail.info)) {
     const stableProfile = hlsProfileForSource(detail.info.height);
     playbackProfile = {
