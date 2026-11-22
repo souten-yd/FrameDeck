@@ -39,7 +39,7 @@ const S = {
     loadToken: 0,
     reloadTimer: null,
     maxHeight: null, maxWidth: null,
-    copyVideo: false, copyAudio: false, transcodeFallback: false,
+    copyVideo: false, copyAudio: false, toneMap: false, transcodeFallback: false,
     mobileStableOriginal: false,
     syncRate: 1, syncInfo: null,
     hlsFallback: false,
@@ -143,7 +143,8 @@ function hlsMasterUrl(itemId, profile, startSeconds) {
   const start = Math.max(0, Number(startSeconds) || 0);
   return `/api/videos/${itemId}/hls/master.m3u8?profile=${encodeURIComponent(profile)}` +
     `&start=${start.toFixed(2)}&session=${encodeURIComponent(CLIENT_SESSION_ID)}` +
-    (S.video.workerRequired ? "&worker_only=1" : "");
+    (S.video.workerRequired ? "&worker_only=1" : "") +
+    (S.video.toneMap ? "&tone_map=1" : "");
 }
 
 /* モバイルで変換が必要な場合はHLSを使う。
@@ -405,6 +406,16 @@ function buildDisplaySyncHint() {
     "下の「なめらか変換」で中間フレームを生成できます。";
 }
 
+function displayVideoCapabilities() {
+  const matches = (query) => Boolean(window.matchMedia?.(query).matches);
+  return {
+    // Browser reports the current output capability, not monitor calibration.
+    displayHdr: matches("(dynamic-range: high)"),
+    colorGamut: matches("(color-gamut: rec2020)") ? "rec2020" :
+      (matches("(color-gamut: p3)") ? "p3" : "srgb"),
+  };
+}
+
 function clientMediaHints() {
   const connection = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
   return {
@@ -420,6 +431,7 @@ function clientMediaHints() {
     uiProfile: S.uiProfile,
     // iPad/iPhoneではcanPlayTypeが肯定しても音声が出ないコーデックがある。
     preferAacAudio: isIosFamily(),
+    ...displayVideoCapabilities(),
     ...clientCodecSupport(),
   };
 }
@@ -2052,6 +2064,7 @@ function transcodeStreamUrl(itemId, seconds) {
   if (S.video.copyVideo) params.set("copy_video", "1");
   if (S.video.copyAudio) params.set("copy_audio", "1");
   if (S.video.smoothFps) params.set("smooth_fps", String(S.video.smoothFps));
+  if (S.video.toneMap) params.set("tone_map", "1");
   if (S.video.forceLocal && !S.video.workerRequired) params.set("force_local", "1");
   if (S.video.workerRequired) params.set("worker_only", "1");
   return `/api/videos/${itemId}/stream-transcode?${params.toString()}`;
@@ -2099,6 +2112,7 @@ async function openVideo(item) {
   let directPlayReason = detail.info.direct_play_reason;
   S.video.copyVideo = false;
   S.video.copyAudio = false;
+  S.video.toneMap = false;
   S.video.transcodeFallback = false;
   S.video.hlsFallback = false;
   S.video.forceLocal = false;
@@ -2111,6 +2125,7 @@ async function openVideo(item) {
       json: hints,
     });
     playbackProfile = decision.profile;
+    S.video.toneMap = decision.tone_map === true;
     S.video.workerRequired = decision.worker_required === true;
     network = decision.network;
     canDirectPlay = decision.direct_play;
@@ -2165,6 +2180,10 @@ async function openVideo(item) {
   await updateDisplaySync();
   if (token !== S.video.loadToken) return;
   S.video.smoothFps = detail.transcode_available ? smoothMotionTarget() : null;
+  // Re-encoding HDR just to interpolate frames destroys HDR metadata.
+  if (["hdr10", "hlg", "dolby_vision"].includes(detail.info.hdr_format) && !S.video.toneMap) {
+    S.video.smoothFps = null;
+  }
 
   if (usesRawDirectVideo(playbackProfile, canDirectPlay, S.video.smoothFps)) {
     S.video.transcode = false;
@@ -2227,6 +2246,7 @@ async function openVideo(item) {
       }
       if (resume > 0) toast(`続きから再生: ${fmtTime(resume)}`);
     }
+    if (S.video.toneMap) $("video-badge").textContent += " · HDR→SDR (BT.709)";
     if (S.video.workerRequired) $("video-badge").textContent += " (ext・Linuxワーカー)";
     $("video-badge").textContent += network === "cellular" ? " · モバイル回線" : "";
     $("video-badge").classList.remove("hidden");
@@ -3444,6 +3464,10 @@ async function openSettings() {
   settingRow(grid, "Linux高速変換を使用", makeSelect("cluster_offload_enabled", [
     ["false", "無効（QNAPのみ）"], ["true", "有効（Linuxが利用可能なら使用）"],
   ]), "接続済みLinuxがQNAPの動画を自動で読み取り、fMP4とiPad向けHLS/AAC変換を担当します。共有フォルダの手動マウントは不要です。原版の直接Range配信はQNAPのままです。");
+  settingRow(grid, "動画の色管理", makeSelect("video_color_mode", [
+    ["auto", "自動 (HDR画面は原版優先・SDR画面は色変換)"],
+    ["original", "原版の色を優先"], ["sdr", "SDR (BT.709)へ変換"],
+  ]), "HDRの自動判定はブラウザの画面対応情報を使用します。実際の色校正値は取得しません。");
   settingRow(grid, "動画軽量配信", makeSelect("video_stream_mode", [
     ["original", "無効"], ["auto", "自動"], ["transcode", "常に有効"],
   ]));
