@@ -6,6 +6,7 @@ import shutil
 import subprocess
 
 from ..models import ChapterInfo, TrackInfo, VideoInfo
+from .color import detect_hdr_format
 
 PROBE_TIMEOUT = 20
 
@@ -52,6 +53,8 @@ def probe_video(path: str, media_id: str) -> VideoInfo:
     width = height = 0
     video_codec = audio_codec = ""
     frame_rate = 0.0
+    color_primaries = color_transfer = color_space = color_range = ""
+    hdr_format = "unknown"
     tracks: list[TrackInfo] = []
     for stream in streams:
         kind = stream.get("codec_type")
@@ -60,6 +63,11 @@ def probe_video(path: str, media_id: str) -> VideoInfo:
         disposition = stream.get("disposition") or {}
         if kind == "video" and not video_codec and codec != "mjpeg":
             video_codec = codec
+            color_primaries = str(stream.get("color_primaries") or "")
+            color_transfer = str(stream.get("color_transfer") or "")
+            color_space = str(stream.get("color_space") or "")
+            color_range = str(stream.get("color_range") or "")
+            hdr_format = detect_hdr_format(stream)
             width = int(stream.get("width") or 0)
             height = int(stream.get("height") or 0)
             rate = stream.get("avg_frame_rate") or "0/1"
@@ -98,6 +106,8 @@ def probe_video(path: str, media_id: str) -> VideoInfo:
         bitrate=bitrate, frame_rate=frame_rate,
         tracks=tuple(tracks), chapters=chapters,
         direct_play=direct, direct_play_reason=reason,
+        color_primaries=color_primaries, color_transfer=color_transfer,
+        color_space=color_space, color_range=color_range, hdr_format=hdr_format,
     )
 
 
