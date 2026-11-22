@@ -1,0 +1,61 @@
+name: Release FrameDeck 2.4.29
+
+on:
+  push:
+    branches: [ci/release-2.4.29]
+    paths: [.github/workflows/release-2.4.29-one-shot.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 2c50f5791459ce51f0bb73ecc273bcedc0dc0a35
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install FFmpeg and QDK prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg curl xz-utils libxml2-utils xmlstarlet pv dos2unix
+          curl -fsSL -o /tmp/qdk.deb https://github.com/qnap-dev/QDK/releases/download/v2.5.3/qdk_2.5.3_amd64.deb
+          sudo apt-get install -y /tmp/qdk.deb
+          command -v qbuild
+          command -v qpkg_encrypt
+          ffmpeg -version | head -1
+      - name: Install Python test dependencies
+        run: python -m pip install -r packaging/qnap/requirements-qnap.txt -r requirements-test.txt
+      - name: Verify exact source version and JS syntax
+        run: |
+          python - <<'PY'
+          from framedeck import __version__
+          assert __version__ == '2.4.29', __version__
+          assert 'QPKG_VER="2.4.29"' in open('packaging/qnap/qpkg.cfg').read()
+          PY
+          python -m compileall -q framedeck
+          node --check framedeck/web/static/js/app.js
+          test "$(git rev-parse HEAD)" = '2c50f5791459ce51f0bb73ecc273bcedc0dc0a35'
+      - name: Run full suite including FFmpeg integration
+        env:
+          IMAGEIO_FFMPEG_EXE: /bin/true
+        run: python -m pytest -q -rs tests/
+      - name: Build QNAP TS-253Be x86_64 QPKG
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash packaging/qnap/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameDeck-QPKG-2.4.29
+          path: dist/*.qpkg
+          if-no-files-found: error
+          retention-days: 3
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v2.4.29 dist/*.qpkg --target 2c50f5791459ce51f0bb73ecc273bcedc0dc0a35 --latest --title "FrameDeck v2.4.29" --notes "正式版。PR #82: 動画HDR10/HLGを自動識別し、HDR対応ディスプレイでは再生可能な原版を優先、SDR画面では必要に応じてFFmpeg zscale/tonemapでBT.709に変換。HLS・fMP4・署名済みLinuxワーカーとQNAP低負荷プロファイルに対応。SDR原本の再生方式・Range配信・認証・手動CI方針は維持。444件以上のテストとQNAP QPKGビルドを検証。実機HDR表示・変換速度は利用端末で別途確認してください。"
