@@ -230,7 +230,7 @@ def playback_profile(media_id: str, request: Request,
         )
     # A browser can report HDR output only, not exact display calibration.
     # Preserve compatible native/remux HDR; all HDR re-encodes must become BT.709.
-    hdr_source = info.hdr_format in {"hdr10", "hlg", "dolby_vision"}
+    hdr_source = getattr(info, "hdr_format", "unknown") in {"hdr10", "hlg", "dolby_vision"}
     color_mode = settings.get("video_color_mode", "auto")
     hdr_display = payload.get("displayHdr") is True
     must_encode = profile.transcode and not (
@@ -242,7 +242,7 @@ def playback_profile(media_id: str, request: Request,
         must_encode or (not direct.direct_play and not direct.copy_video)
     )
     if tone_map:
-        if info.color_transfer not in HDR_TRANSFERS:
+        if getattr(info, "color_transfer", "") not in HDR_TRANSFERS:
             raise HTTPException(
                 status_code=422,
                 detail="HDRの転送関数が不明です。Dolby Vision単独素材は安全にSDR変換できません",
@@ -294,7 +294,7 @@ async def hls_master(media_id: str,
     """
     item = _resolve_video(services, media_id)
     info = services.video_playback.get_info(item.path, media_id)
-    if tone_map and info.color_transfer not in HDR_TRANSFERS:
+    if tone_map and getattr(info, "color_transfer", "") not in HDR_TRANSFERS:
         raise HTTPException(status_code=422, detail="HDR素材ではないか色メタデータが不足しています")
     if tone_map and profile == "original-aac":
         raise HTTPException(status_code=422, detail="音声のみ変換とHDR→SDRは同時指定できません")
@@ -354,7 +354,8 @@ async def hls_master(media_id: str,
             lambda: services.hls.ensure_async(
                 item.path, profiles=profiles,
                 source_height=info.height, start_seconds=start,
-                owner=session.strip()[:64] or None, tone_map=tone_map,
+                owner=session.strip()[:64] or None,
+                **({"tone_map": True} if tone_map else {}),
             ),
             limiter=_STREAM_LIMITER,
         )
@@ -460,7 +461,8 @@ async def _serve_hls_worker_or_fallback(
             lambda: services.hls.ensure_async(
                 item.source_path, profiles=list(item.profiles),
                 source_height=item.height, start_seconds=item.start,
-                owner=item.owner or None, tone_map=item.tone_map,
+                owner=item.owner or None,
+                **({"tone_map": True} if getattr(item, "tone_map", False) else {}),
             ),
             limiter=_STREAM_LIMITER,
         )
@@ -756,7 +758,7 @@ async def stream_transcode(media_id: str,
     item = _resolve_video(services, media_id)
     if tone_map:
         info = services.video_playback.get_info(item.path, media_id)
-        if info.color_transfer not in HDR_TRANSFERS or copy_video:
+        if getattr(info, "color_transfer", "") not in HDR_TRANSFERS or copy_video:
             raise HTTPException(status_code=422, detail="HDR→SDR変換の指定が不正です")
 
     # Direct Range playback stays on the owner. Conversion can read either
