@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Stre
 from ...core.security import PathValidationError
 from ...core.services import Services
 from ...models import MediaItem
+from ...video.color import HDR_TRANSFERS
 from ...runtime_profile import QNAP_TRANSCODE_HEIGHT, QNAP_TRANSCODE_WIDTH, qnap_lite
 from ...video.stream import (
     CHUNK_SIZE as FILE_CHUNK_SIZE,
@@ -227,7 +228,32 @@ def playback_profile(media_id: str, request: Request,
             hints,
             ui_profile=payload.get("uiProfile") or "desktop",
         )
-    copy_video = direct.copy_video and profile.transcode and profile.name == "original"
+    # A browser can report HDR output only, not exact display calibration.
+    # Preserve compatible native/remux HDR; all HDR re-encodes must become BT.709.
+    hdr_source = info.hdr_format in {"hdr10", "hlg", "dolby_vision"}
+    color_mode = settings.get("video_color_mode", "auto")
+    hdr_display = payload.get("displayHdr") is True
+    must_encode = profile.transcode and not (
+        profile.name == "original" and direct.copy_video
+    )
+    tone_map = hdr_source and (
+        color_mode == "sdr" or
+        (color_mode == "auto" and not hdr_display) or
+        must_encode or (not direct.direct_play and not direct.copy_video)
+    )
+    if tone_map:
+        if info.color_transfer not in HDR_TRANSFERS:
+            raise HTTPException(
+                status_code=422,
+                detail="HDRの転送関数が不明です。Dolby Vision単独素材は安全にSDR変換できません",
+            )
+        if not profile.transcode or profile.name == "original":
+            profile = resolve_video_profile(
+                "480p" if qnap_lite() else "1080p",
+                info.height, info.width,
+            )
+        # Even if a codec is copyable, tone mapping requires decoding.
+    copy_video = direct.copy_video and profile.transcode and profile.name == "original" and not tone_map
     return {
         "profile": profile.to_dict(),
         "worker_required": worker_required,
@@ -238,6 +264,9 @@ def playback_profile(media_id: str, request: Request,
         "direct_play_reason": direct.reason or info.direct_play_reason,
         # 映像を再エンコードせずコンテナだけ入れ替えれば足りるか
         "copy_video": copy_video,
+        "tone_map": bool(tone_map),
+        "color_mode": color_mode,
+        "display_hdr": hdr_display,
         "copy_audio": direct.copy_audio and profile.transcode,
         "server_direct_play": info.direct_play,
     }
@@ -253,6 +282,7 @@ def encoder_capabilities(services: Services = Depends(get_services)) -> list[dic
 async def hls_master(media_id: str,
                      worker_only: bool = False,
                      profile: str | None = Query(default=None),
+                     tone_map: bool = Query(default=False),
                      start: float = Query(default=0.0, ge=0.0),
                      session: str = Query(default=""),
                      services: Services = Depends(get_services)):
@@ -264,6 +294,10 @@ async def hls_master(media_id: str,
     """
     item = _resolve_video(services, media_id)
     info = services.video_playback.get_info(item.path, media_id)
+    if tone_map and info.color_transfer not in HDR_TRANSFERS:
+        raise HTTPException(status_code=422, detail="HDR素材ではないか色メタデータが不足しています")
+    if tone_map and profile == "original-aac":
+        raise HTTPException(status_code=422, detail="音声のみ変換とHDR→SDRは同時指定できません")
     if worker_only:
         if profile != "1080p" or not _worker_ready(services, item.path, hls=True):
             raise HTTPException(status_code=503, detail="1080p (ext) のLinuxワーカーを利用できません")
@@ -293,7 +327,7 @@ async def hls_master(media_id: str,
                     lambda: start_remote_hls(
                         services.cluster, source_root, relative,
                         worker_profiles, info.height, start,
-                        session.strip()[:64],
+                        session.strip()[:64], tone_map,
                     ),
                     limiter=_STREAM_LIMITER,
                 )
@@ -320,7 +354,7 @@ async def hls_master(media_id: str,
             lambda: services.hls.ensure_async(
                 item.path, profiles=profiles,
                 source_height=info.height, start_seconds=start,
-                owner=session.strip()[:64] or None,
+                owner=session.strip()[:64] or None, tone_map=tone_map,
             ),
             limiter=_STREAM_LIMITER,
         )
@@ -707,6 +741,7 @@ async def stream_transcode(media_id: str,
                            session: str = Query(default=""),
                            copy_video: bool = Query(default=False),
                            copy_audio: bool = Query(default=False),
+                           tone_map: bool = Query(default=False),
                            smooth_fps: float | None = Query(default=None, ge=20, le=240),
                            force_local: bool = Query(default=False),
                            worker_only: bool = False,
@@ -719,6 +754,10 @@ async def stream_transcode(media_id: str,
     再エンコードせずコンテナだけ入れ替える(端末が再生できる形式のとき)。
     """
     item = _resolve_video(services, media_id)
+    if tone_map:
+        info = services.video_playback.get_info(item.path, media_id)
+        if info.color_transfer not in HDR_TRANSFERS or copy_video:
+            raise HTTPException(status_code=422, detail="HDR→SDR変換の指定が不正です")
 
     # Direct Range playback stays on the owner. Conversion can read either
     # a configured mount or a scoped owner HTTP source, negotiated by health.
@@ -734,6 +773,7 @@ async def stream_transcode(media_id: str,
                         settings=services.settings, start=start, max_height=max_height, max_width=max_width,
                         session=session.strip()[:64], copy_video=copy_video,
                         copy_audio=copy_audio, smooth_fps=smooth_fps,
+                        tone_map=tone_map,
                     )
                 remote = await anyio.to_thread.run_sync(
                     connect, limiter=_STREAM_LIMITER,
@@ -773,7 +813,7 @@ async def stream_transcode(media_id: str,
             item.path, start, max_height=max_height, max_width=max_width,
             owner=session.strip()[:64] or None,
             copy_video=copy_video, copy_audio=copy_audio,
-            smooth_fps=smooth_fps,
+            smooth_fps=smooth_fps, tone_map=tone_map,
         )
     except TranscodeError as e:
         raise HTTPException(status_code=503, detail=str(e))
